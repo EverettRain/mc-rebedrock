@@ -10,6 +10,7 @@
 #include "ui/KeyBindList.hpp"
 #include "ui/ListRow.hpp"
 #include "ui/MenuGeometry.hpp"
+#include "ui/MenuInteraction.hpp"
 #include "ui/PageBuilder.hpp"
 #include "ui/PageStack.hpp"
 
@@ -163,11 +164,26 @@ void testControlsBottomBandBounded() {
             std::string{input::actionDisplayName(a)}, {}};
     };
     ui::MenuCallbacks cb;
-    // 一个跳转（Key Binds…）+ 七个设置项 + Done。少的那个跳转是 Mouse Settings…：
-    // 本作没有那一屏，而"页面为空就完全不建"。
-    // ★ 这个 9 是从**装配结果**数出来的，不是另一张表说的。
+    // 两个跳转（Mouse Settings… / Key Binds…）+ 七个设置项 + Done = 10。
+    // Mouse Settings 是**置灰**的：那一屏本作没有，但少了它第一行右列就空着，
+    // 版面比 26.1 少半行。
+    // ★ 这个 10 是从**装配结果**数出来的，不是另一张表说的——加那个按钮时我只改了
+    //   装配器一处，计数自动跟上。
     const auto controls = laidOutPage(ui::PageId::Controls, layout, fbW, ctx, cb);
-    assert(ui::countPageButtons(controls) == 9U);
+    assert(ui::countPageButtons(controls) == 10U);
+    // 第一个是 Mouse Settings，而且**点不动**。
+    //
+    // ★ 断言的是"点它不触发任何东西"，不是 `interactive()`——后者判的是控件**类型**
+    //   （Label / Panel 之外都算），置灰按钮仍然是按钮。真正把它挡住的是 `enabled`，
+    //   点击派发读的也是它。
+    assert(controls[0].debugId == static_cast<std::uint16_t>(ui::WidgetId::MouseSettings));
+    assert(!controls[0].enabled);
+    const float mouseY = controls[0].rect.y + controls[0].rect.height * 0.5F;
+    const float mouseX = controls[0].rect.x + controls[0].rect.width * 0.5F;
+    assert(ui::clickAt(controls, mouseX, mouseY) == ui::kNoWidget);
+    // 它旁边那个是能按的——否则整行都成了摆设，那不是"版面对上了"
+    assert(controls[1].debugId == static_cast<std::uint16_t>(ui::WidgetId::OpenKeyBinds));
+    assert(controls[1].enabled);
     assert(ui::countPageButtons(controls) <= ui::HudLayout::kMaximumMenuButtons);
     // 绑定列表页的页脚是横排两个：`controls.resetAll` 与 Done。
     ctx.keyBindRowCount = 0U;   // 不要列表行，只看页脚

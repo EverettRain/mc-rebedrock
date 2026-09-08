@@ -188,13 +188,13 @@ UiRect keyBindsListBox(const HudLayout& layout, float framebufferWidth) {
 
 // UI-6c：Controls 枢纽上 `addSmall(...)` 的分组，按 26.1 的调用顺序。
 //
-//   addSmall(mouse_settings, keybinds)  → 本作只有 keybinds，所以这一组是 **1** 项
+//   addSmall(mouse_settings, keybinds)                                     → 2 项
 //   addSmall(toggleCrouch, toggleSprint, toggleAttack, toggleUse,
 //            autoJump, sprintWindow, operatorItemsTab)                 → 7 项
 //
 // 两组之间那道行边界是**语义分组**（`ControlsScreen.addOptions()` 的两次调用），
 // 不是排版巧合：把它们摊平成一组，keybinds 会和 toggleCrouch 挤在同一行。
-inline constexpr std::array<std::size_t, 2> kControlsHubGroups{1U, 7U};
+inline constexpr std::array<std::size_t, 2> kControlsHubGroups{2U, 7U};
 
 // 一页里有几个按钮。绑定列表那三个行内控件（名称 / 改键 / 重置）不算——它们的矩形
 // 来自列表几何，不占按钮网格的位置。

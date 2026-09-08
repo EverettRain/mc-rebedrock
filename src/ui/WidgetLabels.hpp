@@ -42,7 +42,7 @@ struct StaticWidgetLabel final {
     std::string_view suffix{};
 };
 
-inline constexpr std::array<StaticWidgetLabel, 27> kStaticWidgetLabels{{
+inline constexpr std::array<StaticWidgetLabel, 28> kStaticWidgetLabels{{
     // 标题界面与世界列表
     {WidgetId::Singleplayer, "menu.singleplayer", "Singleplayer"},
     {WidgetId::Multiplayer, "menu.multiplayer", "Multiplayer"},
@@ -69,6 +69,7 @@ inline constexpr std::array<StaticWidgetLabel, 27> kStaticWidgetLabels{{
     {WidgetId::Controls, "options.controls", "Controls..."},
     // UI-6c：26.1 的 Controls 是个枢纽，它上面有一个跳到绑定列表的按钮（§7.8）。
     // 本作**没有** Mouse Settings 那个跳转：那一屏不存在，而空页不建。
+    {WidgetId::MouseSettings, "options.mouse_settings", "Mouse Settings..."},
     {WidgetId::OpenKeyBinds, "controls.keybinds", "Key Binds..."},
     // 单行的重置按钮。★ 是 `controls.reset`（"重置"），不是页脚那个
     // `controls.resetAll`（"重置按键"）——两个键差一个 All，而一整排都写着"重置按键"

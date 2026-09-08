@@ -30,6 +30,10 @@ simple versioned history while it is in beta.
 - Shift-clicking a cycling option now steps backwards through its values instead of forwards.
 
 ### Changed
+- The Controls screen now carries a greyed-out "Mouse Settings..." button. Minecraft has two
+  buttons on that row and this project has no mouse settings screen yet, so the slot was simply
+  empty. It does nothing when clicked; it is there so the layout matches Minecraft's while still
+  showing that the feature is missing.
 - Controls is two screens now, as it is in Minecraft: "Controls" holds the settings (Hold/Toggle
   for sneak, sprint, attack and use, auto-jump, sprint window, operator items tab) and the key
   bindings moved to their own screen behind "Key Binds...". **The four Hold/Toggle settings are

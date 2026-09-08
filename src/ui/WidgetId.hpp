@@ -35,7 +35,12 @@ enum class WidgetId : std::uint16_t {
     Subtitles,  // PX-6 Bug3: the sound-subtitles accessibility toggle
     // UI-6c：26.1 §7.6 Controls 那一屏（偏差 D1/D3）。两个跳转按钮加六个设置项。
     // `MouseSettings` **没有**：本作没有鼠标设置屏，而"页面为空就完全不建"。
-    OpenKeyBinds, Accessibility,
+    // MouseSettings 是一个**置灰**按钮：26.1 §7.6 的第一行是
+    // `addSmall(mouse_settings, keybinds)` 两个跳转，而 §7.7 鼠标设置屏本作没有。
+    // 不放它，那一格就空着，版面比 vanilla 少半行；放一个能点的又会把玩家送进空页。
+    // 置灰是第三条路——版面对上了，而"这个还没有"是看得出来的。
+    // 主菜单的 Multiplayer / Realms 是同一种做法。
+    MouseSettings, OpenKeyBinds, Accessibility,
     ToggleCrouch, ToggleSprint, ToggleAttack, ToggleUse, SprintWindow, OperatorItemsTab,
 
     // 哨兵，值等于 id 的个数，表因此能断言自己覆盖了每一个 id，ui/WidgetLabels.hpp 就是这么做的
