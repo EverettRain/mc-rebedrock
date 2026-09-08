@@ -179,9 +179,10 @@ class HudRenderer final {
         bool& paused;
         double& uiTimeSeconds;
         std::function<bool()> cameraSubmergedInWater;
-        // 按键设置里每行的标签形如"动作: 按键"，取自 InputSystem 这一唯一事实源
-        // 绘制页因此显示的是实时绑定
-        std::function<std::string(input::InputAction)> keyBindLabel;
+        // 按键设置里每行的两段文字（动作名 / 键名），取自 InputSystem 这一唯一事实源
+        // 绘制页因此显示的是实时绑定。一个回调两个字段：填上下文的地方有两处，
+        // 拆成两个回调就会漏掉其中一处（"键名汉化了、动作名没有"就是这么来的）
+        std::function<ui::MenuBuildContext::KeyBindRowLabels(input::InputAction)> keyBindLabels;
         std::function<void(VkCommandBuffer, VkDescriptorSet)> drawHeldItem;
         std::function<VkDescriptorSet()> currentFrameDescriptorSet;
         std::function<std::span<const gameplay::ItemStack>()> activeCreativeCatalog;
@@ -223,7 +224,7 @@ class HudRenderer final {
           guiWidgetSprites(b.guiWidgetSprites), titleArtUv(b.titleArtUv),
           pinnedCursor(b.pinnedCursor), uiCaptureActive(b.uiCaptureActive), paused(b.paused),
           uiTimeSeconds(b.uiTimeSeconds), cameraSubmergedInWater(b.cameraSubmergedInWater),
-          keyBindLabel(b.keyBindLabel),
+          keyBindLabels(b.keyBindLabels),
           drawHeldItem(b.drawHeldItem), currentFrameDescriptorSet(b.currentFrameDescriptorSet),
           activeCreativeCatalog(b.activeCreativeCatalog),
           creativeScrollPosition(b.creativeScrollPosition),
@@ -239,9 +240,10 @@ class HudRenderer final {
         drawContext_.labelFor = [this](std::uint16_t id) {
             return widgetLabel(static_cast<ui::WidgetId>(id));
         };
-        drawContext_.keyBindLabelFor = [this](input::InputAction action) {
-            return keyBindLabel ? keyBindLabel(action)
-                                : std::string{input::actionDisplayName(action)};
+        drawContext_.keyBindLabelsFor = [this](input::InputAction action) {
+            return keyBindLabels ? keyBindLabels(action)
+                                 : ui::MenuBuildContext::KeyBindRowLabels{
+                                       std::string{input::actionDisplayName(action)}, {}};
         };
         drawCallbacks_.viewDistance.value = [this] {
             return static_cast<float>(viewDistanceChunks - 2) / 34.0F;
@@ -356,21 +358,12 @@ class HudRenderer final {
             drawContext_.keyBindFirstIndex = first;
             drawContext_.keyBindRowCount = keyRows;
         }
-        // UI-6b：按键绑定的一行现在是**两个**控件（名称 Label + 改键 Button），
-        // 所以前 `keyRows * 2` 个序号落在列表里，行号是 index/2、行内格子是 index%2。
-        // 底部按钮带的序号相应往后挪同样多。
-        const std::size_t keyWidgets = keyRows * ui::kKeyBindWidgetsPerRow;
+        // 页面 → 矩形只有一处：ui::menuWidgetRect。输入侧（menuRectProvider）调的是
+        // 同一个函数——两侧各留一份抄本，正是"点 Controls 底部按钮就闪退"的来源。
         ui::buildPageInto(drawPage_, pageId, drawContext_, drawCallbacks_,
-                          [layout, pageId, count, fbWidth, keyWidgets](std::size_t index) {
-                              if (pageId == ui::PageId::Controls && index < keyWidgets) {
-                                  const std::size_t row = index / ui::kKeyBindWidgetsPerRow;
-                                  return index % ui::kKeyBindWidgetsPerRow == 0U
-                                             ? ui::controlsNameCell(row, layout, fbWidth)
-                                             : ui::controlsChangeCell(row, layout, fbWidth);
-                              }
-                              const std::size_t buttonIndex =
-                                  pageId == ui::PageId::Controls ? index - keyWidgets : index;
-                              return ui::frontendButtonRect(layout, pageId, buttonIndex, count);
+                          [layout, pageId, count, fbWidth, keyRows](std::size_t index) {
+                              return ui::menuWidgetRect(pageId, index, layout, fbWidth, count,
+                                                        keyRows);
                           });
         return drawPage_;
     }
@@ -3179,7 +3172,7 @@ class HudRenderer final {
 
     // ---- 与世界渲染/逐帧状态的耦合（绑到 Impl 的 lambda 上）----
     std::function<bool()> cameraSubmergedInWater;
-    std::function<std::string(input::InputAction)> keyBindLabel;
+    std::function<ui::MenuBuildContext::KeyBindRowLabels(input::InputAction)> keyBindLabels;
     std::function<void(VkCommandBuffer, VkDescriptorSet)> drawHeldItem;
     std::function<VkDescriptorSet()> currentFrameDescriptorSet;
     std::function<std::span<const gameplay::ItemStack>()> activeCreativeCatalog;

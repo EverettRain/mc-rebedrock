@@ -45,10 +45,22 @@ struct MenuBuildContext final {
     // 渲染器在装配之前已经把滚动偏移与可见窗口折算进这两个值
     std::size_t worldRowCount = 0;
     std::size_t languageRowCount = 0;
-    // 某个动作那一行的标签，比如"前进: W"，正在捕获按键时则是"前进: > ? <"
-    // 渲染器从 InputSystem 这个唯一来源构造它，测试可以打桩
-    // 设置了它，按键设置页就渲染绑定表而不是早先那套开关脚手架
-    std::function<std::string(input::InputAction action)> keyBindLabelFor{};
+    // 某个动作那一行的**两段**文字：左边的动作名与右边按钮上的键名。
+    //
+    // ★ 一个回调返回两个字段，而不是两个回调各返回一段。
+    //   UI-6b 把这一行拆成两个控件之后曾经是两个回调——而填这份上下文的地方有两处
+    //   （渲染器的 `buildCurrentPage` 与 HudRenderer 常驻的 `drawContext_`），
+    //   只填了一处的那个字段就静默回落到英文兜底：界面切成中文以后按键设置里
+    //   满屏还是 "Forward / Back / Jump"，而标题和底部按钮都已经是中文。
+    //   做成一个返回值的两个字段，"漏填一个"这件事在类型上就不成立。
+    //
+    // 渲染器从 InputSystem 这个唯一来源构造它，测试可以打桩。
+    // 设置了它，按键设置页就渲染绑定表而不是早先那套开关脚手架。
+    struct KeyBindRowLabels final {
+        std::string action;  // 左边：已本地化的动作名（`key.forward` 等）
+        std::string key;     // 右边：按钮上的键名，含冲突/捕获中的装饰
+    };
+    std::function<KeyBindRowLabels(input::InputAction action)> keyBindLabelsFor{};
     // 按键设置页的绑定列表是滚动的，只装配可见窗口，与世界列表和语言列表一样
     // 无论有多少个动作，控件数量因此都有界
     // keyBindFirstIndex 是在 input::keyBindRows() 中的滚动偏移，keyBindRowCount 是可见窗口的大小
@@ -206,11 +218,19 @@ inline void addListRow(Page& page, const RectProvider& rectFor, WidgetId id, std
 // 两个 Widget 的矩形都来自调用方的 rectFor，按控件序号取——一行两个序号。
 inline void addKeyBindRow(Page& page, const RectProvider& rectFor, const MenuBuildContext& ctx,
                           input::InputAction action, std::function<void()> onActivate) {
+    // 两段文字一次取出：漏填其中一段在类型上就不成立（见 KeyBindRowLabels）。
+    MenuBuildContext::KeyBindRowLabels labels;
+    if (ctx.keyBindLabelsFor) {
+        labels = ctx.keyBindLabelsFor(action);
+    } else {
+        labels.action = std::string{input::actionDisplayName(action)};
+    }
+
     Widget name;
     name.kind = WidgetKind::Label;
     name.debugId = static_cast<std::uint16_t>(WidgetId::KeyBindRow);
     name.rect = rectFor ? rectFor(page.size()) : UiRect{};
-    name.label = std::string{input::actionDisplayName(action)};
+    name.label = std::move(labels.action);
     // Label 不可交互：焦点遍历跳过它，点它也不会开始捕获。
     name.enabled = false;
     page.push_back(std::move(name));
@@ -220,8 +240,8 @@ inline void addKeyBindRow(Page& page, const RectProvider& rectFor, const MenuBui
     change.debugId = static_cast<std::uint16_t>(WidgetId::KeyBindRow);
     change.rect = rectFor ? rectFor(page.size()) : UiRect{};
     // 按钮上写的是**键名**，不是"动作: 按键"。装饰（冲突的 `[ … ]`、捕获中的 `> … <`）
-    // 由上下文的 keyBindLabelFor 给出——它读的是 InputSystem 这个唯一来源。
-    change.label = ctx.keyBindLabelFor ? ctx.keyBindLabelFor(action) : std::string{};
+    // 与动作名一起由 keyBindLabelsFor 给出——它读的是 InputSystem 这个唯一来源。
+    change.label = std::move(labels.key);
     change.onActivate = std::move(onActivate);
     page.push_back(std::move(change));
 }

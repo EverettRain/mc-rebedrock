@@ -221,6 +221,23 @@ UiRect controlsListBox(const HudLayout& layout, float framebufferWidth) {
             toFb(layout, height)};
 }
 
+UiRect menuWidgetRect(PageId page, std::size_t widgetIndex, const HudLayout& layout,
+                      float framebufferWidth, std::size_t buttonCount,
+                      std::size_t keyBindRowCount) {
+    if (page == PageId::Controls) {
+        // 前 `行数 × 每行控件数` 个序号落在滚动列表里，其余是底部按钮带。
+        const std::size_t keyWidgets = keyBindRowCount * kKeyBindWidgetsPerRow;
+        if (widgetIndex < keyWidgets) {
+            const std::size_t row = widgetIndex / kKeyBindWidgetsPerRow;
+            return widgetIndex % kKeyBindWidgetsPerRow == 0U
+                       ? controlsNameCell(row, layout, framebufferWidth)
+                       : controlsChangeCell(row, layout, framebufferWidth);
+        }
+        return frontendButtonRect(layout, page, widgetIndex - keyWidgets, buttonCount);
+    }
+    return frontendButtonRect(layout, page, widgetIndex, buttonCount);
+}
+
 UiRect controlsRow(std::size_t visibleIndex, const HudLayout& layout, float framebufferWidth) {
     // UI-4：行宽从自造的 300 改成 26.1 的 **340**（`KeyBindsList:59`）。
     // UI-6b：行高不再被压成 11——它就是列表的行高 20，因为一行里要装两个 20 高的按钮。

@@ -19,27 +19,18 @@ using namespace mc;
 
 namespace {
 
-// Mirror the renderer's menuRectProvider: on Controls the first `keyRows` rows are
-// scrolling list rows, the rest are bottom buttons; every other page's widgets are
-// all frontend buttons. Building this for real (not a stub) is what exercises the
-// layout capacity that threw.
+// ★ 不再镜像渲染器的 rect provider —— 直接调**生产**函数 `ui::menuWidgetRect`。
 //
-// UI-6b: a bind row is now TWO widgets (name Label + change Button), so the list
-// occupies `keyRows * kKeyBindWidgetsPerRow` indices and the bottom band starts
-// that much later. Doubling the widget count is exactly the kind of change PX-6
-// Bug1 was: this test is what stops it from throwing past the menu cap unnoticed.
+// 从前这里抄了一份渲染器 lambda 的等价物。UI-6b 把按键绑定行拆成两个控件时，
+// 渲染器那边**有两份**同样的 lambda（绘制侧 buildDrawPage、输入侧 menuRectProvider），
+// 只改了一份；这份抄本跟着改的是绘制侧，于是测试全绿而点 Controls 底部任何一个按钮
+// 都会抛 `menu button index or count is invalid` 并闪退。
+//
+// 教训：**镜像不是覆盖**。测试要调被测的那个函数，不是它的另一份写法。
 ui::RectProvider providerFor(ui::PageId page, const ui::HudLayout& layout, float fbWidth,
                              std::size_t count, std::size_t keyRows) {
-    const std::size_t keyWidgets = keyRows * ui::kKeyBindWidgetsPerRow;
-    return [layout, page, fbWidth, count, keyWidgets](std::size_t index) {
-        if (page == ui::PageId::Controls && index < keyWidgets) {
-            const std::size_t row = index / ui::kKeyBindWidgetsPerRow;
-            return index % ui::kKeyBindWidgetsPerRow == 0U
-                       ? ui::controlsNameCell(row, layout, fbWidth)
-                       : ui::controlsChangeCell(row, layout, fbWidth);
-        }
-        const std::size_t buttonIndex = page == ui::PageId::Controls ? index - keyWidgets : index;
-        return ui::frontendButtonRect(layout, page, buttonIndex, count);
+    return [layout, page, fbWidth, count, keyRows](std::size_t index) {
+        return ui::menuWidgetRect(page, index, layout, fbWidth, count, keyRows);
     };
 }
 
@@ -50,8 +41,9 @@ void buildAndLayoutPage(ui::PageId page, bool worldOpen, float fbW, float fbH, i
     ui::MenuBuildContext ctx;
     ctx.worldOpen = worldOpen;
     ctx.worldSelectable = true;
-    ctx.keyBindLabelFor = [](input::InputAction a) {
-        return std::string{input::actionDisplayName(a)};
+    ctx.keyBindLabelsFor = [](input::InputAction a) {
+        return ui::MenuBuildContext::KeyBindRowLabels{
+            std::string{input::actionDisplayName(a)}, {}};
     };
     std::size_t keyRows = 0U;
     if (page == ui::PageId::Controls) {
@@ -77,6 +69,63 @@ void buildAndLayoutPage(ui::PageId page, bool worldOpen, float fbW, float fbH, i
         }
         // buildPage stored the same rect on the widget.
         assert(built[i].rect.width == rect.width);
+    }
+}
+
+// 每一页装配出的**按钮**数必须与 menuButtonCount 说的一致。
+//
+// 不一致就会在 frontendButtonRect 里抛 out_of_range 并闪退——那正是 Controls 底部
+// 四个按钮遇到的事（列表后半段的序号被当成按钮序号）。这一条把它推广到每一页：
+// 任何一页只要多装配一个按钮、或者 menuButtonCount 少算一个，这里就红。
+void testEveryPageButtonBudget() {
+    const ui::PageId pages[] = {
+        ui::PageId::Title,     ui::PageId::WorldList,     ui::PageId::CreateWorld,
+        ui::PageId::EditWorld, ui::PageId::ConfirmDelete, ui::PageId::Options,
+        ui::PageId::VideoSettings, ui::PageId::Controls,  ui::PageId::Language,
+        ui::PageId::Experimental,  ui::PageId::Pause,     ui::PageId::Death,
+    };
+    for (const bool worldOpen : {false, true}) {
+        for (const ui::PageId page : pages) {
+            const float fbW = 1280.0F;
+            const float fbH = 720.0F;
+            const int scale = 3;
+            const ui::HudLayout layout{fbW, fbH, scale};
+            const std::size_t count = ui::menuButtonCount(page, worldOpen);
+
+            ui::MenuBuildContext ctx;
+            ctx.worldOpen = worldOpen;
+            ctx.worldSelectable = true;
+            ctx.keyBindLabelsFor = [](input::InputAction a) {
+                return ui::MenuBuildContext::KeyBindRowLabels{
+                    std::string{input::actionDisplayName(a)}, {}};
+            };
+            std::size_t keyRows = 0U;
+            if (page == ui::PageId::Controls) {
+                keyRows = std::min(
+                    ui::controlsVisibleRowCount(fbW, fbH, scale, /*forceUnicode=*/false),
+                    input::keyBindRows().size());
+                ctx.keyBindFirstIndex = 0U;
+                ctx.keyBindRowCount = keyRows;
+            }
+            ui::MenuCallbacks cb;
+            const ui::Page built = ui::buildPage(
+                page, ctx, cb, providerFor(page, layout, fbW, count, keyRows));
+
+            // 列表控件之外的每一个控件都要落在按钮预算里。
+            const std::size_t keyWidgets = keyRows * ui::kKeyBindWidgetsPerRow;
+            const std::size_t buttons = built.size() - keyWidgets;
+            assert(built.size() >= keyWidgets);
+            assert(buttons <= count);
+            // 而且**每一个**序号都要解得出矩形，不抛。这是闪退的直接复现条件：
+            // 输入侧解第 keyWidgets 个序号时越界。
+            for (std::size_t i = 0; i < built.size(); ++i) {
+                const ui::UiRect rect =
+                    ui::menuWidgetRect(page, i, layout, fbW, count, keyRows);
+                if (built[i].interactive()) {
+                    assert(rect.width > 0.0F && rect.height > 0.0F);
+                }
+            }
+        }
     }
 }
 
@@ -125,8 +174,9 @@ void testControlsListWindowed() {
     ui::MenuBuildContext ctx;
     ctx.keyBindFirstIndex = 0U;
     ctx.keyBindRowCount = std::min(window, input::keyBindRows().size());
-    ctx.keyBindLabelFor = [](input::InputAction a) {
-        return std::string{input::actionDisplayName(a)};
+    ctx.keyBindLabelsFor = [](input::InputAction a) {
+        return ui::MenuBuildContext::KeyBindRowLabels{
+            std::string{input::actionDisplayName(a)}, {}};
     };
     ui::MenuCallbacks cb;
     const ui::HudLayout layout{fbW, fbH, scale};
@@ -191,8 +241,9 @@ void testControlsRowsInMiddleBandAndScroll() {
     ui::MenuBuildContext ctx0;
     ctx0.keyBindFirstIndex = 0U;
     ctx0.keyBindRowCount = window;
-    ctx0.keyBindLabelFor = [](input::InputAction a) {
-        return std::string{input::actionDisplayName(a)};
+    ctx0.keyBindLabelsFor = [](input::InputAction a) {
+        return ui::MenuBuildContext::KeyBindRowLabels{
+            std::string{input::actionDisplayName(a)}, {}};
     };
     ui::MenuBuildContext ctx1 = ctx0;
     ctx1.keyBindFirstIndex = 1U;
@@ -227,6 +278,7 @@ void testControlsRowsInMiddleBandAndScroll() {
 
 int main() {
     testEveryPageLaysOut();
+    testEveryPageButtonBudget();
     testControlsBottomBandBounded();
     testControlsListWindowed();
     testControlsRowsInMiddleBandAndScroll();
