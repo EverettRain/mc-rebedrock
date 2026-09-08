@@ -6,6 +6,7 @@
 #include "gameplay/ScreenHandler.hpp"
 #include "render/BlockOutlineGeometry.hpp"
 #include "ui/HudLayout.hpp"
+#include "ui/ScreenBackground.hpp"
 #include "world/ItemModel.hpp"
 
 #include <array>
@@ -27,7 +28,11 @@ inline constexpr float kGuiAtlasSize = 256.0F;
 // 9 是 gui/menu_background.png（26.1 的二级菜单遮罩，按 32px 平铺）
 inline constexpr float kMenuBackgroundGuiLayer = 9.0F;
 inline constexpr float kVignetteGuiLayer = 11.0F;
-inline constexpr float kScreenDimGuiLayer = 12.0F;
+// UI-5：12 从前是烘好的 Screen.renderBackground 灰渐变。那条渐变现在由渐变管线画
+// （GradientPush / ui::kTransparentBackgroundStops），烘图没有消费者了，这一格
+// 让给 gui/inworld_menu_background.png——有世界时铺的是它，不是 menu_background。
+// 就地替换而不是删格：层号是写死的常量，删一格会把后面每一层都推错一位。
+inline constexpr float kInworldMenuBackgroundGuiLayer = 12.0F;
 inline constexpr float kMenuListBackgroundGuiLayer = 13.0F;
 // ENCH-2: gui/container/enchanting_table.png, with the level numerals and the
 // three option-bar states packed into the space its 176x166 panel leaves. The
@@ -57,6 +62,17 @@ inline constexpr float kTooltipGuiLayer = 16.0F;
 // 26.1 里它是 1x1、alpha 恒 0 的全透明图（本地 26.1 资源包已解码确认，同包 vignette 仍
 // 256x256、panorama_0 仍 1024x1024，所以不是转换压尺寸的产物），因此用原版资源时是零效果。
 inline constexpr float kPanoramaOverlayGuiLayer = 17.0F;
+// UI-5：gui/inworld_menu_list_background.png，滚动列表在**有世界**时的底衬
+// （`AbstractSelectionList:226`）。同样按 32 逻辑像素平铺。
+inline constexpr float kInworldMenuListBackgroundGuiLayer = 18.0F;
+// UI-5 / D9：四张 32x2 的列表分隔纹理竖着叠在同一层里，各已横向平铺满 256。
+// ★ 26.1 画的是分隔线，不是 4px 渐隐带——见 ui/ScrollList.hpp 顶上那段更正。
+inline constexpr float kListSeparatorGuiLayer = 19.0F;
+inline constexpr int kHeaderSeparatorSpriteY = 0;
+inline constexpr int kFooterSeparatorSpriteY = 2;
+inline constexpr int kInworldHeaderSeparatorSpriteY = 4;
+inline constexpr int kInworldFooterSeparatorSpriteY = 6;
+inline constexpr int kListSeparatorSpriteHeight = 2;
 
 // UI-2：标题美术在它那张原生分辨率数组里的归一化子矩形，{u, v, 宽, 高}。
 // 由 TextureManager::createTitleTexture() 填充，HudRenderer 绑一个 const 引用照着画。
@@ -84,11 +100,42 @@ struct TitleBackgroundLayer final {
     bool tiled = false;
 };
 
-[[nodiscard]] constexpr TitleBackgroundLayer titleBackgroundLayer(bool blurred) {
-    return blurred ? TitleBackgroundLayer{kMenuBackgroundGuiLayer, {1.0F, 1.0F, 1.0F, 1.0F}, true}
-                   : TitleBackgroundLayer{kPanoramaOverlayGuiLayer,
-                                          {1.0F, 1.0F, 1.0F, 1.0F},
-                                          false};
+// UI-5：档位决定铺哪一张。从前的参数是一个 `bool blurred`，那时只有两档；
+// 26.1 的第三档是"有世界"——它铺 inworld_menu_background 而不是 menu_background
+// （`Screen.extractMenuBackground():450`）。
+//
+// ★ 26.1 原版这两张的像素恰好完全一样（都是纯 rgba(0,0,0,64)），所以用原版资源时
+//   这一档分不分看不出区别。分它的理由是 26.1 的代码真按 `level == null` 选两个
+//   不同的资源 id——资源包可以把它们做成两样。
+//
+// 渐变两档（容器、死亡屏）不铺任何遮罩，调用方按 backgroundTilesMenuTexture 判断，
+// 不该走到这里；真走到了返回全透明的 panorama_overlay，也就是不画。
+[[nodiscard]] constexpr TitleBackgroundLayer titleBackgroundLayer(ui::ScreenBackgroundKind kind) {
+    switch (kind) {
+    case ui::ScreenBackgroundKind::PanoramaBlur:
+        return TitleBackgroundLayer{kMenuBackgroundGuiLayer, {1.0F, 1.0F, 1.0F, 1.0F}, true};
+    case ui::ScreenBackgroundKind::InWorldBlur:
+        return TitleBackgroundLayer{kInworldMenuBackgroundGuiLayer, {1.0F, 1.0F, 1.0F, 1.0F}, true};
+    case ui::ScreenBackgroundKind::PanoramaClear:
+    case ui::ScreenBackgroundKind::Transparent:
+    case ui::ScreenBackgroundKind::RedGradient:
+        break;
+    }
+    return TitleBackgroundLayer{kPanoramaOverlayGuiLayer, {1.0F, 1.0F, 1.0F, 1.0F}, false};
+}
+
+// 滚动列表的底衬与两道分隔线，同样按"有没有世界"取 inworld 那一套
+// （`AbstractSelectionList:219-227`）。
+[[nodiscard]] constexpr float menuListBackgroundLayer(bool worldOpen) {
+    return worldOpen ? kInworldMenuListBackgroundGuiLayer : kMenuListBackgroundGuiLayer;
+}
+
+[[nodiscard]] constexpr int headerSeparatorSpriteY(bool worldOpen) {
+    return worldOpen ? kInworldHeaderSeparatorSpriteY : kHeaderSeparatorSpriteY;
+}
+
+[[nodiscard]] constexpr int footerSeparatorSpriteY(bool worldOpen) {
+    return worldOpen ? kInworldFooterSeparatorSpriteY : kFooterSeparatorSpriteY;
 }
 // 标题界面的六张全景面，拼成 logo 背后的那个世界；标题轮播把它们当幻灯片循环
 // 也是 TextureManager 上传全景数组层时的层数（此前两处各写一份，ENCH-2 并到这里）
@@ -134,6 +181,11 @@ struct HudPush final {
     // the block icon, which carries per-corner UVs instead.
     glm::vec4 uvRect;
     // x = draw mode (the kHudMode* constants), y = atlas layer. Every mode.
+    // UI-4: z = rotation in radians about the quad's own origin, w = the
+    // framebuffer aspect that makes that rotation isotropic in pixels. Only the
+    // rotated-text path (26.1's splash) sets them; every other mode leaves them
+    // zero, exactly as it leaves iconBoxMin zero. They are new meanings for
+    // components that never had one — NOT a reinterpretation of `data.x`/`data.y`.
     glm::vec4 data;
     // The block icon draws ONE face of ONE box of the block's item model per
     // call. These four carry that box and that face; every other mode leaves them
@@ -179,11 +231,46 @@ static_assert(sizeof(HudPush) == 128U, "HUD push constants must fit Vulkan's gua
     return push;
 }
 
+// UI-5：一条竖直渐变矩形的推送常量（26.1 的 `GuiGraphicsExtractor.fillGradient`）。
+//
+// 它**不是** HudPush 的一个绘制模式，而是自己的管线与自己的块。理由是硬约束：
+// 渐变要两个颜色，而 HudPush 已经正好 128 字节，一个自由分量都不剩；唯一的塞法
+// 是让某个字段在这个模式下改变含义，那正是上面那条铁律禁止的事。
+//
+// 声明它的有三处：这里、gradient.vert、gradient.frag，由 hud_push_constant_test 一起钉住。
+struct GradientPush final {
+    // 裁剪空间矩形：原点 xy，尺寸 zw。
+    glm::vec4 rect;
+    // 上缘颜色（rect.y 那条边）与下缘颜色（rect.y + rect.w 那条边），RGBA 编码值。
+    glm::vec4 topColor;
+    glm::vec4 bottomColor;
+};
+
+static_assert(sizeof(GradientPush) == 48U, "gradient push constants must match the shader block");
+
+// 把 ui::GradientStops 的两个 ARGB 色标变成一次绘制。
+//
+// 住在无 Vulkan 的头文件里是为了**可测**：调用点在 HudRenderer 那个翻译单元里，
+// 没有测试链接它。分量顺序错位（ARGB 读成 RGBA）会把死亡屏的暗红变成暗青，
+// 而"暗红"和"暗青"在一张缩略图上都只是"暗"。
+[[nodiscard]] inline GradientPush makeGradientPush(const ui::UiRect& clip,
+                                                   const ui::GradientStops& stops) {
+    const auto top = ui::unpackArgb(stops.top);
+    const auto bottom = ui::unpackArgb(stops.bottom);
+    return GradientPush{
+        {clip.x, clip.y, clip.width, clip.height},
+        {top.r, top.g, top.b, top.a},
+        {bottom.r, bottom.g, bottom.b, bottom.a},
+    };
+}
+
 // 标题全景立方体：x = 偏航、y = 俯仰（弧度）、z = tan(fov/2)、w = 宽高比
-// blur.x 是只作用于背景的模糊半径，单位为帧缓冲像素（26.1 默认 5），其余分量保留
+//
+// UI-5 删掉了第二个 vec4（那是只作用于全景的模糊半径）。模糊现在是一趟整帧后处理
+// （MenuBlur），全景不再知道它的存在——从前那个 5x5 盒式近似只能糊全景自己，
+// 于是有世界的界面（暂停、背包外的选项）背后永远是清晰的世界。
 struct PanoramaPush final {
     glm::vec4 rotationFov;
-    glm::vec4 blur;
 };
 
 struct ItemPush final {

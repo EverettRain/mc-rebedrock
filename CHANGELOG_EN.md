@@ -7,6 +7,28 @@ simple versioned history while it is in beta.
 
 ## ReBedrock 26.1beta1
 
+### Added
+- The pause menu, and any settings screen opened from inside a world, now blur the world behind
+  them the way Minecraft does. Until now only the main menu's rotating scenery was ever blurred;
+  opening a menu in-game merely dimmed the world, which stayed perfectly sharp. The strength is
+  adjustable in the options file via `gui.menuBackgroundBlurriness` (0 to 10, default 5, 0 = off).
+- The language, key-binds and world lists now sit on Minecraft's dark list backing, with the
+  two thin separator lines above and below them; the key-binds list had no backing at all before.
+- The main menu now has its slanted yellow splash line, and the language and accessibility
+  buttons finally carry the icons they were drawn to hold.
+- Menus can be driven from the keyboard: Tab and Shift+Tab move between buttons, Enter or Space
+  presses the one you are on, and that button lights up the way it does under the mouse.
+  Greyed-out buttons are skipped.
+- Shift-clicking a cycling option now steps backwards through its values instead of forwards.
+
+### Changed
+- The main menu no longer shows Mojang's copyright line in its bottom-right corner. ReBedrock is an
+  independent reimplementation; that line is about Minecraft's own code and assets and does not
+  apply here. It now carries a short notice of this project's own.
+- Leaving a world no longer flashes "World saved" in the bottom-left corner. It only ever appeared
+  on the way out, and then stayed on the main menu you had just returned to until the next world
+  was opened. The outcome still goes to the log, and a failed save still tells you on screen.
+
 ### Fixed
 - Daylight reaches under a slab roof again. A slab was treated as blocking light
   as completely as a full block, so anything roofed with slabs -- a stairwell, a
@@ -15,6 +37,24 @@ simple versioned history while it is in beta.
   enchanting table and an anvil. Stairs were already right. Placing or breaking
   one of these now relights the space around it correctly too, not only worlds
   loaded fresh.
+- The red wash on the death screen is no longer one flat shade: it is Minecraft's gradient, lighter
+  at the top and heavier at the bottom, instead of the single tone that split the difference.
+- Text in almost every language other than English was broken: accented letters (é ü ñ č ř ś…),
+  Greek, Cyrillic, Hebrew and Armenian — roughly two thousand two hundred characters — came out
+  recognisable but wrong, with stray strokes hanging above them. The two font sheets those
+  characters live on (128×536 and 144×900) were being squeezed into a single 256×256 layer, which
+  crushed each eight-pixel-tall character down to three rows and pulled in the bottom row of the
+  character above. The ASCII sheet happens to be 128×128, so it scaled up cleanly by two and
+  English looked fine — which is why this went unnoticed. Those sheets are now laid into as many
+  layers as they need, at their own resolution, with no scaling at all.
+- The note under the language list no longer reads `100%% accurate`. Minecraft's language files
+  write a literal percent sign as two of them; this was printing the raw text.
+- The scrollbars on the language and key-binding lists are Minecraft's again. They used to be a
+  hand-drawn ten-pixel light grey block floating over on the right of the screen; they are now the
+  six-pixel scrollbar texture from the resource pack, sitting just right of the list's own rows,
+  with a thumb that sizes itself to the content and keeps vanilla's minimum height. The selected
+  row now has a highlight box around it - picking a language used to give no visual feedback at
+  all. Key-binding rows widened and world-list rows narrowed to vanilla's widths.
 - The interface sat one pixel off at some window sizes. Menus, the hotbar, the inventory and
   container panels were all centred on "half the window in pixels", where Minecraft first turns
   the window into a whole-numbered interface canvas, centres on that with integer division, and

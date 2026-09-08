@@ -95,6 +95,26 @@ class MenuSystem final {
     bool viewDistanceSliderDragging = false;
     bool simulationDistanceSliderDragging = false;
     bool masterVolumeSliderDragging = false;
+    // UI-4 / GUI spec §1.4：键盘焦点的控件下标，npos 表示没有焦点。
+    // 焦点是**屏幕状态**不是控件状态，所以住在这里而不是 Widget 里——页面每帧重建，
+    // 把焦点存进控件会在重建时丢掉。
+    //
+    // 焦点跟着页面走：换页即失效。只记下标而不记页面，翻页后那个下标会指向新页面上
+    // 完全不相干的一个控件，而且**不会有任何东西报错**——按 Enter 就触发了别的动作。
+    std::size_t focusedWidget = static_cast<std::size_t>(-1);
+    PageId focusedPage = PageId::Title;
+
+    [[nodiscard]] std::size_t focusFor(PageId page) const {
+        return page == focusedPage ? focusedWidget : static_cast<std::size_t>(-1);
+    }
+    void setFocus(PageId page, std::size_t index) {
+        focusedPage = page;
+        focusedWidget = index;
+    }
+    // UI-4：主菜单的 splash。候选行在启动时从资源包读一次；`splashLine` 是这一次进入
+    // 标题屏抽中的那行——每次回到标题屏重抽，与 vanilla 一致。
+    std::vector<std::string> splashLines;
+    std::string splashLine;
     int guiScaleSetting = 0;
     // UI-3：强制 Unicode 字体也参与 GUI 缩放的求解——26.1 `Window.calculateScale` 在
     // 打开它时把档位抬到偶数（unicode 字形按半尺寸绘制，奇数档会让半像素落不到整数纹素上）。

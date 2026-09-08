@@ -7,7 +7,6 @@ layout(binding = 5) uniform sampler2DArray panoramaTextures;
 
 layout(push_constant) uniform PanoramaPush {
     vec4 rotationFov; // x = yaw, y = pitch (radians), z = tan(fov/2), w = aspect
-    vec4 blur;        // x = background blur radius in framebuffer pixels
 } pano;
 
 const float PI = 3.14159265358979323846;
@@ -66,25 +65,11 @@ vec4 samplePanorama(vec3 ray) {
 }
 
 void main() {
-    vec4 texel;
-    if (pano.blur.x < 0.5) {
-        texel = samplePanorama(normalize(viewRay));
-    } else {
-        // Java 26.1 applies a separable box-blur post effect before drawing the
-        // menu stratum. This panorama is already isolated from the sharp GUI,
-        // so sample the same radius directly in view-ray space: derivatives
-        // express exactly one framebuffer pixel and the 5x5 bilinear kernel
-        // approximates the two-pass result without an extra render target.
-        vec3 pixelX = dFdx(viewRay) * (pano.blur.x * 0.5);
-        vec3 pixelY = dFdy(viewRay) * (pano.blur.x * 0.5);
-        texel = vec4(0.0);
-        for (int y = -2; y <= 2; ++y) {
-            for (int x = -2; x <= 2; ++x) {
-                vec3 ray = viewRay + pixelX * float(x) + pixelY * float(y);
-                texel += samplePanorama(normalize(ray));
-            }
-        }
-        texel *= 1.0 / 25.0;
-    }
-    outColor = vec4(texel.rgb, 1.0);
+    // UI-5：这里不再有模糊分支。
+    //
+    // 从前它是一个 5x5 的盒式近似，直接在视线方向上偏移采样：只能糊全景自己，
+    // 糊不了世界，于是暂停菜单背后的世界一直是清晰的——而 26.1 的模糊是一趟
+    // **整帧后处理**（blur.json 的三对 H/V box_blur），对全景和世界一视同仁。
+    // 那趟现在真的存在了（MenuBlur），全景因此回到"就是画全景"。
+    outColor = vec4(samplePanorama(normalize(viewRay)).rgb, 1.0);
 }

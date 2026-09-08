@@ -60,6 +60,8 @@ void GameOptions::sanitize() {
     windowWidth = std::clamp(windowWidth, 640, 7680);
     windowHeight = std::clamp(windowHeight, 480, 4320);
     guiScale = std::clamp(guiScale, 0, 12);
+    // 26.1 `OptionInstance.IntRange(0, 10)`；上界同 GameRenderer.MAX_BLUR_RADIUS
+    menuBackgroundBlurriness = std::clamp(menuBackgroundBlurriness, 0, 10);
     viewDistance = std::clamp(viewDistance, 2, 36);
     simulationDistance = std::clamp(simulationDistance, 2, 12);
     if (frameRateLimit != 0) frameRateLimit = std::clamp(frameRateLimit, 30, 260);
@@ -155,6 +157,8 @@ GameOptions GameOptions::load(const std::filesystem::path& path) {
             if (!value.empty()) {
                 options.language = std::string{value};
             }
+        } else if (key == "gui.menuBackgroundBlurriness") {
+            static_cast<void>(parseNumber(value, options.menuBackgroundBlurriness));
         } else if (key == "text.forceUnicodeFont") {
             options.forceUnicodeFont = value == "true" || value == "1" || value == "on";
         } else if (key == "experimental.rainMode") {
@@ -186,6 +190,7 @@ void GameOptions::save(const std::filesystem::path& path) const {
            << "window.height=" << sanitized.windowHeight << '\n'
            << "window.maximized=" << (sanitized.windowMaximized ? "true" : "false") << '\n'
            << "gui.scale=" << sanitized.guiScale << '\n'
+           << "gui.menuBackgroundBlurriness=" << sanitized.menuBackgroundBlurriness << '\n'
            << "render.distance=" << sanitized.viewDistance << '\n'
            << "render.simulationDistance=" << sanitized.simulationDistance << '\n'
            << "render.fpsLimit=" << sanitized.frameRateLimit << '\n'

@@ -451,6 +451,7 @@ add_executable(mc_rebedrock
     src/render/vulkan/TextureManager.cpp
     src/render/vulkan/BlockAtlasBaker.cpp
     src/render/vulkan/GpuSceneBuffer.cpp
+    src/render/vulkan/MenuBlur.cpp
     src/render/vulkan/OffscreenTarget.cpp
     src/render/vulkan/SceneReadback.cpp
     src/ui/MenuGeometry.cpp
@@ -640,6 +641,10 @@ if(MC_REBEDROCK_STAGE_RUNTIME AND GLSLC_EXECUTABLE)
         sky.frag
         hud.vert
         hud.frag
+        gradient.vert
+        gradient.frag
+        menu_blur.vert
+        menu_blur.frag
         panorama.vert
         panorama.frag
         item_entity.vert
@@ -792,11 +797,6 @@ if(BUILD_TESTING)
     )
     add_test(NAME world_generation COMMAND mc_rebedrock_world_generation_test)
 
-    # RN-8f：光照的不透明度是它自己的一根轴，不是渲染分桶。台阶在 Opaque 桶里但不填满
-    # 格子，26.1 因此给它 0 衰减；本作从分桶推导，给了 15，台阶屋顶下面一片死黑。
-    # 描述符集重建时必须写全布局声明的每一个绑定。改语言/切字体/改各向异性都会销毁
-    # 描述符池；漏写的那个绑定此后就是未写入的，采样它是未定义行为——现场表现为
-    # 开着太阳阴影时整个阴影范围全黑，时有时无，关掉校验层时一声不吭。
     # 离屏预览出的网格必须与玩家真正看到的那份逐字节相同。三参数的 buildSection 会
     # 自己重算一份光照（且仍按渲染分桶判不透光），把 initializeChunks 刚算好的扔掉。
     add_executable(mc_rebedrock_preview_mesh_lighting_test
@@ -806,12 +806,17 @@ if(BUILD_TESTING)
         "MC_REBEDROCK_RENDERER_SRC=\"${CMAKE_CURRENT_SOURCE_DIR}/src/render/vulkan/VulkanRenderer.cpp\"")
     add_test(NAME preview_mesh_lighting COMMAND mc_rebedrock_preview_mesh_lighting_test)
 
+    # 描述符集重建时必须写全布局声明的每一个绑定。改语言/切字体/改各向异性都会销毁
+    # 描述符池；漏写的那个绑定此后就是未写入的，采样它是未定义行为——现场表现为
+    # 开着太阳阴影时整个阴影范围全黑，时有时无，关掉校验层时一声不吭。
     add_executable(mc_rebedrock_descriptor_bindings_test
         tests/descriptor_bindings_test.cpp)
     target_compile_definitions(mc_rebedrock_descriptor_bindings_test PRIVATE
         "MC_REBEDROCK_RENDERER_SRC=\"${CMAKE_CURRENT_SOURCE_DIR}/src/render/vulkan/VulkanRenderer.cpp\"")
     add_test(NAME descriptor_bindings COMMAND mc_rebedrock_descriptor_bindings_test)
 
+    # RN-8f：光照的不透明度是它自己的一根轴，不是渲染分桶。台阶在 Opaque 桶里但不填满
+    # 格子，26.1 因此给它 0 衰减；本作从分桶推导，给了 15，台阶屋顶下面一片死黑。
     add_executable(mc_rebedrock_light_opacity_axis_test
         tests/light_opacity_axis_test.cpp)
     target_link_libraries(mc_rebedrock_light_opacity_axis_test PRIVATE mc_rebedrock_runtime)
@@ -1784,7 +1789,8 @@ if(BUILD_TESTING)
         "${glm_SOURCE_DIR}"
     )
     target_compile_definitions(mc_rebedrock_title_background_test PRIVATE
-        MC_REBEDROCK_HUD_RENDERER_SRC="${CMAKE_CURRENT_SOURCE_DIR}/src/render/vulkan/HudRenderer.hpp")
+        MC_REBEDROCK_HUD_RENDERER_SRC="${CMAKE_CURRENT_SOURCE_DIR}/src/render/vulkan/HudRenderer.hpp"
+        MC_REBEDROCK_REBEDROCK_LANG_EN="${CMAKE_CURRENT_SOURCE_DIR}/resources/lang/rebedrock/en_us.json")
     add_test(NAME title_background COMMAND mc_rebedrock_title_background_test)
 
     # UI-3：版面跑在逻辑画布的整数网格上。断言手算的字面量，外加一条"每个矩形都落在
@@ -1809,6 +1815,46 @@ if(BUILD_TESTING)
     target_include_directories(mc_rebedrock_text_metrics_test PRIVATE src)
     target_link_libraries(mc_rebedrock_text_metrics_test PRIVATE glm::glm)
     add_test(NAME text_metrics COMMAND mc_rebedrock_text_metrics_test)
+
+    # UI-4：滚动列表的几何（spec §2.7 / §5 的 L3）。三张列表此前各写各的，
+    # 这里断言的是从 26.1 源码查来的行宽与滚动条公式。
+    add_executable(mc_rebedrock_scroll_list_test
+        tests/scroll_list_test.cpp
+        src/ui/MenuGeometry.cpp
+        src/ui/TitleScreenLayout.cpp
+        src/ui/HudLayout.cpp
+    )
+    target_include_directories(mc_rebedrock_scroll_list_test PRIVATE src)
+    target_link_libraries(mc_rebedrock_scroll_list_test PRIVATE glm::glm)
+    add_test(NAME scroll_list COMMAND mc_rebedrock_scroll_list_test)
+
+    # UI-5：背景档位表与渐变色标（spec §3）。三分支（容器类的灰渐变不模糊）、
+    # 死亡屏第二色标 0xA0803030、模糊整数档 0..10 默认 5——三条都退回去也不会崩。
+    add_executable(mc_rebedrock_screen_background_test
+        tests/screen_background_test.cpp
+        src/ui/PageStack.cpp
+    )
+    target_include_directories(mc_rebedrock_screen_background_test PRIVATE src)
+    # 模糊采样器的过滤模式是一个 VkSamplerCreateInfo 字段，住在一个测试链接不到的
+    # 翻译单元里；护栏因此读源码（同 title_background_test）。
+    target_compile_definitions(mc_rebedrock_screen_background_test PRIVATE
+        MC_REBEDROCK_MENU_BLUR_SRC="${CMAKE_CURRENT_SOURCE_DIR}/src/render/vulkan/MenuBlur.cpp")
+    add_test(NAME screen_background COMMAND mc_rebedrock_screen_background_test)
+
+    # UI-4：主菜单 splash 的选行与脉动缩放（26.1 SplashRenderer 的公式）。
+    add_executable(mc_rebedrock_splash_text_test
+        tests/splash_text_test.cpp
+    )
+    target_include_directories(mc_rebedrock_splash_text_test PRIVATE src)
+    add_test(NAME splash_text COMMAND mc_rebedrock_splash_text_test)
+
+    # D4：位图字体 provider 铺进 256x256 层数组的算术。修复前整张图被重采样进一层，
+    # 128x536 的表因此被纵向压到每格 3 行——约 2247 个码点渲染错误，而 ASCII 完好。
+    add_executable(mc_rebedrock_bitmap_font_atlas_test
+        tests/bitmap_font_atlas_test.cpp
+    )
+    target_include_directories(mc_rebedrock_bitmap_font_atlas_test PRIVATE src)
+    add_test(NAME bitmap_font_atlas COMMAND mc_rebedrock_bitmap_font_atlas_test)
 
     add_executable(mc_rebedrock_texture_animation_test
         tests/texture_animation_test.cpp

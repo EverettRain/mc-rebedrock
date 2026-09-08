@@ -7,6 +7,7 @@
 #include "render/vulkan/BlockAtlasLayout.hpp"
 #include "render/vulkan/HudRenderer.hpp"
 #include "render/vulkan/HudTypes.hpp"
+#include "render/vulkan/MenuBlur.hpp"
 #include "render/vulkan/WorldRenderTypes.hpp"
 #include "render/vulkan/VulkanResources.hpp"
 #include "render/vulkan/GpuSceneBuffer.hpp"
@@ -162,6 +163,8 @@ class WorldRenderer final {
     // GUI 那趟的帧缓冲（场景图的 UNORM 视图 + 它自己的深度），以及把画完的场景图
     // 逐字节 copy 进交换链图像的那一步——图像的所有权在 VulkanRenderer，这里只调用
     std::vector<VkFramebuffer>& guiFramebuffers;
+    // UI-5：全景那一趟 + 六趟整帧模糊，跑在世界与界面之间
+    MenuBlur& menuBlur;
     std::function<void(VkCommandBuffer, std::uint32_t)> copySceneToSwapchain;
     std::array<FrameContext, kFramesInFlight>& frames;
     std::size_t& currentFrame;
@@ -223,7 +226,8 @@ class WorldRenderer final {
         rainMode_(b.rainMode_),
         rainTime_(b.rainTime_), language(b.language),
         swapchainExtent(b.swapchainExtent), framebuffers(b.framebuffers),
-          guiFramebuffers(b.guiFramebuffers), copySceneToSwapchain(b.copySceneToSwapchain),
+          guiFramebuffers(b.guiFramebuffers), menuBlur(b.menuBlur),
+          copySceneToSwapchain(b.copySceneToSwapchain),
           frames(b.frames),
         currentFrame(b.currentFrame), peakPendingSectionCount(b.peakPendingSectionCount),
         smoothedFrameSeconds_(b.smoothedFrameSeconds_),
@@ -2299,6 +2303,14 @@ class WorldRenderer final {
         args.self->recordWorld(*args.frame);
     }
 
+    static void graphMenuBackgroundStep(VkCommandBuffer commandBuffer,
+                                        const graph::PassContext& context) {
+        static_cast<void>(commandBuffer);
+        auto& args = *static_cast<GraphPassArgs*>(context.user);
+        const diag::ScopedAccumulate bodyTimer{args.self->graphBodyMs_};
+        args.self->recordMenuBackground(*args.frame, context.imageIndex);
+    }
+
     static void graphGuiStep(VkCommandBuffer commandBuffer, const graph::PassContext& context) {
         static_cast<void>(commandBuffer);
         auto& args = *static_cast<GraphPassArgs*>(context.user);
@@ -2654,6 +2666,35 @@ class WorldRenderer final {
     // 必须 UNORM、着色器里不许出现传输函数」那条铁律的另一半。两趟拆分的真实理由是
     // 上面第二段说的那个：**界面不做 MSAA，且界面自带每帧清空的深度**。
     // 不要把「补一个 sRGB 视图」当成欠账去做——那是回归。详见 sceneUnormFormat 的注释。
+    // UI-5：全景 + 整帧模糊，跑在世界那趟与界面那趟之间。
+    //
+    // 这正是 26.1 的 BEFORE_BLUR / AFTER_BLUR 两段（`GuiRenderer.java:182-184`）：
+    // 全景属于模糊**之前**那一段，界面其余部分属于之后。它在图里是**非渲染步**——
+    // 一次背景绘制加六趟模糊，各有各的 renderpass 与靶，塞不进一个附件表；
+    // 步身自己 begin/end，图只负责它的位置与 scene_color 的 SAMPLED 用途位。
+    //
+    // 模糊关着（menuBackgroundBlurriness = 0，界面上显示 OFF）时这里只画全景；
+    // 主菜单那一档更是连模糊都不该有——26.1 的 TitleScreen 是清晰的。
+    void recordMenuBackground(FrameContext& frame, std::uint32_t imageIndex) {
+        if (!menuBlur.valid() || !hud_.screenOpen()) {
+            return;
+        }
+        const auto kind = hud_.currentBackgroundKind();
+        if (ui::backgroundDrawsPanorama(kind)) {
+            menuBlur.beginBackgroundPass(frame.commandBuffer, imageIndex);
+            hud_.drawMenuPanorama(frame.commandBuffer, frame.descriptorSet);
+            menuBlur.endBackgroundPass(frame.commandBuffer);
+        }
+        if (!ui::backgroundIsBlurred(kind)) {
+            return;
+        }
+        const int blurriness = options.menuBackgroundBlurriness;
+        if (!ui::menuBlurEnabled(blurriness)) {
+            return;
+        }
+        menuBlur.record(frame.commandBuffer, imageIndex, ui::menuBlurRadius(blurriness));
+    }
+
     void recordGui(FrameContext& frame) {
         // 视口与裁剪是命令缓冲级的动态状态，跨 pass 仍然有效；这里自己算一份再重设一次，
         // 是为了让这一趟自己成立，不依赖上一趟留下了什么
@@ -2811,6 +2852,7 @@ class WorldRenderer final {
   VkExtent2D& swapchainExtent;
   std::vector<VkFramebuffer>& framebuffers;
   std::vector<VkFramebuffer>& guiFramebuffers;
+  MenuBlur& menuBlur;
   std::function<void(VkCommandBuffer, std::uint32_t)> copySceneToSwapchain;
   std::array<FrameContext, kFramesInFlight>& frames;
   std::size_t& currentFrame;

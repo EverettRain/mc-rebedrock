@@ -61,6 +61,12 @@ struct ResourceLocation final {
     return ResourceLocation{std::string{space}, "sounds/" + std::string{subpath}};
 }
 
+// UI-4：`texts/` 下的纯文本（splashes.txt、end.txt、postcredits.txt）
+[[nodiscard]] inline ResourceLocation texts(std::string_view subpath,
+                                            std::string_view space = "minecraft") {
+    return ResourceLocation{std::string{space}, "texts/" + std::string{subpath}};
+}
+
 [[nodiscard]] inline ResourceLocation lang(std::string_view subpath,
                                            std::string_view space = "minecraft") {
     return ResourceLocation{std::string{space}, "lang/" + std::string{subpath}};

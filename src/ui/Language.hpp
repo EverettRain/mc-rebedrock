@@ -116,6 +116,18 @@ class Language final {
 [[nodiscard]] std::string formatTranslation(
     std::string_view pattern, std::span<const std::string_view> arguments);
 
+// D12：只把 `%%` 折成一个字面百分号，**不碰** `%s` / `%1$s`。
+//
+// Java 的语言 JSON 用 `%` 作占位符前缀，字面百分号因此写成 `%%`
+// （`options.languageWarning` = "…may not be 100%% accurate"）。直接把原串画出去就会
+// 显示成 `100%%`。
+//
+// 为什么不是 `formatTranslation(pattern, {})`：那会把没有参数可填的 `%s` **丢掉**，
+// 而本作有一类串是"先取译文、之后再由调用方带参数格式化"的——`options.generic_value`
+// 就是 `"%s: %s"`。先过一遍无参数的格式化器会把它吃成 `": "`，按钮标签整个消失。
+// 实测踩过：Force Unicode Font 那个按钮一度只剩一个冒号。
+[[nodiscard]] std::string unescapeTranslationPercents(std::string_view pattern);
+
 struct LanguageLoadResult final {
     std::string code;
     Language language;

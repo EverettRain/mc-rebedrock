@@ -37,6 +37,55 @@ inline constexpr std::size_t kNoWidget = static_cast<std::size_t>(-1);
     return hit;
 }
 
+// UI-4 / GUI spec §1.4：键盘焦点在可聚焦控件之间循环。
+//
+// 「可聚焦」= 可交互且**可用**。26.1 的 Tab 跳过灰掉的按钮——一个点不动的控件也不该被
+// 键盘选中，否则 Enter 会落在一个什么都不做的东西上。Label 与 Panel 本来就不可交互。
+//
+// `current` 为 kNoWidget 时，正向从头找、反向从尾找。找一圈回到原处就返回 kNoWidget
+// （整页没有可聚焦控件时不会死循环）。
+[[nodiscard]] inline bool focusable(const Widget& widget) noexcept {
+    return widget.interactive() && widget.enabled;
+}
+
+[[nodiscard]] inline std::size_t nextFocus(const Page& page, std::size_t current,
+                                           bool forward) noexcept {
+    const std::size_t count = page.size();
+    if (count == 0U) {
+        return kNoWidget;
+    }
+    for (std::size_t step = 1; step <= count; ++step) {
+        std::size_t index = 0U;
+        if (current >= count) {
+            // 没有焦点：正向从 0 开始，反向从末尾开始
+            index = forward ? step - 1U : count - step;
+        } else if (forward) {
+            index = (current + step) % count;
+        } else {
+            index = (current + count - (step % count)) % count;
+        }
+        if (focusable(page[index])) {
+            return index;
+        }
+    }
+    return kNoWidget;
+}
+
+// Enter / Space 激活当前焦点控件。
+// 与鼠标那条路走同一个回调，所以"键盘能做的事"永远是"鼠标能做的事"的子集，不会各走各的。
+// Slider 不由激活驱动（它是拖拽控件），与 dispatchActivate 的约定一致。
+inline bool activateFocused(const Page& page, std::size_t focused) {
+    if (focused >= page.size()) {
+        return false;
+    }
+    const Widget& widget = page[focused];
+    if (!focusable(widget) || widget.kind == WidgetKind::Slider || !widget.onActivate) {
+        return false;
+    }
+    widget.onActivate();
+    return true;
+}
+
 // 为落在同一个控件上的一次按下与抬起触发激活
 // pressed 是按下时命中的那个控件，由先前的命中测试给出
 // 只有抬起同样落在那个控件上、且它可用时，激活才会执行

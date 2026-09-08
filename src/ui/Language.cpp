@@ -280,6 +280,19 @@ std::string formatTranslation(std::string_view pattern,
     return output;
 }
 
+std::string unescapeTranslationPercents(std::string_view pattern) {
+    std::string output;
+    output.reserve(pattern.size());
+    for (std::size_t index = 0U; index < pattern.size(); ++index) {
+        output.push_back(pattern[index]);
+        // 只吞掉成对的第二个 `%`；`%s` 这类占位符原样留给之后的 formatTranslation
+        if (pattern[index] == '%' && index + 1U < pattern.size() && pattern[index + 1U] == '%') {
+            ++index;
+        }
+    }
+    return output;
+}
+
 std::set<int> Language::requiredUnicodePages() const {
     std::set<int> pages;
     for (const auto& [key, value] : entries_) {

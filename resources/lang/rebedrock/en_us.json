@@ -10,5 +10,6 @@
   "options.rebedrock.rainMode.async": "Asynchronous Particle Rain",
   "options.rebedrock.rainMode.texture": "Texture Rain",
   "options.rebedrock.resolution.windowed": "windowed",
-  "options.rebedrock.sunShadows": "Sun Shadows"
+  "options.rebedrock.sunShadows": "Sun Shadows",
+  "title.rebedrock.credits": "ReBedrock. Not affiliated with Mojang."
 }

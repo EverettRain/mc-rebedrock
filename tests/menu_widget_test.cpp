@@ -41,6 +41,125 @@ std::size_t indexOfId(const ui::Page& page, ui::WidgetId id) {
     return ui::kNoWidget;
 }
 
+// --- UI-4: keyboard focus traversal (GUI spec §1.4) --------------------------
+//
+// Tab must skip what cannot be activated: Labels and Panels are not interactive,
+// and a DISABLED widget is not focusable either — vanilla's Tab walks past greyed
+// buttons, and landing on one would put Enter on something that does nothing.
+void testFocusTraversal() {
+    ui::MenuBuildContext ctx;
+    ui::MenuCallbacks cb;
+    // The title page is the useful fixture: seven widgets of which three are
+    // disabled (multiplayer / realms / accessibility have no target screen yet).
+    const ui::Page title = ui::buildPage(ui::PageId::Title, ctx, cb, rowLayout());
+    assert(title.size() == 7);
+
+    // Forward from nothing lands on the first focusable widget.
+    const std::size_t first = ui::nextFocus(title, ui::kNoWidget, /*forward=*/true);
+    assert(first == 0);                              // singleplayer
+    assert(ui::nextFocus(title, 0, true) == 3);      // skips the two disabled ones
+    assert(ui::nextFocus(title, 3, true) == 4);      // language -> options
+    assert(ui::nextFocus(title, 4, true) == 5);      // options -> quit
+    assert(ui::nextFocus(title, 5, true) == 0);      // quit wraps past accessibility
+
+    // Backward from nothing lands on the last focusable widget, and reverses.
+    assert(ui::nextFocus(title, ui::kNoWidget, /*forward=*/false) == 5);
+    assert(ui::nextFocus(title, 0, false) == 5);
+    assert(ui::nextFocus(title, 3, false) == 0);
+
+    // A page with nothing focusable returns kNoWidget rather than looping.
+    ui::Page inert;
+    ui::Widget label;
+    label.kind = ui::WidgetKind::Label;
+    inert.push_back(label);
+    ui::Widget dead;
+    dead.kind = ui::WidgetKind::Button;
+    dead.enabled = false;
+    inert.push_back(dead);
+    assert(ui::nextFocus(inert, ui::kNoWidget, true) == ui::kNoWidget);
+    assert(ui::nextFocus(inert, 0, true) == ui::kNoWidget);
+    assert(ui::nextFocus(ui::Page{}, ui::kNoWidget, true) == ui::kNoWidget);
+}
+
+// Enter / Space fires the focused widget's own callback — the same callback the
+// mouse fires, so "what the keyboard can do" is always a subset of "what the
+// mouse can do" rather than a second path that drifts.
+void testFocusActivation() {
+    ui::MenuBuildContext ctx;
+    ui::MenuCallbacks cb;
+    int singleplayer = 0;
+    int quit = 0;
+    cb.openSingleplayer = [&] { ++singleplayer; };
+    cb.exitGame = [&] { ++quit; };
+    const ui::Page title = ui::buildPage(ui::PageId::Title, ctx, cb, rowLayout());
+
+    assert(ui::activateFocused(title, 0));
+    assert(singleplayer == 1 && quit == 0);
+    assert(ui::activateFocused(title, 5));
+    assert(quit == 1);
+    // A disabled widget fires nothing, and neither does "no focus".
+    assert(!ui::activateFocused(title, 1));
+    assert(!ui::activateFocused(title, ui::kNoWidget));
+    assert(!ui::activateFocused(title, 99));
+    assert(singleplayer == 1 && quit == 1);
+
+    // A slider is a drag control: Enter must not "activate" it (dispatchActivate
+    // has the same rule for the mouse).
+    ui::Page sliders;
+    ui::Widget slider;
+    slider.kind = ui::WidgetKind::Slider;
+    int sliderFired = 0;
+    slider.onActivate = [&] { ++sliderFired; };
+    sliders.push_back(slider);
+    assert(!ui::activateFocused(sliders, 0));
+    assert(sliderFired == 0);
+}
+
+// UI-4: the two title-screen icon buttons are IconButtons, not Buttons — the
+// draw side picks their icon by kind, and they carry no label.
+void testIconButtons() {
+    ui::MenuBuildContext ctx;
+    ui::MenuCallbacks cb;
+    const ui::Page title = ui::buildPage(ui::PageId::Title, ctx, cb, rowLayout());
+    assert(title[3].kind == ui::WidgetKind::IconButton);
+    assert(title[6].kind == ui::WidgetKind::IconButton);
+    assert(title[3].label.empty());
+    assert(title[6].label.empty());
+    // Still interactive and still hit-testable, exactly like a Button.
+    assert(title[3].interactive());
+    assert(title[0].kind == ui::WidgetKind::Button);
+
+    // The icon sits centred inside the button: (20 - 15) / 2 = 2 logical pixels
+    // of inset on every side. Integer division, like every other centring
+    // (spec §1.2). Nothing about "the icon is off-centre" changes a return
+    // value, so this is the only place it can go red.
+    const ui::UiRect button{100.0F, 200.0F, 40.0F, 40.0F};   // 20x20 at scale 2
+    const auto icon = ui::iconButtonIconRect(button, 2.0F);
+    assert(icon.x == 104.0F);
+    assert(icon.y == 204.0F);
+    assert(icon.width == 30.0F);
+    assert(icon.height == 30.0F);
+    // "Centred" here means INTEGER centred: 20 - 15 = 5 is odd, so the inset is
+    // floor(5/2) = 2 on the leading side and 3 on the trailing one. The icon sits
+    // half a pixel left of true centre — which is exactly what vanilla's integer
+    // division does, and asserting perfect symmetry would be asserting the bug.
+    const float leadingGap = icon.x - button.x;
+    const float trailingGap = (button.x + button.width) - (icon.x + icon.width);
+    assert(leadingGap == 4.0F);       // 2 logical * scale 2
+    assert(trailingGap == 6.0F);      // 3 logical * scale 2
+    assert(trailingGap - leadingGap == 2.0F * 1.0F * 2.0F / 2.0F);  // 差一个逻辑像素
+    assert(icon.y - button.y == leadingGap);
+    // And it stays inside the button at every scale.
+    for (float scale = 1.0F; scale <= 4.0F; scale += 1.0F) {
+        const ui::UiRect box{0.0F, 0.0F, ui::kIconButtonSize * scale,
+                             ui::kIconButtonSize * scale};
+        const auto inner = ui::iconButtonIconRect(box, scale);
+        assert(inner.x >= box.x && inner.y >= box.y);
+        assert(inner.x + inner.width <= box.x + box.width);
+        assert(inner.y + inner.height <= box.y + box.height);
+    }
+}
+
 // --- Page assembly: each page has the historic widgets, in order --------------
 void testPageAssembly() {
     ui::MenuBuildContext ctx;
@@ -232,6 +351,9 @@ void testOptionsHasSubtitlesToggle() {
 
 int main() {
     testPageAssembly();
+    testFocusTraversal();
+    testFocusActivation();
+    testIconButtons();
     testClickDispatch();
     testDisabledWidgetNoFire();
     testPressReleaseMismatch();

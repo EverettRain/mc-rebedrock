@@ -54,6 +54,10 @@ struct MenuBuildContext final {
     // keyBindFirstIndex 是在 input::keyBindRows() 中的滚动偏移，keyBindRowCount 是可见窗口的大小
     std::size_t keyBindFirstIndex = 0;
     std::size_t keyBindRowCount = 0;
+    // UI-4：这一次点击是否按着 Shift。循环选项按钮据此反向步进（spec §2.3）。
+    // 放在上下文里而不是回调签名里，是因为"按着 Shift 吗"是**装配这一页时的事实**，
+    // 与 worldOpen / worldSelectable 同类；改签名会波及每一个 cycleOption 的调用点。
+    bool reverseCycle = false;
 };
 
 // 页面能触发的每一个菜单动作，以可注入的回调形式给出
@@ -136,6 +140,19 @@ inline void addButton(Page& page, const RectProvider& rectFor, const MenuBuildCo
     page.push_back(std::move(w));
 }
 
+// UI-4：只有图标没有文字的方钮。除了 kind 之外与 addButton 完全一样——
+// 图标本身由绘制侧按 id 查表取，因为图标是**资源**，而这一层从不接触资源。
+inline void addIconButton(Page& page, const RectProvider& rectFor, WidgetId id,
+                          std::function<void()> onActivate, bool enabled = true) {
+    Widget w;
+    w.kind = WidgetKind::IconButton;
+    w.debugId = static_cast<std::uint16_t>(id);
+    w.rect = rectFor ? rectFor(page.size()) : UiRect{};
+    w.enabled = enabled;
+    w.onActivate = std::move(onActivate);
+    page.push_back(std::move(w));
+}
+
 // 一个循环选项的按钮
 // 它的动作永远是那同一个通用步进，以 id 为键
 // 取值、字段与标签都归表管，见 ui/OptionCycle.hpp，绝不归这个调用点管
@@ -143,9 +160,13 @@ inline void addOptionButton(Page& page, const RectProvider& rectFor, const MenuB
                             WidgetId id, const MenuCallbacks& cb) {
     // 回调被拷贝进控件，与其它每个动作一样
     // 因为 Page 的存活期长于 buildPage 收到的那个 MenuCallbacks 引用
-    addButton(page, rectFor, ctx, id, [cycle = cb.cycleOption, id] {
+    //
+    // UI-4 / GUI spec §2.3：**Shift+点击反向循环**（1.17 起）。方向从上下文的
+    // `reverseCycle` 读——那是"这一次点击按着 Shift 吗"，由渲染器在装配前填好。
+    // 方向早就是 cycleOption 的参数，此前只是从没传过 -1。
+    addButton(page, rectFor, ctx, id, [cycle = cb.cycleOption, id, reverse = ctx.reverseCycle] {
         if (cycle) {
-            cycle(id, /*direction=*/1);
+            cycle(id, reverse ? -1 : 1);
         }
     });
 }
@@ -195,6 +216,7 @@ inline void addKeyBindRow(Page& page, const RectProvider& rectFor, const MenuBui
 inline void buildPageInto(Page& page, PageId id, const MenuBuildContext& ctx,
                           const MenuCallbacks& cb, const RectProvider& rectFor) {
     using detail::addButton;
+    using detail::addIconButton;
     using detail::addOptionButton;
     using detail::addListRow;
     using detail::addSlider;
@@ -213,11 +235,11 @@ inline void buildPageInto(Page& page, PageId id, const MenuBuildContext& ctx,
             addButton(page, rectFor, ctx, WidgetId::Singleplayer, cb.openSingleplayer);
             addButton(page, rectFor, ctx, WidgetId::Multiplayer, nullptr, /*enabled=*/false);
             addButton(page, rectFor, ctx, WidgetId::Realms, nullptr, /*enabled=*/false);
-            addButton(page, rectFor, ctx, WidgetId::TitleLanguage, cb.openLanguage);
+            addIconButton(page, rectFor, WidgetId::TitleLanguage, cb.openLanguage);
             addButton(page, rectFor, ctx, WidgetId::Options, cb.openOptions);
             addButton(page, rectFor, ctx, WidgetId::Exit, cb.exitGame);
-            addButton(page, rectFor, ctx, WidgetId::TitleAccessibility, nullptr,
-                      /*enabled=*/false);
+            addIconButton(page, rectFor, WidgetId::TitleAccessibility, nullptr,
+                          /*enabled=*/false);
             break;
 
         case PageId::Pause:

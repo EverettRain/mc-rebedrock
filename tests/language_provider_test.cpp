@@ -179,6 +179,27 @@ int main() {
     assert(ui::formatTranslation("%2$s / %1$s / 100%%", reorderedArguments) ==
            "second / first / 100%");
 
+    // D12：只折 `%%`，不碰 `%s`。
+    //
+    // Java 的语言 JSON 把字面百分号写成 `%%`（`options.languageWarning` 就是
+    // "…may not be 100%% accurate"），直接画原串会显示成 `100%%`。
+    //
+    // ★ 但**不能**拿 `formatTranslation(pattern, {})` 去做这件事：那会把没有参数可填的
+    // `%s` 丢掉，而本作有一类串是"先取译文、之后再由调用方带参数格式化"的——
+    // `options.generic_value` 就是 `"%s: %s"`。实测踩过：先过一遍无参数格式化器之后，
+    // "Force Unicode Font: OFF" 那个按钮只剩下一个冒号。
+    assert(ui::unescapeTranslationPercents("100%% accurate") == "100% accurate");
+    assert(ui::unescapeTranslationPercents("%s: %s") == "%s: %s");       // 占位符原样留下
+    assert(ui::unescapeTranslationPercents("%1$s / %2$s") == "%1$s / %2$s");
+    assert(ui::unescapeTranslationPercents("%%%%") == "%%");             // 两对折成两个
+    assert(ui::unescapeTranslationPercents("%") == "%");                 // 末尾单个不吞
+    assert(ui::unescapeTranslationPercents("") == "");
+    assert(ui::unescapeTranslationPercents("no percent here") == "no percent here");
+    // 混排：`%%` 折掉，`%s` 留着，之后仍能被格式化器填上
+    const std::array<std::string_view, 1> mixedArguments{"9"};
+    assert(ui::formatTranslation(ui::unescapeTranslationPercents("%s%% done"), mixedArguments) ==
+           "9% done");
+
     fs::remove_all(temporary, cleanup);
     return 0;
 }

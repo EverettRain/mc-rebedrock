@@ -5,6 +5,7 @@
 // 这里的一切都是帧缓冲尺寸、GUI 缩放、当前页面，以及调用方传进来的几个状态标志的函数
 
 #include "ui/HudLayout.hpp"
+#include "ui/ScrollList.hpp"
 #include "ui/PageStack.hpp"
 
 #include <cstddef>
@@ -25,6 +26,15 @@ namespace mc::ui {
 // 而那不会有任何东西变红——让编译器逐个点名。
 [[nodiscard]] std::size_t saveListVisibleRowCount(float framebufferWidth, float framebufferHeight,
                                                   int guiScale, bool forceUnicode);
+
+// UI-4：三张滚动列表的统一几何（GUI spec §2.7 / §5 的 L3）。
+// 行宽是从 26.1 源码查来的覆写值：语言 270、按键 340、世界列表 270。
+// 下面那些逐屏函数都从这里派生，不再各写各的。
+[[nodiscard]] ScrollList languageScrollList(const HudLayout& layout, float framebufferWidth);
+[[nodiscard]] ScrollList controlsScrollList(const HudLayout& layout, float framebufferWidth);
+[[nodiscard]] ScrollList worldScrollList(const HudLayout& layout, float framebufferWidth);
+// 世界列表那条带在当前画布下放得下几行（逻辑像素版，saveListVisibleRowCount 的内核）
+[[nodiscard]] std::size_t worldListVisibleRows(const HudLayout& layout);
 
 // 灰色警告行的 Y 坐标、整宽的语言框，以及一个语言行
 [[nodiscard]] float languageWarningY(const HudLayout& layout);

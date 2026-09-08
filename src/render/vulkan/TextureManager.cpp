@@ -3,6 +3,8 @@
 #include "render/vulkan/BlockAtlasBaker.hpp"
 #include "render/vulkan/HudTypes.hpp"
 
+#include "ui/BitmapFontAtlas.hpp"
+
 #include "animation/SkeletalModel.hpp"
 #include "assets/FontProviders.hpp"
 #include "assets/ImageData.hpp"
@@ -119,20 +121,33 @@ struct UnihexPages final {
     std::vector<bool> seen = std::vector<bool>(0x10000U);
 };
 
+// D4：一个位图 provider 铺出来的**若干**层，不再是一层。
+// `alpha` 是 layerCount 个 256x256 的 R8 平面首尾相接；`glyphs` 里每个字形的 `layer`
+// 是**该 provider 内部**的层号，追加进数组时再加上基准层号。
 struct BitmapProviderLayer final {
     std::vector<std::uint8_t> alpha;
+    int layerCount = 1;
     std::vector<std::pair<char32_t, ui::FontGlyph>> glyphs;
 };
 
-[[nodiscard]] std::vector<std::uint8_t> alphaAtlas256(const assets::ImageData& image) {
-    constexpr int kSize = 256;
-    std::vector<std::uint8_t> alpha(static_cast<std::size_t>(kSize * kSize));
-    for (int y = 0; y < kSize; ++y) {
-        const int sourceY = std::min(y * image.height / kSize, image.height - 1);
-        for (int x = 0; x < kSize; ++x) {
-            const int sourceX = std::min(x * image.width / kSize, image.width - 1);
-            alpha[static_cast<std::size_t>(y * kSize + x)] =
-                image.rgba[static_cast<std::size_t>((sourceY * image.width + sourceX) * 4 + 3)];
+// D4：把 provider 的 alpha 通道**按原生分辨率**铺进 layout 解出的那些 256x256 层。
+//
+// 此前这里是一次整图重采样（`alphaAtlas256`），128x536 的表因此被纵向压到 3/8 —— 见
+// ui/BitmapFontAtlas.hpp 的头注释。现在一个像素都不缩放：层内空白处永远采不到。
+[[nodiscard]] std::vector<std::uint8_t> bitmapFontLayers(const assets::ImageData& image,
+                                                         const ui::BitmapFontLayout& layout) {
+    constexpr int kSize = ui::kFontLayerSize;
+    constexpr auto kLayerBytes = static_cast<std::size_t>(kSize) * kSize;
+    std::vector<std::uint8_t> alpha(kLayerBytes * static_cast<std::size_t>(layout.layerCount));
+    for (int layer = 0; layer < layout.layerCount; ++layer) {
+        const int sourceY = ui::bitmapFontLayerSourceY(layout, layer);
+        const int height = ui::bitmapFontLayerHeight(layout, layer);
+        const std::size_t base = kLayerBytes * static_cast<std::size_t>(layer);
+        for (int y = 0; y < height; ++y) {
+            for (int x = 0; x < image.width; ++x) {
+                alpha[base + static_cast<std::size_t>(y) * kSize + static_cast<std::size_t>(x)] =
+                    image.rgba[static_cast<std::size_t>(((sourceY + y) * image.width + x) * 4 + 3)];
+            }
         }
     }
     return alpha;
@@ -148,13 +163,23 @@ loadBitmapProvider(const assets::ResourceProvider& resources,
     for (const auto& row : definition.chars) {
         columnCount = std::max(columnCount, row.size());
     }
-    if (rowCount == 0U || columnCount == 0U || image.width % static_cast<int>(columnCount) != 0 ||
-        image.height % static_cast<int>(rowCount) != 0) {
+    if (rowCount == 0U || columnCount == 0U) {
         throw std::runtime_error("Bitmap font grid does not match " + definition.file.toString());
     }
-    result.alpha = alphaAtlas256(image);
-    const int cellWidth = image.width / static_cast<int>(columnCount);
-    const int cellHeight = image.height / static_cast<int>(rowCount);
+    // D4：铺法从 ui/BitmapFontAtlas.hpp 解出——按原生分辨率切成若干 256x256 层，
+    // 切割落在整格行上。它对坏资源是抛而不是夹，所以把文件名接上去再抛。
+    ui::BitmapFontLayout layout;
+    try {
+        layout = ui::bitmapFontLayout(image.width, image.height, static_cast<int>(columnCount),
+                                      static_cast<int>(rowCount));
+    } catch (const std::exception& error) {
+        throw std::runtime_error("Bitmap font grid does not match " +
+                                 definition.file.toString() + ": " + error.what());
+    }
+    result.alpha = bitmapFontLayers(image, layout);
+    result.layerCount = layout.layerCount;
+    const int cellWidth = layout.cellWidth;
+    const int cellHeight = layout.cellHeight;
     const float oversample =
         static_cast<float>(cellHeight) / static_cast<float>(std::max(definition.height, 1));
     for (std::size_t row = 0U; row < rowCount; ++row) {
@@ -180,10 +205,17 @@ loadBitmapProvider(const assets::ResourceProvider& resources,
             if (right >= left) {
                 ui::FontGlyph glyph;
                 const float sourceWidth = static_cast<float>(right - left + 1);
-                glyph.u = static_cast<float>(cellX + left) / static_cast<float>(image.width);
-                glyph.v = static_cast<float>(cellY) / static_cast<float>(image.height);
-                glyph.uvWidth = sourceWidth / static_cast<float>(image.width);
-                glyph.uvHeight = static_cast<float>(cellHeight) / static_cast<float>(image.height);
+                // D4：UV 相对**它落在的那一层**算，而不是相对整张源图。
+                // 从前是后者，配上那次整图重采样才恰好还能对齐格子边界；现在层是原生
+                // 分辨率的，源图坐标与层内坐标不再是同一个比例。
+                const auto cell = ui::bitmapFontCell(layout, static_cast<int>(row),
+                                                     static_cast<int>(column));
+                constexpr auto kLayerSize = static_cast<float>(ui::kFontLayerSize);
+                glyph.layer = static_cast<float>(cell.layer);
+                glyph.u = static_cast<float>(cell.x + left) / kLayerSize;
+                glyph.v = static_cast<float>(cell.y) / kLayerSize;
+                glyph.uvWidth = sourceWidth / kLayerSize;
+                glyph.uvHeight = static_cast<float>(cellHeight) / kLayerSize;
                 glyph.pixelWidth = sourceWidth / oversample;
                 glyph.pixelHeight = static_cast<float>(definition.height);
                 glyph.offsetY = 7.0F - static_cast<float>(definition.ascent);
@@ -454,6 +486,14 @@ void TextureManager::createGuiTexture() {
     blitWidget(widgets, GuiWidgetSprite::SliderHandle, "widget/slider_handle", 0, 146);
     blitWidget(widgets, GuiWidgetSprite::SliderHandleHighlighted,
                "widget/slider_handle_highlighted", 0, 166);
+    // UI-4：滚动条的两张 6x32 精灵与两个 15x15 图标。
+    // `widgets` 这一层到此用到 y=186，右侧与下方都还空着，因此**不新增图集层**——
+    // 加层要同步改三处（数组 / kGuiLayerCount / 层号常量），能不加就不加。
+    blitWidget(widgets, GuiWidgetSprite::Scroller, "widget/scroller", 200, 0);
+    blitWidget(widgets, GuiWidgetSprite::ScrollerBackground, "widget/scroller_background", 208,
+               0);
+    blitWidget(widgets, GuiWidgetSprite::IconLanguage, "icon/language", 216, 0);
+    blitWidget(widgets, GuiWidgetSprite::IconAccessibility, "icon/accessibility", 216, 16);
 
     auto hud = emptyRgbaAtlas();
     blit(hud, sprite("hud/crosshair"), 0, 0);
@@ -514,6 +554,54 @@ void TextureManager::createGuiTexture() {
     const auto menuBackground = repeatTileToAtlas(guiTex("menu_background.png"), 256, 256, 16);
     const auto menuListBackground =
         repeatTileToAtlas(guiTex("menu_list_background.png"), 256, 256, 16);
+    // UI-5：有世界时铺的是 `inworld_` 那一对，不是上面这两张
+    // （`Screen.extractMenuBackground():450`、`AbstractSelectionList:226`：
+    //  `minecraft.level == null ? MENU_BACKGROUND : INWORLD_MENU_BACKGROUND`）。
+    //
+    // ★ 值得写下来的事实：**26.1 原版这两对的像素完全一样**（都是 16x16 纯
+    //   rgba(0,0,0,64) / rgba(0,0,0,112)，本地资源包已逐像素核对）。所以用原版资源时
+    //   分不分这一档在画面上看不出区别。分它的理由不是原版像素，而是
+    //   26.1 的代码真的按 `level == null` 选两个不同的资源 id——资源包可以把它们做成
+    //   两样，而把两条路合并成一条以后，那种资源包在本作里就永远只能生效一半。
+    const auto inworldMenuBackground =
+        repeatTileToAtlas(guiTex("inworld_menu_background.png"), 256, 256, 16);
+    const auto inworldMenuListBackground =
+        repeatTileToAtlas(guiTex("inworld_menu_list_background.png"), 256, 256, 16);
+    // UI-5 / D9：列表上下那两道分隔线。
+    //
+    // ★ 26.1 画的**不是** 4px 竖直渐隐带，而是四张 32x2 的分隔纹理
+    // （`AbstractSelectionList.extractListSeparators():218-222`）。4px 渐隐是 1.20.2
+    // 之前的做法；偏差表 D9 按旧 spec 记成"渐隐带缺绘制"，照它实现会画出一个
+    // 26.1 根本没有的元素。四张各横向平铺满 256，竖着叠在同一层里，落位见
+    // kListSeparatorSpriteY —— 它们各只有 2 像素高，为此各占一整层是浪费。
+    auto listSeparators = emptyRgbaAtlas();
+    // 横向平铺满 256，纵向**原样**取两行。
+    //
+    // 这里不能用 repeatTileToAtlas：它两个方向共用同一个 `repeats`，对 32x2 的分隔纹理
+    // 会算出 sourceY = (y * 2 * 8 / 2) % 2 = 0，两行都采到第 0 行——分隔线是"上面一条
+    // 深色、下面一条淡白"的两行结构，塌成一行以后只剩深色那条，看起来仍然像一条线。
+    const auto blitSeparator = [&](const std::string& name, int y) {
+        const auto tile = guiTex(name);
+        if (tile.width <= 0 || tile.height <= 0) {
+            return;
+        }
+        for (int row = 0; row < kListSeparatorSpriteHeight; ++row) {
+            const int sourceY = std::min(row, tile.height - 1);
+            for (int column = 0; column < 256; ++column) {
+                const int sourceX = column % tile.width;
+                const auto from =
+                    static_cast<std::size_t>((sourceY * tile.width + sourceX) * 4);
+                const auto to =
+                    static_cast<std::size_t>(((y + row) * listSeparators.width + column) * 4);
+                std::copy_n(tile.rgba.begin() + static_cast<std::ptrdiff_t>(from), 4,
+                            listSeparators.rgba.begin() + static_cast<std::ptrdiff_t>(to));
+            }
+        }
+    };
+    blitSeparator("header_separator.png", kHeaderSeparatorSpriteY);
+    blitSeparator("footer_separator.png", kFooterSeparatorSpriteY);
+    blitSeparator("inworld_header_separator.png", kInworldHeaderSeparatorSpriteY);
+    blitSeparator("inworld_footer_separator.png", kInworldFooterSeparatorSpriteY);
     const auto chestGui = singleChestGui(guiTex("container/generic_54.png"));
     auto furnaceGui = guiTex("container/furnace.png");
     blit(furnaceGui, sprite("container/furnace/lit_progress"), 176, 0);
@@ -544,24 +632,6 @@ void TextureManager::createGuiTexture() {
     blit(anvilGui, sprite("container/anvil/text_field"), 0, kAnvilTextFieldSpriteY);
     blit(anvilGui, sprite("container/anvil/text_field_disabled"), 0, kAnvilTextFieldSpriteY + 17);
     blit(anvilGui, sprite("container/anvil/error"), kAnvilErrorSpriteX, kAnvilErrorSpriteY);
-    // Screen.renderBackground 会在每个游戏内界面上铺一层竖直渐变
-    // 顶部为 rgba(0x10,0x10,0x10,0xC0)，底部为 rgba(0x10,0x10,0x10,0xD0)
-    // 把它烘成一个 256x256 层，各界面用一次精灵绘制就能拿到与 vanilla 完全一致的底衬
-    assets::ImageData screenDimGradient;
-    screenDimGradient.width = 256;
-    screenDimGradient.height = 256;
-    screenDimGradient.rgba.resize(256U * 256U * 4U);
-    for (std::uint32_t gradientY = 0U; gradientY < 256U; ++gradientY) {
-        const std::uint8_t gradientAlpha =
-            static_cast<std::uint8_t>(0xC0U + (0xD0U - 0xC0U) * gradientY / 255U);
-        for (std::uint32_t gradientX = 0U; gradientX < 256U; ++gradientX) {
-            const std::size_t offset = static_cast<std::size_t>(gradientY * 256U + gradientX) * 4U;
-            screenDimGradient.rgba[offset + 0] = 0x10U;
-            screenDimGradient.rgba[offset + 1] = 0x10U;
-            screenDimGradient.rgba[offset + 2] = 0x10U;
-            screenDimGradient.rgba[offset + 3] = gradientAlpha;
-        }
-    }
     const std::array images{
         widgets,
         hud,
@@ -575,14 +645,20 @@ void TextureManager::createGuiTexture() {
         menuBackground,
         chestGui,
         tex("misc/vignette.png"),
-        screenDimGradient,
+        // UI-5：这一格从前是烘好的 Screen.renderBackground 灰渐变。那条渐变现在由
+        // 真正的渐变管线画（ui::kTransparentBackgroundStops），烘图不再有消费者，
+        // 于是整格让给 inworld_menu_background——**就地替换**而不是删掉再补，
+        // 是因为后面每一层的层号都写死在 HudTypes.hpp 里，删一格会把它们全推错一位。
+        inworldMenuBackground,
         menuListBackground,
         enchantingGui,
         anvilGui,
         tooltipGui,
         panoramaOverlay,
+        inworldMenuListBackground,
+        listSeparators,
     };
-    constexpr std::uint32_t kGuiLayerCount = 18U;
+    constexpr std::uint32_t kGuiLayerCount = 20U;
     // 层号是写死在 HudTypes.hpp 里的常量（kTooltipGuiLayer 等），而层内容是上面
     // 这个数组的顺序。加一层却漏改这个数，上传就会按错误的层数切分整块像素，
     // 于是每一层都错位——编译期钉住它。
@@ -909,14 +985,17 @@ void TextureManager::createFontTexture(ui::BitmapFontMetrics& fontMetrics, ui::T
 
     textFont.setUnicodeSizes(std::move(unihex.sizes));
     std::uint32_t layerCount = 1U;
+    // D4：一个 provider 现在可能占好几层（nonlatin_european 3 层、accented 4 层）。
+    // 字形自带的是**该 provider 内部**的层号，这里加上基准层号才是数组里的绝对层号。
     for (auto& bitmap : bitmapLayers) {
         for (auto& [codepoint, glyph] : bitmap.glyphs) {
-            glyph.layer = static_cast<float>(layerCount);
+            glyph.layer += static_cast<float>(layerCount);
             textFont.addBitmapGlyph(codepoint, glyph);
         }
         pixels.insert(pixels.end(), bitmap.alpha.begin(), bitmap.alpha.end());
-        ++layerCount;
+        layerCount += static_cast<std::uint32_t>(bitmap.layerCount);
     }
+    const std::uint32_t bitmapLayerCount = layerCount;
     for (const int page : requiredPages) {
         if (page < 0 || page >= 256 || unihex.alpha[static_cast<std::size_t>(page)].empty()) {
             continue;
@@ -938,9 +1017,9 @@ void TextureManager::createFontTexture(ui::BitmapFontMetrics& fontMetrics, ui::T
                                                   VK_IMAGE_ASPECT_COLOR_BIT, layerCount,
                                                   VK_IMAGE_VIEW_TYPE_2D_ARRAY);
     std::cout << "Loaded Minecraft font array: " << kFontPageSize << 'x' << kFontPageSize << " x "
-              << layerCount << " (" << (1U + bitmapLayers.size()) << " bitmap layers + "
-              << (layerCount - 1U - static_cast<std::uint32_t>(bitmapLayers.size()))
-              << " unihex pages)\n";
+              << layerCount << " (" << bitmapLayerCount << " bitmap layers from "
+              << (1U + bitmapLayers.size()) << " providers + "
+              << (layerCount - bitmapLayerCount) << " unihex pages)\n";
 }
 
 void TextureManager::recreateFontTexture(ui::BitmapFontMetrics& fontMetrics, ui::TextFont& textFont,
