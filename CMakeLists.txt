@@ -816,6 +816,17 @@ if(BUILD_TESTING)
         "MC_REBEDROCK_RENDERER_SRC=\"${CMAKE_CURRENT_SOURCE_DIR}/src/render/vulkan/VulkanRenderer.cpp\"")
     add_test(NAME descriptor_bindings COMMAND mc_rebedrock_descriptor_bindings_test)
 
+    # 读出图的度量工具（tools/shot_compare.py）。它的 PNG 解码器写错时，解出来的仍然是
+    # 「一张看得过去的图」，只是每个数字都是假的——而这个工具的全部用途就是产生数字。
+    # 仪器骗过我们一次了（RN-33：出图整批被菜单模糊糊掉，没人发现），所以它自带一个把
+    # PNG 五种行滤波器逐条走到的自检，挂进 ctest。没有 python3 的机器上静默跳过。
+    find_program(MC_REBEDROCK_PYTHON3 python3)
+    if(MC_REBEDROCK_PYTHON3)
+        add_test(NAME shot_compare_self_test
+            COMMAND "${MC_REBEDROCK_PYTHON3}" "${CMAKE_CURRENT_SOURCE_DIR}/tools/shot_compare.py"
+                    --self-test)
+    endif()
+
     # 出图必须钉死每一档会改变画面的视频设置，包括**间接**生效的：导出把 paused 置真，
     # screenOpen() 因此为真，背景落到 InWorldBlur，整帧被六趟 box blur 糊掉——
     # 所有八角出图曾经相邻像素最大跃变只有 5/255。
