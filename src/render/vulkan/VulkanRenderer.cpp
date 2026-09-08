@@ -318,6 +318,7 @@ struct VulkanRenderer::Impl final : public gameplay::SimulationHost {
         gameSession.setSimulationRadius(static_cast<float>(simulationDistanceChunks) *
                                         static_cast<float>(world::kChunkWidth));
         menuSystem.guiScaleSetting = options.guiScale;
+        menuSystem.forceUnicodeFont = options.forceUnicodeFont;
         const auto resolution = std::ranges::find_if(
             ui::kDisplayResolutions, [this](const ui::DisplayResolution& candidate) {
                 return candidate.width == options.windowWidth &&
@@ -1516,7 +1517,7 @@ struct VulkanRenderer::Impl final : public gameplay::SimulationHost {
                     const ui::HudLayout animationLayout{
                         static_cast<float>(std::max(swapchainExtent.width, 1U)),
                         static_cast<float>(std::max(swapchainExtent.height, 1U)),
-                        menuSystem.guiScaleSetting};
+                        menuSystem.guiScaleSetting, menuSystem.forceUnicodeFont};
                     const auto cursor = currentFramebufferCursor();
                     const auto preview = animationLayout.playerPreview(
                         clientMirror_.player().gameMode == gameplay::GameMode::Creative);
@@ -2065,7 +2066,7 @@ struct VulkanRenderer::Impl final : public gameplay::SimulationHost {
         const std::size_t total = input::keyBindRows().size();
         const std::size_t visibleRows = ui::controlsVisibleRowCount(
             static_cast<float>(swapchainExtent.width),
-            static_cast<float>(swapchainExtent.height), menuSystem.guiScaleSetting);
+            static_cast<float>(swapchainExtent.height), menuSystem.guiScaleSetting, menuSystem.forceUnicodeFont);
         const std::size_t maximumFirst = total > visibleRows ? total - visibleRows : 0U;
         const auto requested = static_cast<long long>(menuSystem.controlsListFirstIndex) + rows;
         menuSystem.controlsListFirstIndex = static_cast<std::size_t>(
@@ -2080,7 +2081,7 @@ struct VulkanRenderer::Impl final : public gameplay::SimulationHost {
         const auto cursor = currentFramebufferCursor();
         const ui::HudLayout layout{static_cast<float>(swapchainExtent.width),
                                    static_cast<float>(swapchainExtent.height),
-                                   menuSystem.guiScaleSetting};
+                                   menuSystem.guiScaleSetting, menuSystem.forceUnicodeFont};
         const std::size_t visible = languageVisibleRowCount();
         menuSystem.languageListFirstIndex = ui::languageScrollIndexFromCursor(
             layout, static_cast<float>(swapchainExtent.width),
@@ -3175,7 +3176,7 @@ struct VulkanRenderer::Impl final : public gameplay::SimulationHost {
         glfwGetFramebufferSize(window, &framebufferWidth, &framebufferHeight);
         const ui::HudLayout layout{static_cast<float>(framebufferWidth),
                                    static_cast<float>(framebufferHeight),
-                                   menuSystem.guiScaleSetting};
+                                   menuSystem.guiScaleSetting, menuSystem.forceUnicodeFont};
         const auto cursor = currentFramebufferCursor();
         const auto track = layout.creativeScrollbarTrack();
         const float travel = std::max(track.height - 15.0F * layout.scale(), 1.0F);
@@ -3322,7 +3323,7 @@ struct VulkanRenderer::Impl final : public gameplay::SimulationHost {
     [[nodiscard]] std::size_t saveListVisibleRowCount() const {
         return ui::saveListVisibleRowCount(static_cast<float>(swapchainExtent.width),
                                            static_cast<float>(swapchainExtent.height),
-                                           menuSystem.guiScaleSetting);
+                                           menuSystem.guiScaleSetting, menuSystem.forceUnicodeFont);
     }
 
     // 语言界面的选择列表是一个从屏幕左缘拉到右缘的深色框，取存档选择界面那种通栏样式
@@ -3347,7 +3348,7 @@ struct VulkanRenderer::Impl final : public gameplay::SimulationHost {
     [[nodiscard]] std::size_t languageVisibleRowCount() const {
         return ui::languageVisibleRowCount(static_cast<float>(swapchainExtent.width),
                                            static_cast<float>(swapchainExtent.height),
-                                           menuSystem.guiScaleSetting);
+                                           menuSystem.guiScaleSetting, menuSystem.forceUnicodeFont);
     }
 
     // 前端各页共用的按钮几何
@@ -3531,7 +3532,7 @@ struct VulkanRenderer::Impl final : public gameplay::SimulationHost {
         const ui::PageId page = menuSystem.pageStack.current();
         const ui::HudLayout layout{static_cast<float>(swapchainExtent.width),
                                    static_cast<float>(swapchainExtent.height),
-                                   menuSystem.guiScaleSetting};
+                                   menuSystem.guiScaleSetting, menuSystem.forceUnicodeFont};
         const std::size_t count = menuButtonCount();
         const float fbWidth = static_cast<float>(swapchainExtent.width);
         // 按键设置页里前 `keyRows` 个 widget 是可滚动的按键列表行，走 controlsRow 排版
@@ -3552,7 +3553,7 @@ struct VulkanRenderer::Impl final : public gameplay::SimulationHost {
         const std::size_t total = input::keyBindRows().size();
         const std::size_t window = ui::controlsVisibleRowCount(
             static_cast<float>(swapchainExtent.width),
-            static_cast<float>(swapchainExtent.height), menuSystem.guiScaleSetting);
+            static_cast<float>(swapchainExtent.height), menuSystem.guiScaleSetting, menuSystem.forceUnicodeFont);
         const std::size_t first = std::min(menuSystem.controlsListFirstIndex, total);
         return std::min(window, total - first);
     }
@@ -3643,7 +3644,7 @@ struct VulkanRenderer::Impl final : public gameplay::SimulationHost {
             const auto cursor = currentFramebufferCursor();
             const ui::HudLayout layout{static_cast<float>(swapchainExtent.width),
                                        static_cast<float>(swapchainExtent.height),
-                                       menuSystem.guiScaleSetting};
+                                       menuSystem.guiScaleSetting, menuSystem.forceUnicodeFont};
             const std::size_t visibleRows = saveListVisibleRowCount();
             const std::size_t maximumFirst = menuSystem.saveSummaries.size() > visibleRows
                                                  ? menuSystem.saveSummaries.size() - visibleRows
@@ -3696,7 +3697,7 @@ struct VulkanRenderer::Impl final : public gameplay::SimulationHost {
             const auto cursor = currentFramebufferCursor();
             const ui::HudLayout layout{static_cast<float>(swapchainExtent.width),
                                        static_cast<float>(swapchainExtent.height),
-                                       menuSystem.guiScaleSetting};
+                                       menuSystem.guiScaleSetting, menuSystem.forceUnicodeFont};
             const std::size_t visible = languageVisibleRowCount();
             const std::size_t maximumFirst = menuSystem.languageCodes.size() > visible
                                                  ? menuSystem.languageCodes.size() - visible
@@ -3732,7 +3733,7 @@ struct VulkanRenderer::Impl final : public gameplay::SimulationHost {
         const auto cursor = currentFramebufferCursor();
         const ui::HudLayout layout{static_cast<float>(swapchainExtent.width),
                                    static_cast<float>(swapchainExtent.height),
-                                   menuSystem.guiScaleSetting};
+                                   menuSystem.guiScaleSetting, menuSystem.forceUnicodeFont};
         const auto slider =
             frontendButtonRect(layout, menuSystem.pageStack.current(), 2U, menuButtonCount());
         const float inset = 4.0F * layout.scale();
@@ -3758,7 +3759,7 @@ struct VulkanRenderer::Impl final : public gameplay::SimulationHost {
         const auto cursor = currentFramebufferCursor();
         const ui::HudLayout layout{static_cast<float>(swapchainExtent.width),
                                    static_cast<float>(swapchainExtent.height),
-                                   menuSystem.guiScaleSetting};
+                                   menuSystem.guiScaleSetting, menuSystem.forceUnicodeFont};
         const auto slider =
             frontendButtonRect(layout, menuSystem.pageStack.current(), 3U, menuButtonCount());
         const float inset = 4.0F * layout.scale();
@@ -3781,7 +3782,7 @@ struct VulkanRenderer::Impl final : public gameplay::SimulationHost {
         const auto cursor = currentFramebufferCursor();
         const ui::HudLayout layout{static_cast<float>(swapchainExtent.width),
                                    static_cast<float>(swapchainExtent.height),
-                                   menuSystem.guiScaleSetting};
+                                   menuSystem.guiScaleSetting, menuSystem.forceUnicodeFont};
         const auto slider = layout.menuButton(0U, 3U);
         const float inset = 4.0F * layout.scale();
         const float travel = std::max(slider.width - inset * 2.0F, 1.0F);
@@ -3842,6 +3843,17 @@ struct VulkanRenderer::Impl final : public gameplay::SimulationHost {
     }
 
     void persistOptions() noexcept {
+        // UI-3：离屏导出**从不写 options.properties**。
+        //
+        // 它是一次测量，不是一场游戏：窗口尺寸是命令行强制的（`--ui-size` / `--preview-size`），
+        // GUI 缩放是逐档遍历的，各向异性/抗锯齿/垂直同步是 determinism knob 钉死的。
+        // 把这些存回去，等于让一次拍摄改掉玩家的设置——而且下一次拍摄读到的就是上一次
+        // 留下的窗口尺寸。UI-2 落地后确有此事：一次 1280x720 的界面截图把
+        // `window.width` 从 640 改成了 1280，于是视频设置页的"Fullscreen Resolution"
+        // 标签从 "(windowed)" 变成了不带后缀，两组基线因此不可比。
+        if (uiCapture.has_value() || (testScene.has_value() && testScene->exportPreview)) {
+            return;
+        }
         options.guiScale = menuSystem.guiScaleSetting;
         options.viewDistance = std::clamp(viewDistanceChunks, 2, 36);
         options.simulationDistance = std::clamp(simulationDistanceChunks, 2, 12);
@@ -3940,7 +3952,7 @@ struct VulkanRenderer::Impl final : public gameplay::SimulationHost {
             cursorX, cursorY, windowWidth, windowHeight, framebufferWidth, framebufferHeight);
         const ui::HudLayout layout{static_cast<float>(framebufferWidth),
                                    static_cast<float>(framebufferHeight),
-                                   menuSystem.guiScaleSetting};
+                                   menuSystem.guiScaleSetting, menuSystem.forceUnicodeFont};
         // vanilla 里背包与容器的槽位是静音的，只有真正的按钮控件才播 ui.button.click
         // 拿起或移动物品因此没有点击声，这一族界面里只有上面那些菜单按钮出声
         //
@@ -4101,7 +4113,7 @@ struct VulkanRenderer::Impl final : public gameplay::SimulationHost {
         }
         const ui::HudLayout layout{static_cast<float>(framebufferWidth),
                                    static_cast<float>(framebufferHeight),
-                                   menuSystem.guiScaleSetting};
+                                   menuSystem.guiScaleSetting, menuSystem.forceUnicodeFont};
         const auto cursor = currentFramebufferCursor();
         for (std::size_t tabIndex = 0; tabIndex < kCreativeTabCount; ++tabIndex) {
             if (layout.creativeTab(tabIndex).contains(cursor.x, cursor.y)) {
@@ -4129,7 +4141,7 @@ struct VulkanRenderer::Impl final : public gameplay::SimulationHost {
         int framebufferHeight = 0;
         glfwGetFramebufferSize(window, &framebufferWidth, &framebufferHeight);
         return ui::HudLayout{static_cast<float>(framebufferWidth),
-                             static_cast<float>(framebufferHeight), menuSystem.guiScaleSetting};
+                             static_cast<float>(framebufferHeight), menuSystem.guiScaleSetting, menuSystem.forceUnicodeFont};
     }
 
     // 鼠标下的槽位，表示为"类型加下标"的值，用于双击判定
@@ -4151,7 +4163,7 @@ struct VulkanRenderer::Impl final : public gameplay::SimulationHost {
                                                     framebufferWidth, framebufferHeight);
         const ui::HudLayout layout{static_cast<float>(framebufferWidth),
                                    static_cast<float>(framebufferHeight),
-                                   menuSystem.guiScaleSetting};
+                                   menuSystem.guiScaleSetting, menuSystem.forceUnicodeFont};
         return dragSlotAt(layout, cursor);
     }
 
@@ -4364,7 +4376,7 @@ struct VulkanRenderer::Impl final : public gameplay::SimulationHost {
                                                     framebufferWidth, framebufferHeight);
         const ui::HudLayout layout{static_cast<float>(framebufferWidth),
                                    static_cast<float>(framebufferHeight),
-                                   menuSystem.guiScaleSetting};
+                                   menuSystem.guiScaleSetting, menuSystem.forceUnicodeFont};
         const auto slot = dragSlotAt(layout, cursor);
         if (!slot.has_value()) {
             return;

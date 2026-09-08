@@ -131,8 +131,13 @@ class AudioSystem final {
     // Tool-use sounds: flint and steel igniting, shears shearing a sheep.
     void playFlintAndSteelUse(const glm::vec3& position);
     void playShear(const glm::vec3& position);
-    // `ui.button.click`, the master-category sound every vanilla button plays
-    // when pressed. Positioned at the listener so attenuation cannot hide it.
+    // `ui.button.click`, the sound every vanilla button plays when pressed.
+    // Positioned at the listener so attenuation cannot hide it.
+    //
+    // GUI spec §1.4 / 26.1 `SimpleSoundInstance.forUI`: volume 0.25, pitch 1.0.
+    // The 0.25 is the *default volume* of the two-argument `forUI` overload, not
+    // the pitch argument — reading it as the pitch is how this ended up at 1.0.
+    static constexpr float kUiButtonClickVolume = 0.25F;
     void playButtonClick(const glm::vec3& position);
     void playFootstep(world::Block block, const glm::vec3& position, float volume = 0.5F);
     void playItemPickup(const glm::vec3& position);

@@ -20,8 +20,11 @@ namespace mc::ui {
                                   float framebufferWidth);
 
 // 当前画布尺寸下，列表带里放得下多少个存档行
+// UI-3：`forceUnicode` 参与缩放求解（26.1 `Window.calculateScale`），因此凡是自己构造
+// HudLayout 的可见行数助手都要收下它。**故意不给默认值**：漏传一处就少了那次档位调整，
+// 而那不会有任何东西变红——让编译器逐个点名。
 [[nodiscard]] std::size_t saveListVisibleRowCount(float framebufferWidth, float framebufferHeight,
-                                                  int guiScale);
+                                                  int guiScale, bool forceUnicode);
 
 // 灰色警告行的 Y 坐标、整宽的语言框，以及一个语言行
 [[nodiscard]] float languageWarningY(const HudLayout& layout);
@@ -29,7 +32,7 @@ namespace mc::ui {
 [[nodiscard]] UiRect languageRow(std::size_t index, const HudLayout& layout,
                                  float framebufferWidth);
 [[nodiscard]] std::size_t languageVisibleRowCount(float framebufferWidth, float framebufferHeight,
-                                                  int guiScale);
+                                                  int guiScale, bool forceUnicode);
 // 绘制与输入共用的滚动条几何，以及光标到行的映射
 // 命中轨道比四像素宽的滑块更宽，这与 vanilla 列表控件那条好点的边槽一致，视觉上仍然窄
 [[nodiscard]] UiRect languageScrollbarTrack(const HudLayout& layout, float framebufferWidth);
@@ -48,7 +51,7 @@ namespace mc::ui {
 [[nodiscard]] UiRect controlsRow(std::size_t visibleIndex, const HudLayout& layout,
                                  float framebufferWidth);
 [[nodiscard]] std::size_t controlsVisibleRowCount(float framebufferWidth, float framebufferHeight,
-                                                  int guiScale);
+                                                  int guiScale, bool forceUnicode);
 [[nodiscard]] UiRect controlsScrollbarTrack(const HudLayout& layout, float framebufferWidth);
 [[nodiscard]] std::size_t controlsScrollIndexFromCursor(const HudLayout& layout,
                                                         float framebufferWidth,

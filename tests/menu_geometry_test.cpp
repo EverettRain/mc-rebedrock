@@ -6,7 +6,8 @@ int main() {
     constexpr float width = 1280.0F;
     constexpr float height = 720.0F;
     const mc::ui::HudLayout layout{width, height, 2};
-    const std::size_t visible = mc::ui::languageVisibleRowCount(width, height, 2);
+    const std::size_t visible =
+        mc::ui::languageVisibleRowCount(width, height, 2, /*forceUnicode=*/false);
     constexpr std::size_t itemCount = 40U;
     assert(visible > 0U && visible < itemCount);
 

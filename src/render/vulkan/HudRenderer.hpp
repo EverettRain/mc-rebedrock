@@ -34,6 +34,7 @@
 #include "ui/ButtonControl.hpp"
 #include "ui/ChatHistory.hpp"
 #include "ui/GuiNineSlice.hpp"
+#include "ui/TextMetrics.hpp"
 #include "ui/TitleScreenLayout.hpp"
 #include "ui/TooltipLayout.hpp"
 #include "ui/SubtitleFeed.hpp"
@@ -276,7 +277,7 @@ class HudRenderer final {
     [[nodiscard]] std::size_t saveListVisibleRowCount() const {
         return ui::saveListVisibleRowCount(static_cast<float>(swapchainExtent.width),
                                            static_cast<float>(swapchainExtent.height),
-                                           menuSystem.guiScaleSetting);
+                                           menuSystem.guiScaleSetting, menuSystem.forceUnicodeFont);
     }
     [[nodiscard]] ui::UiRect languageListBox(const ui::HudLayout& layout) const {
         return ui::languageListBox(layout, static_cast<float>(swapchainExtent.width));
@@ -290,7 +291,7 @@ class HudRenderer final {
     [[nodiscard]] std::size_t languageVisibleRowCount() const {
         return ui::languageVisibleRowCount(static_cast<float>(swapchainExtent.width),
                                            static_cast<float>(swapchainExtent.height),
-                                           menuSystem.guiScaleSetting);
+                                           menuSystem.guiScaleSetting, menuSystem.forceUnicodeFont);
     }
     [[nodiscard]] ui::UiRect frontendButtonRect(const ui::HudLayout& layout, ui::PageId page,
                                                 std::size_t index, std::size_t buttonCount) const {
@@ -312,7 +313,7 @@ class HudRenderer final {
         const ui::PageId pageId = menuSystem.pageStack.current();
         const ui::HudLayout layout{static_cast<float>(swapchainExtent.width),
                                    static_cast<float>(swapchainExtent.height),
-                                   menuSystem.guiScaleSetting};
+                                   menuSystem.guiScaleSetting, menuSystem.forceUnicodeFont};
         const std::size_t count = menuButtonCount();
         drawContext_.worldOpen = currentSave.has_value();
         drawContext_.worldSelectable = !menuSystem.saveSummaries.empty();
@@ -326,7 +327,7 @@ class HudRenderer final {
         if (pageId == ui::PageId::Controls) {
             const std::size_t total = input::keyBindRows().size();
             const std::size_t window = ui::controlsVisibleRowCount(
-                fbWidth, static_cast<float>(swapchainExtent.height), menuSystem.guiScaleSetting);
+                fbWidth, static_cast<float>(swapchainExtent.height), menuSystem.guiScaleSetting, menuSystem.forceUnicodeFont);
             const std::size_t first = std::min(menuSystem.controlsListFirstIndex, total);
             keyRows = std::min(window, total - first);
             drawContext_.keyBindFirstIndex = first;
@@ -658,12 +659,19 @@ class HudRenderer final {
                 metrics.pixelHeight * scale,
             };
             if (metrics.visible && shadow) {
-                auto shadowColor = color;
-                shadowColor.r *= 0.18F;
-                shadowColor.g *= 0.18F;
-                shadowColor.b *= 0.18F;
+                // UI-3：阴影色 = 主色 × 0.25，在 sRGB 编码字节上乘再截断
+                // （26.1 `Font.java:428` 的 `ARGB.scaleRGB(textColor, 0.25F)`）。
+                // 此前这里是手调的 0.18，比原版亮不止一档。
+                const glm::vec4 shadowColor{
+                    ui::textShadowChannel(color.r),
+                    ui::textShadowChannel(color.g),
+                    ui::textShadowChannel(color.b),
+                    color.a,
+                };
+                // 偏移是**每个字形自己的**：ASCII 1 逻辑像素，半尺寸的 unicode 字形 0.5。
+                const float offset = metrics.shadowOffset * scale;
                 drawHudQuad(commandBuffer,
-                            {glyph.x + scale, glyph.y + scale, glyph.width, glyph.height},
+                            {glyph.x + offset, glyph.y + offset, glyph.width, glyph.height},
                             shadowColor, metrics.layer, false, uv, true);
             }
             if (metrics.visible) {
@@ -1144,7 +1152,7 @@ class HudRenderer final {
         const float fbWidth = static_cast<float>(swapchainExtent.width);
         const std::size_t total = input::keyBindRows().size();
         const std::size_t visible = ui::controlsVisibleRowCount(
-            fbWidth, static_cast<float>(swapchainExtent.height), menuSystem.guiScaleSetting);
+            fbWidth, static_cast<float>(swapchainExtent.height), menuSystem.guiScaleSetting, menuSystem.forceUnicodeFont);
         if (total <= visible) {
             return;  // everything fits; no scrollbar
         }
@@ -2582,7 +2590,7 @@ class HudRenderer final {
         // 准星：vanilla 在游戏中每帧绘制，打开界面时它和整层一起被渐变压暗
         const ui::HudLayout crosshairLayout{static_cast<float>(swapchainExtent.width),
                                             static_cast<float>(swapchainExtent.height),
-                                            menuSystem.guiScaleSetting};
+                                            menuSystem.guiScaleSetting, menuSystem.forceUnicodeFont};
         const float crosshairSize = 15.0F * crosshairLayout.scale();
         vkCmdBindPipeline(commandBuffer, VK_PIPELINE_BIND_POINT_GRAPHICS, crosshairPipeline);
         vkCmdBindDescriptorSets(commandBuffer, VK_PIPELINE_BIND_POINT_GRAPHICS, hudPipelineLayout,
@@ -2599,7 +2607,7 @@ class HudRenderer final {
             return;
         const ui::HudLayout layout{static_cast<float>(swapchainExtent.width),
                                    static_cast<float>(swapchainExtent.height),
-                                   menuSystem.guiScaleSetting};
+                                   menuSystem.guiScaleSetting, menuSystem.forceUnicodeFont};
         vkCmdBindPipeline(commandBuffer, VK_PIPELINE_BIND_POINT_GRAPHICS, hudPipeline);
         vkCmdBindDescriptorSets(commandBuffer, VK_PIPELINE_BIND_POINT_GRAPHICS, hudPipelineLayout,
                                 0, 1, &descriptorSet, 0, nullptr);

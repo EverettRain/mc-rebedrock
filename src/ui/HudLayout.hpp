@@ -54,12 +54,15 @@ class HudLayout final {
 
     // 请求的缩放为零表示 Minecraft 的"自动"档
     // 实际生效的缩放永远是整数，并且至少保住 320x240 的逻辑画布
-    HudLayout(float width, float height, int requestedScale = 0);
+    HudLayout(float width, float height, int requestedScale = 0, bool forceUnicode = false);
 
+    // 26.1 `Window.calculateScale`。`forceUnicode` 打开时档位被抬到偶数——
+    // spec §1.1 说「26.1 已无此逻辑 [?]」，那是错的，源码里就在 Window.java:424-426。
     [[nodiscard]] static int calculateGuiScale(
         int framebufferWidth,
         int framebufferHeight,
-        int requestedScale = 0);
+        int requestedScale = 0,
+        bool forceUnicode = false);
 
     [[nodiscard]] UiRect hotbarSlot(std::size_t index) const;
     [[nodiscard]] UiRect hotbarBackground() const;
@@ -143,6 +146,21 @@ class HudLayout final {
     [[nodiscard]] int logicalHeight() const;
 
   private:
+    // UI-3：逻辑像素 → 帧缓冲像素。GUI spec §1.1 的映射就是一次乘 scale：
+    // 26.1 的 GUI 正交投影用的是 `width / guiScale` 的**未取整**值
+    // （`GuiRenderer.java:203`），不是 ceil 后的 scaledWidth——spec §1.1 那句
+    // 「ortho(0, scaledWidth, scaledHeight, 0, …)」是错的。两者故意不一致：
+    // **版面用 ceil 后的逻辑画布做整数运算，绘制用精确的 ×scale**，右/下边缘那不足
+    // 一像素的一列因此被切掉，这是原版行为。
+    [[nodiscard]] float toFramebuffer(int logical) const {
+        return static_cast<float>(logical) * scale_;
+    }
+    // 在逻辑画布上居中一个宽/高为 `extent` 的东西，**整数除法**（spec §1.2）。
+    // 从前这里是 `(帧缓冲宽 - 内容宽) * 0.5F`：既没取整，也没用 ceil 后的画布，
+    // 于是 1280x720 @scale 3 下快捷栏落在 367 而不是 vanilla 的 366。
+    [[nodiscard]] int centredLogicalX(int extent) const { return (logicalWidth() - extent) / 2; }
+    [[nodiscard]] int centredLogicalY(int extent) const { return (logicalHeight() - extent) / 2; }
+
     float width_;
     float height_;
     float scale_;

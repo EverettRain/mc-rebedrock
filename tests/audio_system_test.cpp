@@ -362,5 +362,18 @@ int main() {
         }
     }
 
+    // UI-3 / GUI spec §1.4：按钮点击音的音量是 **0.25**，不是 1.0。
+    //
+    // 26.1 `AbstractWidget.playDownSound` 调的是
+    // `SimpleSoundInstance.forUI(SoundEvents.UI_BUTTON_CLICK, 1.0F)`，而那个两参数重载
+    // 把 **1.0 当作 pitch**，音量走它自己的默认值 0.25（`SimpleSoundInstance.java:18-19`）。
+    // 把 1.0 读成音量正是本仓此前的错法——播出来比原版响四倍，而这不会有任何东西变红。
+    {
+        static_assert(AudioSystem::kUiButtonClickVolume == 0.25F,
+                      "vanilla plays ui.button.click at volume 0.25 (SimpleSoundInstance.forUI)");
+        static_assert(AudioSystem::kUiButtonClickVolume < 1.0F,
+                      "reading forUI's pitch argument as the volume is the mistake this guards");
+    }
+
     return 0;
 }

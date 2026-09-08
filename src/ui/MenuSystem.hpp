@@ -96,6 +96,10 @@ class MenuSystem final {
     bool simulationDistanceSliderDragging = false;
     bool masterVolumeSliderDragging = false;
     int guiScaleSetting = 0;
+    // UI-3：强制 Unicode 字体也参与 GUI 缩放的求解——26.1 `Window.calculateScale` 在
+    // 打开它时把档位抬到偶数（unicode 字形按半尺寸绘制，奇数档会让半像素落不到整数纹素上）。
+    // 与 guiScaleSetting 一样，是 options 的镜像，供每一处 HudLayout 构造读取。
+    bool forceUnicodeFont = false;
     std::size_t resolutionIndex = 0;
     CreativeTab creativeTab = CreativeTab::BuildingBlocks;
     std::size_t creativeScrollRow = 0;

@@ -50,22 +50,34 @@ UiRect tiledBackgroundSource(float framebufferWidth, float framebufferHeight, fl
     };
 }
 
-int HudLayout::calculateGuiScale(int framebufferWidth, int framebufferHeight, int requestedScale) {
+int HudLayout::calculateGuiScale(int framebufferWidth, int framebufferHeight, int requestedScale,
+                                 bool forceUnicode) {
     const int safeWidth = std::max(framebufferWidth, 1);
     const int safeHeight = std::max(framebufferHeight, 1);
     const int requested = std::max(requestedScale, 0);
     int scale = 1;
-    while ((requested == 0 || scale < requested) && safeWidth / (scale + 1) >= 320 &&
-           safeHeight / (scale + 1) >= 240) {
+    // 26.1 `Window.calculateScale` 的递增循环，逐字同形——包括那两条只在极小画布上
+    // 才起作用的兜底（`scale < framebufferWidth/Height`），少了它们，一个比缩放档还窄的
+    // 帧缓冲会一直放大下去
+    // `scale != requested` 而不是 `scale < requested`，与 vanilla 同形：requested 为 0（Auto）
+    // 时这个条件恒真，循环因此一路涨到上限——那正是 Auto 档的定义，不需要另一条分支
+    while (scale != requested && scale < safeWidth && scale < safeHeight &&
+           safeWidth / (scale + 1) >= 320 && safeHeight / (scale + 1) >= 240) {
+        ++scale;
+    }
+    // 打开强制 Unicode 字体后档位被抬到偶数：unicode 字形按半尺寸绘制，奇数档会让
+    // 半像素落不到整数纹素上。spec §1.1 把这条记成「26.1 已无此逻辑 [?]」，那是错的
+    if (forceUnicode && scale % 2 != 0) {
         ++scale;
     }
     return scale;
 }
 
-HudLayout::HudLayout(float width, float height, int requestedScale)
+HudLayout::HudLayout(float width, float height, int requestedScale, bool forceUnicode)
     : width_(width), height_(height),
-      scale_(static_cast<float>(
-          calculateGuiScale(static_cast<int>(width), static_cast<int>(height), requestedScale))) {}
+      scale_(static_cast<float>(calculateGuiScale(static_cast<int>(width),
+                                                  static_cast<int>(height), requestedScale,
+                                                  forceUnicode))) {}
 
 int HudLayout::logicalWidth() const {
     return static_cast<int>(std::ceil(width_ / scale_));
@@ -89,13 +101,17 @@ UiRect HudLayout::hotbarSlot(std::size_t index) const {
 }
 
 UiRect HudLayout::hotbarBackground() const {
-    const float backgroundWidth = 182.0F * scale_;
-    const float backgroundHeight = 22.0F * scale_;
+    constexpr int kWidth = 182;
+    constexpr int kHeight = 22;
+    // 底边留 4 逻辑像素。**这个 4 是本作既有的取值，不是 vanilla 的**——26.1 的
+    // `Gui#renderItemHotbar` 把快捷栏贴在 `scaledHeight - 22`。本轮只把算术搬到逻辑
+    // 像素整数网格上，不动各方法自己的常量（那是 §11 HUD 几何的活，登记给 UI-7）。
+    constexpr int kBottomMargin = 4;
     return {
-        (width_ - backgroundWidth) * 0.5F,
-        height_ - backgroundHeight - 4.0F * scale_,
-        backgroundWidth,
-        backgroundHeight,
+        toFramebuffer(centredLogicalX(kWidth)),
+        toFramebuffer(logicalHeight() - kHeight - kBottomMargin),
+        toFramebuffer(kWidth),
+        toFramebuffer(kHeight),
     };
 }
 
@@ -123,9 +139,11 @@ UiRect HudLayout::experienceBar() const {
 }
 
 UiRect HudLayout::inventoryPanel() const {
-    const float panelWidth = 176.0F * scale_;
-    const float panelHeight = 166.0F * scale_;
-    return {(width_ - panelWidth) * 0.5F, (height_ - panelHeight) * 0.5F, panelWidth, panelHeight};
+    // spec §5 范式 L6：`leftPos = (W - imageWidth) / 2`，整数除法
+    constexpr int kWidth = 176;
+    constexpr int kHeight = 166;
+    return {toFramebuffer(centredLogicalX(kWidth)), toFramebuffer(centredLogicalY(kHeight)),
+            toFramebuffer(kWidth), toFramebuffer(kHeight)};
 }
 
 UiRect HudLayout::inventorySlot(std::size_t index) const {
@@ -293,9 +311,10 @@ UiRect HudLayout::anvilOutputSlot() const {
 }
 
 UiRect HudLayout::creativePanel() const {
-    const float panelWidth = 195.0F * scale_;
-    const float panelHeight = 136.0F * scale_;
-    return {(width_ - panelWidth) * 0.5F, (height_ - panelHeight) * 0.5F, panelWidth, panelHeight};
+    constexpr int kWidth = 195;
+    constexpr int kHeight = 136;
+    return {toFramebuffer(centredLogicalX(kWidth)), toFramebuffer(centredLogicalY(kHeight)),
+            toFramebuffer(kWidth), toFramebuffer(kHeight)};
 }
 
 UiRect HudLayout::creativeSlot(std::size_t index) const {
@@ -403,21 +422,21 @@ UiRect HudLayout::creativeScrollbarThumb(float scrollPosition) const {
 }
 
 UiRect HudLayout::worldNameField() const {
-    const float width = 200.0F * scale_;
+    constexpr int kWidth = 200;
     return {
-        (width_ - width) * 0.5F,
-        height_ * 0.5F - 58.0F * scale_,
-        width,
-        20.0F * scale_,
+        toFramebuffer(centredLogicalX(kWidth)),
+        toFramebuffer(logicalHeight() / 2 - 58),
+        toFramebuffer(kWidth),
+        toFramebuffer(20),
     };
 }
 
 UiRect HudLayout::chatInput() const {
     return {
-        2.0F * scale_,
-        height_ - 14.0F * scale_,
-        width_ - 4.0F * scale_,
-        12.0F * scale_,
+        toFramebuffer(2),
+        toFramebuffer(logicalHeight() - 14),
+        toFramebuffer(logicalWidth() - 4),
+        toFramebuffer(12),
     };
 }
 
@@ -425,16 +444,15 @@ UiRect HudLayout::menuButton(std::size_t index, std::size_t buttonCount) const {
     if (buttonCount == 0U || buttonCount > kMaximumMenuButtons || index >= buttonCount) {
         throw std::out_of_range("menu button index or count is invalid");
     }
-    constexpr float buttonWidth = 200.0F;
-    constexpr float buttonHeight = 20.0F;
-    constexpr float buttonStep = 24.0F;
-    const float scaledWidth = buttonWidth * scale_;
+    constexpr int buttonWidth = 200;
+    constexpr int buttonHeight = 20;
+    constexpr int buttonStep = 24;
     return {
-        (width_ - scaledWidth) * 0.5F,
-        height_ * 0.5F - static_cast<float>(buttonCount) * 12.0F * scale_ +
-            static_cast<float>(index) * buttonStep * scale_,
-        scaledWidth,
-        buttonHeight * scale_,
+        toFramebuffer(centredLogicalX(buttonWidth)),
+        toFramebuffer(logicalHeight() / 2 - static_cast<int>(buttonCount) * 12 +
+                      static_cast<int>(index) * buttonStep),
+        toFramebuffer(buttonWidth),
+        toFramebuffer(buttonHeight),
     };
 }
 
@@ -444,33 +462,33 @@ UiRect HudLayout::bottomMenuButton(std::size_t index, std::size_t buttonCount,
         columnCount == 0U || columnCount > buttonCount) {
         throw std::out_of_range("menu button index or count is invalid");
     }
-    constexpr float buttonWidth = 200.0F;
-    constexpr float buttonHeight = 20.0F;
-    constexpr float buttonStep = 24.0F;
-    constexpr float buttonGap = 4.0F;     // gap between adjacent buttons, like the vertical step
-    constexpr float bottomMargin = 16.0F; // canvas bottom to last button's bottom
-    constexpr float screenMargin = 16.0F; // min gap from the button block to the screen edge
-    const std::size_t rows = (buttonCount + columnCount - 1U) / columnCount;
-    const std::size_t column = index / rows;
-    const std::size_t row = index % rows;
+    constexpr int buttonWidth = 200;
+    constexpr int buttonHeight = 20;
+    constexpr int buttonStep = 24;
+    constexpr int buttonGap = 4;     // gap between adjacent buttons, like the vertical step
+    constexpr int bottomMargin = 16; // canvas bottom to last button's bottom
+    constexpr int screenMargin = 16; // min gap from the button block to the screen edge
+    const auto rows = static_cast<int>((buttonCount + columnCount - 1U) / columnCount);
+    const auto columns = static_cast<int>(columnCount);
+    const auto column = static_cast<int>(index) / rows;
+    const auto row = static_cast<int>(index) % rows;
     // 各列并排、留一个基本间距，整块作为一个单位居中
     // 这与 vanilla 相邻的按钮行一致，而不是把两列各自摊到半边屏幕上
     // 宽度会被夹紧，窄画布因此绝不会把整块挤出边界
-    const float maxScaledWidth = (width_ - 2.0F * screenMargin * scale_ -
-                                  static_cast<float>(columnCount - 1U) * buttonGap * scale_) /
-                                 static_cast<float>(columnCount);
-    const float scaledWidth = std::min(buttonWidth * scale_, maxScaledWidth);
-    const float blockWidth = static_cast<float>(columnCount) * scaledWidth +
-                             static_cast<float>(columnCount - 1U) * buttonGap * scale_;
-    const float blockX = (width_ - blockWidth) * 0.5F;
-    const float blockBottom = height_ - bottomMargin * scale_;
-    const float blockTop =
-        blockBottom - buttonHeight * scale_ - static_cast<float>(rows - 1U) * buttonStep * scale_;
+    // UI-3：全程逻辑像素整数——夹紧那一步也要取整，否则整块的宽度带小数，居中又会回到
+    // 半像素上，而 spec §1.2 要求居中一律整数除法
+    const int maxWidth =
+        (logicalWidth() - 2 * screenMargin - (columns - 1) * buttonGap) / columns;
+    const int width = std::min(buttonWidth, maxWidth);
+    const int blockWidth = columns * width + (columns - 1) * buttonGap;
+    const int blockX = (logicalWidth() - blockWidth) / 2;
+    const int blockBottom = logicalHeight() - bottomMargin;
+    const int blockTop = blockBottom - buttonHeight - (rows - 1) * buttonStep;
     return {
-        blockX + static_cast<float>(column) * (scaledWidth + buttonGap * scale_),
-        blockTop + static_cast<float>(row) * buttonStep * scale_,
-        scaledWidth,
-        buttonHeight * scale_,
+        toFramebuffer(blockX + column * (width + buttonGap)),
+        toFramebuffer(blockTop + row * buttonStep),
+        toFramebuffer(width),
+        toFramebuffer(buttonHeight),
     };
 }
 
@@ -478,40 +496,39 @@ UiRect HudLayout::videoSettingsButton(std::size_t index, std::size_t buttonCount
     if (buttonCount == 0U || buttonCount > kMaximumMenuButtons || index >= buttonCount) {
         throw std::out_of_range("menu button index or count is invalid");
     }
-    constexpr float buttonWidth = 200.0F;
-    constexpr float buttonHeight = 20.0F;
-    constexpr float buttonStep = 24.0F;
-    constexpr float buttonGap = 4.0F;
-    constexpr float screenMargin = 16.0F; // min gap from the button block to the screen edge
+    constexpr int buttonWidth = 200;
+    constexpr int buttonHeight = 20;
+    constexpr int buttonStep = 24;
+    constexpr int buttonGap = 4;
+    constexpr int screenMargin = 16; // min gap from the button block to the screen edge
     // 最后一个按钮是"完成"，单独居中占网格下方一行
     // 其余的按列优先塞进两列，与存档界面的按钮一样
-    const std::size_t settingCount = buttonCount - 1U;
-    const std::size_t rows = (settingCount + 1U) / 2U;
-    const std::size_t totalRows = rows + 1U;
+    const auto settingCount = static_cast<int>(buttonCount) - 1;
+    const int rows = (settingCount + 1) / 2;
+    const int totalRows = rows + 1;
     // 整块按 menuButton 的方式垂直居中
     // 首行落在中线上方半块处，与单列布局会摆的位置相同
-    const float blockTop = height_ * 0.5F - static_cast<float>(totalRows) * 12.0F * scale_;
-    const float maxScaledWidth =
-        (width_ - 2.0F * screenMargin * scale_ - buttonGap * scale_) * 0.5F;
-    const float scaledWidth = std::min(buttonWidth * scale_, maxScaledWidth);
-    const float blockWidth = 2.0F * scaledWidth + buttonGap * scale_;
-    const float blockX = (width_ - blockWidth) * 0.5F;
+    const int blockTop = logicalHeight() / 2 - totalRows * 12;
+    const int maxWidth = (logicalWidth() - 2 * screenMargin - buttonGap) / 2;
+    const int width = std::min(buttonWidth, maxWidth);
+    const int blockWidth = 2 * width + buttonGap;
+    const int blockX = (logicalWidth() - blockWidth) / 2;
     if (index == buttonCount - 1U) {
         // 完成按钮独占一整行，居中
         return {
-            (width_ - scaledWidth) * 0.5F,
-            blockTop + static_cast<float>(rows) * buttonStep * scale_,
-            scaledWidth,
-            buttonHeight * scale_,
+            toFramebuffer(centredLogicalX(width)),
+            toFramebuffer(blockTop + rows * buttonStep),
+            toFramebuffer(width),
+            toFramebuffer(buttonHeight),
         };
     }
-    const std::size_t column = index / rows;
-    const std::size_t row = index % rows;
+    const int column = static_cast<int>(index) / rows;
+    const int row = static_cast<int>(index) % rows;
     return {
-        blockX + static_cast<float>(column) * (scaledWidth + buttonGap * scale_),
-        blockTop + static_cast<float>(row) * buttonStep * scale_,
-        scaledWidth,
-        buttonHeight * scale_,
+        toFramebuffer(blockX + column * (width + buttonGap)),
+        toFramebuffer(blockTop + row * buttonStep),
+        toFramebuffer(width),
+        toFramebuffer(buttonHeight),
     };
 }
 

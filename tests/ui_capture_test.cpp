@@ -285,6 +285,23 @@ void testKnobsAreAllPinned() {
     CHECK(body.find("toastQueue_.clear()") != std::string::npos);
     CHECK(body.find("chatHistory.clear()") != std::string::npos);
 
+    // ★ 导出**从不写 options.properties**。
+    //
+    // 这条不是洁癖：UI-2 落地后确实发生过——一次 1280x720 的界面截图把 `window.width`
+    // 从 640 改成了 1280（隐藏窗口的尺寸经 `noteWindowSizeChanged` 进了 options，退出时存盘），
+    // 于是下一次拍摄读到的是上一次留下的窗口尺寸，视频设置页的 "Fullscreen Resolution"
+    // 标签跟着变，两组基线不可比。拍摄是一次测量，不是一场游戏。
+    const auto persist = source.find("void persistOptions() noexcept");
+    CHECK(persist != std::string::npos);
+    if (persist != std::string::npos) {
+        const std::string persistBody = source.substr(persist, 1200U);
+        const auto guard = persistBody.find("if (uiCapture.has_value() ||");
+        CHECK(guard != std::string::npos);
+        // 豁免必须在**写任何字段之前**：先改 options 再 return 一样会留下脏值
+        const auto firstWrite = persistBody.find("options.guiScale =");
+        CHECK(firstWrite != std::string::npos && guard < firstWrite);
+    }
+
     // 各向异性 / 抗锯齿 / 垂直同步是**初始化期读一次**的，钉在 initialize() 的开头，
     // 不在这个函数里。它们决定采样器与管线，晚一步钉就没用了。
     const auto initialize = source.find("void initialize()");

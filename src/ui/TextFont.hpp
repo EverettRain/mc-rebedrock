@@ -1,6 +1,7 @@
 #pragma once
 
 #include "ui/BitmapFontMetrics.hpp"
+#include "ui/TextMetrics.hpp"
 
 #include <array>
 #include <cstdint>
@@ -37,6 +38,10 @@ struct FontGlyph final {
     float offsetX = 0.0F;
     float offsetY = 0.0F;
     float advance = 4.0F;
+    // UI-3：这个字形的阴影偏移，单位是逻辑像素。
+    // 26.1 把它挂在 `GlyphInfo` 上而不是画字的那一侧：默认 1.0，而 `UnihexProvider`
+    // 的字形按半尺寸绘制，覆写成 0.5。对 unicode 文本一律用 1.0 会让阴影粗一倍。
+    float shadowOffset = kAsciiShadowOffset;
     bool visible = false;
 };
 
@@ -94,7 +99,9 @@ class TextFont final {
     [[nodiscard]] FontGlyph glyph(char32_t codepoint) const;
     [[nodiscard]] float textWidth(std::string_view text, float scale) const;
     // 一行占据的高度，单位 GUI 像素，无论字形来自哪张表都保持 vanilla 的 8
-    [[nodiscard]] static constexpr float lineHeight() { return 8.0F; }
+    // UI-3：26.1 `Font.lineHeight = 9`，此前这里返回的是**字形高 8**。
+    // 两者是不同的量：垂直居中用 8，行距用 9。取值收在 ui/TextMetrics.hpp 一处。
+    [[nodiscard]] static constexpr float lineHeight() { return kFontLineHeight; }
 
   private:
     [[nodiscard]] bool useUnicodeFor(char32_t codepoint) const;

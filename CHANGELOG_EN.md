@@ -8,6 +8,16 @@ simple versioned history while it is in beta.
 ## ReBedrock 26.1beta1
 
 ### Fixed
+- The interface sat one pixel off at some window sizes. Menus, the hotbar, the inventory and
+  container panels were all centred on "half the window in pixels", where Minecraft first turns
+  the window into a whole-numbered interface canvas, centres on that with integer division, and
+  only then scales up. The two agree only when the window size divides evenly by the GUI scale —
+  1280x720 at 3x does not, so the whole menu block landed one pixel to the right of where
+  Minecraft puts it. The arithmetic now matches: nothing moves at GUI scales that divide evenly,
+  and everything else lines up with vanilla. Three measurements were corrected in the same pass:
+  text shadows are back to vanilla's quarter brightness (they were lighter), the shadow under
+  half-width Unicode glyphs is no longer drawn twice as thick as vanilla's, and the button click
+  sound plays at vanilla's quarter volume instead of full.
 - The main menu no longer dims the whole screen, and its title is no longer a line of enlarged
   text. A 30%-opaque black sheet used to sit over the panorama, justified in a code comment as
   "keeping the white title legible" — vanilla has no such sheet: Minecraft draws one

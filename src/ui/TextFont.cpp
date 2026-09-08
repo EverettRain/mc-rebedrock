@@ -141,6 +141,7 @@ FontGlyph TextFont::unicodeGlyph(char32_t codepoint) const {
     result.layer = static_cast<float>(pageLayers_[static_cast<std::size_t>(codepoint >> 8U)]);
     if (packed == 0U) {
         result.advance = codepoint == U' ' ? kSpaceAdvance : kMissingAdvance;
+        result.shadowOffset = kUnicodeShadowOffset;
         return result;
     }
     const float column = static_cast<float>((codepoint & 0x0FU));
@@ -155,6 +156,8 @@ FontGlyph TextFont::unicodeGlyph(char32_t codepoint) const {
     result.pixelHeight = kUnicodeCellSize / kUnicodeOversample;
     // Java 的步进值是 width / 2 + 1，用的是整数除法
     result.advance = static_cast<float>(static_cast<int>(right - left) / 2 + 1);
+    // UnihexProvider.getShadowOffset() —— 半尺寸绘制的字形，阴影也走半像素
+    result.shadowOffset = kUnicodeShadowOffset;
     result.visible = result.pixelWidth > 0.0F;
     return result;
 }

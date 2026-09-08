@@ -6,6 +6,23 @@
 #include <cmath>
 
 namespace mc::ui {
+namespace {
+
+// UI-3：与 HudLayout 私有助手同一套规则——版面在**逻辑像素整数网格**上解，最后一次乘
+// scale 回到帧缓冲像素。spec §1.2：所有居中都是整数除法，否则与原版差 1px。
+[[nodiscard]] float toFb(const HudLayout& layout, int logical) {
+    return static_cast<float>(logical) * layout.scale();
+}
+
+[[nodiscard]] int centredLogical(int canvas, int extent) { return (canvas - extent) / 2; }
+
+// 一段 fb 像素长度回到逻辑像素。只用于把既有的 `box` 矩形接回整数网格——那些矩形
+// 本身已由整数逻辑锚点算出，所以这次除法是精确的。
+[[nodiscard]] int toLogical(const HudLayout& layout, float framebuffer) {
+    return static_cast<int>(std::lround(framebuffer / layout.scale()));
+}
+
+} // namespace
 
 std::size_t menuButtonCount(PageId page, bool worldOpen) {
     switch (page) {
@@ -48,19 +65,20 @@ std::size_t menuButtonCount(PageId page, bool worldOpen) {
 }
 
 UiRect worldListRow(std::size_t index, const HudLayout& layout, float framebufferWidth) {
-    const float scale = layout.scale();
-    const float width = std::min(300.0F * scale, framebufferWidth - 20.0F * scale);
+    static_cast<void>(framebufferWidth);
+    const int canvas = layout.logicalWidth();
+    const int width = std::min(300, canvas - 20);
     return {
-        (framebufferWidth - width) * 0.5F,
-        (34.0F + static_cast<float>(index) * 22.0F) * scale,
-        width,
-        20.0F * scale,
+        toFb(layout, centredLogical(canvas, width)),
+        toFb(layout, 34 + static_cast<int>(index) * 22),
+        toFb(layout, width),
+        toFb(layout, 20),
     };
 }
 
-std::size_t saveListVisibleRowCount(float framebufferWidth, float framebufferHeight, int guiScale) {
-    const HudLayout layout{framebufferWidth, framebufferHeight, guiScale};
-    const float scale = layout.scale();
+std::size_t saveListVisibleRowCount(float framebufferWidth, float framebufferHeight, int guiScale,
+                    bool forceUnicode) {
+    const HudLayout layout{framebufferWidth, framebufferHeight, guiScale, forceUnicode};
     constexpr float kListTop = 34.0F; // first row's top edge, in scale units
     constexpr float kRowStep = 22.0F; // vertical distance between row tops
     // 世界列表那四个功能按钮排成两列各两个，整块因此在底部带上正好占两行
@@ -69,7 +87,8 @@ std::size_t saveListVisibleRowCount(float framebufferWidth, float framebufferHei
     constexpr float kButtonStep = 24.0F;
     constexpr float kBottomMargin = 16.0F; // canvas bottom to last button's bottom
     constexpr float kListToButtonGap = 12.0F;
-    const float logicalHeight = framebufferHeight / scale;
+    // ceil 后的逻辑画布（spec §1.1），不是精确的 fb/scale
+    const auto logicalHeight = static_cast<float>(layout.logicalHeight());
     const float buttonBlockTop =
         logicalHeight - kBottomMargin - kButtonHeight - (kButtonRows - 1.0F) * kButtonStep;
     const float available = buttonBlockTop - kListToButtonGap - kListTop;
@@ -84,39 +103,37 @@ float languageWarningY(const HudLayout& layout) {
 }
 
 UiRect languageListBox(const HudLayout& layout, float framebufferWidth) {
-    const float scale = layout.scale();
-    constexpr float kRowStep = 22.0F;
-    const float topBound = 44.0F * scale;
-    const float warningY = languageWarningY(layout);
-    const float bottomBound = warningY - 8.0F * scale;
-    const float width = framebufferWidth;
+    static_cast<void>(framebufferWidth);
+    constexpr int kRowStep = 22;
+    constexpr int kTopBound = 44;
+    const int bottomBound = toLogical(layout, languageWarningY(layout)) - 8;
     // 高度按内容定：带里放得下几行就是几行
-    const std::size_t rows = std::max<std::size_t>(
-        static_cast<std::size_t>((bottomBound - topBound) / (kRowStep * scale)), 1U);
-    const float height = static_cast<float>(rows) * kRowStep * scale;
-    const float top = topBound + (bottomBound - topBound - height) * 0.5F;
-    return {0.0F, top, width, height};
+    const int rows = std::max((bottomBound - kTopBound) / kRowStep, 1);
+    const int height = rows * kRowStep;
+    const int top = kTopBound + (bottomBound - kTopBound - height) / 2;
+    return {0.0F, toFb(layout, top), toFb(layout, layout.logicalWidth()),
+            toFb(layout, height)};
 }
 
 UiRect languageRow(std::size_t index, const HudLayout& layout, float framebufferWidth) {
-    const float scale = layout.scale();
     const auto box = languageListBox(layout, framebufferWidth);
     constexpr float kRowStep = 22.0F;
     // LanguageSelectionList 的背景是整宽的，但 vanilla 的条目选中矩形只有居中的 270 个逻辑像素
     // 把整条背景当作条目会让悬停与选中从一边拉到另一边，还会把两侧的空边槽变成可点击区域
     constexpr float kVanillaRowWidth = 270.0F;
-    const float rowWidth = std::min(kVanillaRowWidth * scale,
-                                    std::max(box.width - 32.0F * scale, 1.0F));
+    const int boxWidth = toLogical(layout, box.width);
+    const int rowWidth = std::min(static_cast<int>(kVanillaRowWidth), std::max(boxWidth - 32, 1));
     return {
-        box.x + (box.width - rowWidth) * 0.5F,
-        box.y + static_cast<float>(index) * kRowStep * scale,
-        rowWidth,
-        20.0F * scale,
+        box.x + toFb(layout, centredLogical(boxWidth, rowWidth)),
+        box.y + toFb(layout, static_cast<int>(index) * static_cast<int>(kRowStep)),
+        toFb(layout, rowWidth),
+        toFb(layout, 20),
     };
 }
 
-std::size_t languageVisibleRowCount(float framebufferWidth, float framebufferHeight, int guiScale) {
-    const HudLayout layout{framebufferWidth, framebufferHeight, guiScale};
+std::size_t languageVisibleRowCount(float framebufferWidth, float framebufferHeight, int guiScale,
+                    bool forceUnicode) {
+    const HudLayout layout{framebufferWidth, framebufferHeight, guiScale, forceUnicode};
     const float scale = layout.scale();
     constexpr float kRowStep = 22.0F;
     const float rows = std::max(languageListBox(layout, framebufferWidth).height / (kRowStep * scale),
@@ -125,15 +142,14 @@ std::size_t languageVisibleRowCount(float framebufferWidth, float framebufferHei
 }
 
 UiRect languageScrollbarTrack(const HudLayout& layout, float framebufferWidth) {
-    const float scale = layout.scale();
     const auto box = languageListBox(layout, framebufferWidth);
     // vanilla 把滚动条摆在居中的语言条目之外一点，而不是贴着整宽背景的边缘
     // 可见的滑块中心位于屏幕中线右侧 144 个逻辑像素处
-    const float desiredCenter = box.x + box.width * 0.5F + 144.0F * scale;
-    const float center = std::clamp(desiredCenter, box.x + 5.0F * scale,
-                                    box.x + box.width - 5.0F * scale);
-    return {center - 5.0F * scale, box.y + 2.0F * scale,
-            10.0F * scale, std::max(box.height - 4.0F * scale, 1.0F)};
+    const int boxWidth = toLogical(layout, box.width);
+    const int desiredCenter = boxWidth / 2 + 144;
+    const int center = std::clamp(desiredCenter, 5, boxWidth - 5);
+    return {box.x + toFb(layout, center - 5), box.y + toFb(layout, 2), toFb(layout, 10),
+            std::max(box.height - toFb(layout, 4), 1.0F)};
 }
 
 UiRect languageScrollbarThumb(const HudLayout& layout, float framebufferWidth,
@@ -175,37 +191,37 @@ std::size_t languageScrollIndexFromCursor(const HudLayout& layout, float framebu
 // 框体位于标题与底部按钮带之间，后者是视角摇晃、自动跳跃、重置、完成
 // 几何照搬语言列表，区别是这里要给两行底部按钮留位置，而不是给一行警告文字
 UiRect controlsListBox(const HudLayout& layout, float framebufferWidth) {
-    const float scale = layout.scale();
-    constexpr float kRowStep = 12.0F;
-    const float topBound = 40.0F * scale;
+    constexpr int kRowStep = 12;
+    constexpr int kTopBound = 40;
     // 列表在底部按钮带上方结束
     // 带的顶行由四个底部按钮中的第一个推出来，两列即两行，与 languageWarningY 读取带位置的方式相同
     // 两处都不需要一个专门的高度取值函数
-    const float bandTop = layout.bottomMenuButton(0U, 4U, 2U).y;
-    const float bottomBound = bandTop - 12.0F * scale;
-    const std::size_t rows = std::max<std::size_t>(
-        static_cast<std::size_t>((bottomBound - topBound) / (kRowStep * scale)), 1U);
-    const float height = static_cast<float>(rows) * kRowStep * scale;
-    return {0.0F, topBound, framebufferWidth, height};
+    const int bandTop = toLogical(layout, layout.bottomMenuButton(0U, 4U, 2U).y);
+    const int bottomBound = bandTop - 12;
+    const int rows = std::max((bottomBound - kTopBound) / kRowStep, 1);
+    const int height = rows * kRowStep;
+    static_cast<void>(framebufferWidth);
+    return {0.0F, toFb(layout, kTopBound), toFb(layout, layout.logicalWidth()),
+            toFb(layout, height)};
 }
 
 UiRect controlsRow(std::size_t visibleIndex, const HudLayout& layout, float framebufferWidth) {
-    const float scale = layout.scale();
     const auto box = controlsListBox(layout, framebufferWidth);
-    constexpr float kRowStep = 12.0F;
-    constexpr float kRowWidth = 300.0F;
-    const float rowWidth =
-        std::min(kRowWidth * scale, std::max(box.width - 32.0F * scale, 1.0F));
+    constexpr int kRowStep = 12;
+    constexpr int kRowWidth = 300;
+    const int boxWidth = toLogical(layout, box.width);
+    const int rowWidth = std::min(kRowWidth, std::max(boxWidth - 32, 1));
     return {
-        box.x + (box.width - rowWidth) * 0.5F,
-        box.y + static_cast<float>(visibleIndex) * kRowStep * scale,
-        rowWidth,
-        11.0F * scale,
+        box.x + toFb(layout, centredLogical(boxWidth, rowWidth)),
+        box.y + toFb(layout, static_cast<int>(visibleIndex) * kRowStep),
+        toFb(layout, rowWidth),
+        toFb(layout, 11),
     };
 }
 
-std::size_t controlsVisibleRowCount(float framebufferWidth, float framebufferHeight, int guiScale) {
-    const HudLayout layout{framebufferWidth, framebufferHeight, guiScale};
+std::size_t controlsVisibleRowCount(float framebufferWidth, float framebufferHeight, int guiScale,
+                    bool forceUnicode) {
+    const HudLayout layout{framebufferWidth, framebufferHeight, guiScale, forceUnicode};
     const float scale = layout.scale();
     constexpr float kRowStep = 12.0F;
     const float rows =
@@ -214,12 +230,11 @@ std::size_t controlsVisibleRowCount(float framebufferWidth, float framebufferHei
 }
 
 UiRect controlsScrollbarTrack(const HudLayout& layout, float framebufferWidth) {
-    const float scale = layout.scale();
     const auto box = controlsListBox(layout, framebufferWidth);
     const auto row = controlsRow(0U, layout, framebufferWidth);
-    const float center = row.x + row.width + 6.0F * scale;
-    return {center - 5.0F * scale, box.y + 2.0F * scale, 10.0F * scale,
-            std::max(box.height - 4.0F * scale, 1.0F)};
+    const float center = row.x + row.width + toFb(layout, 6);
+    return {center - toFb(layout, 5), box.y + toFb(layout, 2), toFb(layout, 10),
+            std::max(box.height - toFb(layout, 4), 1.0F)};
 }
 
 std::size_t controlsScrollIndexFromCursor(const HudLayout& layout, float framebufferWidth,

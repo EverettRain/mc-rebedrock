@@ -1762,6 +1762,29 @@ if(BUILD_TESTING)
         MC_REBEDROCK_HUD_RENDERER_SRC="${CMAKE_CURRENT_SOURCE_DIR}/src/render/vulkan/HudRenderer.hpp")
     add_test(NAME title_background COMMAND mc_rebedrock_title_background_test)
 
+    # UI-3：版面跑在逻辑画布的整数网格上。断言手算的字面量，外加一条"每个矩形都落在
+    # 缩放的整数倍上"的通用性质——任何一处退回浮点居中都会红。
+    add_executable(mc_rebedrock_hud_layout_logical_test
+        tests/hud_layout_logical_test.cpp
+        src/ui/MenuGeometry.cpp
+        src/ui/TitleScreenLayout.cpp
+        src/ui/HudLayout.cpp
+    )
+    target_include_directories(mc_rebedrock_hud_layout_logical_test PRIVATE src)
+    target_link_libraries(mc_rebedrock_hud_layout_logical_test PRIVATE glm::glm)
+    add_test(NAME hud_layout_logical COMMAND mc_rebedrock_hud_layout_logical_test)
+
+    # UI-3：GUI spec §1.2 的字体度量。行高/阴影色/阴影偏移/整数居中——错了不会崩，
+    # 只会让每一屏歪一点，所以只能靠断言。
+    add_executable(mc_rebedrock_text_metrics_test
+        tests/text_metrics_test.cpp
+        src/ui/TextFont.cpp
+        src/ui/BitmapFontMetrics.cpp
+    )
+    target_include_directories(mc_rebedrock_text_metrics_test PRIVATE src)
+    target_link_libraries(mc_rebedrock_text_metrics_test PRIVATE glm::glm)
+    add_test(NAME text_metrics COMMAND mc_rebedrock_text_metrics_test)
+
     add_executable(mc_rebedrock_texture_animation_test
         tests/texture_animation_test.cpp
         src/assets/TextureAnimation.cpp

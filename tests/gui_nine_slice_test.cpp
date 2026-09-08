@@ -278,6 +278,60 @@ int main() {
         assert(quads.size() < 256U);
     }
 
+    // --- UI-3 / GUI spec §1.3: 内区（四条边**和中心**）默认**平铺**，不是拉伸。 ---
+    //
+    // 26.1 `GuiSpriteScaling.NineSlice.stretch_inner` 默认 false，而
+    // `GuiGraphicsExtractor.blitNineSliceInnerSegment` 在它为 false 时把每一段内区都交给
+    // `blitTiledSprite`。spec §1.3 写的「中心：拉伸填充」是错的，§13.1 #11 那条把边缘
+    // 标成 `[U~]`（用户凭印象）的也可以升级为已核实。
+    //
+    // 这条断言的形状：把按钮拉到远宽于 200px，中段必须被切成多段 200 宽的重复，
+    // 而不是一整段被抻开。改成拉伸就会只剩一段。
+    {
+        const UiRect destination{0.0F, 0.0F, 700.0F, 20.0F};
+        const auto quads = quadsOf(destination, kButtonRegion, buttonScaling(), 1.0F);
+        assertSourceInsideRegion(quads, kButtonRegion);
+        assertCoversDestination(quads, destination);
+        // 中心格 = 横竖都在边框之内的那些四边形（边框带在三行三列里各占一份，
+        // 所以只按横向筛会把上下边也数进来）
+        std::size_t middleQuads = 0;
+        for (const auto& quad : quads) {
+            const bool insideX =
+                quad.destination.x >= 3.0F && quad.destination.x + quad.destination.width <= 697.0F;
+            const bool insideY =
+                quad.destination.y >= 3.0F && quad.destination.y + quad.destination.height <= 17.0F;
+            if (insideX && insideY) {
+                ++middleQuads;
+            }
+        }
+        // 694 像素的中段铺 194 像素的带：ceil(694/194) = 4 次重复
+        assert(middleQuads == 4U);
+    }
+
+    // 同一张精灵声明 stretch_inner 之后，中段变回**一整段**——这是 26.1 tooltip/frame
+    // 用的那条路径，也是上面那条断言的对照组。
+    {
+        const auto stretched = GuiSpriteScaling::parse(R"({
+            "gui": {"scaling": {"type": "nine_slice", "width": 200, "height": 20,
+                                "border": 3, "stretch_inner": true}}
+        })");
+        const UiRect destination{0.0F, 0.0F, 700.0F, 20.0F};
+        const auto quads = quadsOf(destination, kButtonRegion, stretched, 1.0F);
+        assertSourceInsideRegion(quads, kButtonRegion);
+        assertCoversDestination(quads, destination);
+        std::size_t middleQuads = 0;
+        for (const auto& quad : quads) {
+            const bool insideX =
+                quad.destination.x >= 3.0F && quad.destination.x + quad.destination.width <= 697.0F;
+            const bool insideY =
+                quad.destination.y >= 3.0F && quad.destination.y + quad.destination.height <= 17.0F;
+            if (insideX && insideY) {
+                ++middleQuads;
+            }
+        }
+        assert(middleQuads == 1U);
+    }
+
     // --- Degenerate inputs emit nothing rather than inverted quads. ---
     {
         assert(quadsOf({0.0F, 0.0F, 0.0F, 20.0F}, kButtonRegion, buttonScaling(), 1.0F).empty());

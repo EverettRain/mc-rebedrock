@@ -46,7 +46,8 @@ void buildAndLayoutPage(ui::PageId page, bool worldOpen, float fbW, float fbH, i
     std::size_t keyRows = 0U;
     if (page == ui::PageId::Controls) {
         const std::size_t total = input::keyBindRows().size();
-        const std::size_t window = ui::controlsVisibleRowCount(fbW, fbH, guiScale);
+        const std::size_t window =
+            ui::controlsVisibleRowCount(fbW, fbH, guiScale, /*forceUnicode=*/false);
         keyRows = std::min(window, total);
         ctx.keyBindFirstIndex = 0U;
         ctx.keyBindRowCount = keyRows;
@@ -110,7 +111,7 @@ void testControlsListWindowed() {
     const float fbW = 854.0F;
     const float fbH = 480.0F;
     const int scale = 1;
-    const std::size_t window = ui::controlsVisibleRowCount(fbW, fbH, scale);
+    const std::size_t window = ui::controlsVisibleRowCount(fbW, fbH, scale, /*forceUnicode=*/false);
     ui::MenuBuildContext ctx;
     ctx.keyBindFirstIndex = 0U;
     ctx.keyBindRowCount = std::min(window, input::keyBindRows().size());
@@ -141,7 +142,7 @@ void testControlsRowsInMiddleBandAndScroll() {
     const float fbH = 1080.0F;
     const int scale = 3;
     const ui::HudLayout layout{fbW, fbH, scale};
-    const std::size_t window = ui::controlsVisibleRowCount(fbW, fbH, scale);
+    const std::size_t window = ui::controlsVisibleRowCount(fbW, fbH, scale, /*forceUnicode=*/false);
     const std::size_t total = input::keyBindRows().size();
     assert(window < total);  // this canvas genuinely scrolls
 

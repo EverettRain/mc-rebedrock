@@ -1002,8 +1002,17 @@ void AudioSystem::playShear(const glm::vec3& position) {
 }
 
 void AudioSystem::playButtonClick(const glm::vec3& position) {
-    // UI clicks route through Master (vanilla plays them on the master bus).
-    implementation->playEvent("ui.button.click", SoundCategory::Master, position, 1.0F, 1.0F);
+    // UI-3 / GUI spec §1.4: vanilla plays this at volume 0.25, not 1.0 —
+    // `AbstractWidget.playDownSound` -> `SimpleSoundInstance.forUI(sound, 1.0F)`,
+    // whose two-argument overload passes `volume = 0.25F`
+    // (`SimpleSoundInstance.java:18-19`). The pitch is the 1.0 argument.
+    //
+    // The category is still Master. Vanilla's is `SoundSource.UI`, which this
+    // build's SoundCategory does not have — adding it touches the audio
+    // subsystem and the options serialiser, so it is registered as a finding
+    // rather than done here (UI-3 does not reach into another module).
+    implementation->playEvent("ui.button.click", SoundCategory::Master, position,
+                              kUiButtonClickVolume, 1.0F);
 }
 
 void AudioSystem::playFootstep(world::Block block, const glm::vec3& position, float volume) {
