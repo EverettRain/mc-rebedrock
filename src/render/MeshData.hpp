@@ -212,6 +212,16 @@ struct RenderMeshData final {
     MeshData mesh;
     MeshData cutoutMesh;
     MeshData translucentMesh;
+    // RN-37：半透明层里那些「不透明部分要投影」的面（玻璃），给太阳阴影预通道用。
+    //
+    // ★ 只有索引，**没有顶点**：它们指的就是 `translucentMesh.vertices`，阴影那一趟
+    // 按同一个 vertexOffset 绑定。复制一份顶点是这个特性最容易付错的一笔钱——
+    // 一个面 6 个索引 24 字节，而 6 个顶点是它的好几倍，且顶点还要再上传一遍。
+    //
+    // 它不参与 RN-22 的 quad 级排序：排序换的是 `translucentIndexBuffer` 整条，
+    // 而这一段跟着 opaque/cutout 待在主 indexBuffer 里。阴影不需要按视点排序——
+    // 它写的是深度，先后无关。
+    std::vector<std::uint32_t> translucentShadowIndices;
     Aabb bounds;
 
     [[nodiscard]] bool empty() const {
@@ -219,7 +229,8 @@ struct RenderMeshData final {
     }
     [[nodiscard]] std::size_t capacityBytes() const {
         return mesh.capacityBytes() + cutoutMesh.capacityBytes() +
-               translucentMesh.capacityBytes();
+               translucentMesh.capacityBytes() +
+               translucentShadowIndices.capacity() * sizeof(std::uint32_t);
     }
 };
 

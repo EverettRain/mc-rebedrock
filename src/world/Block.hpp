@@ -1089,6 +1089,20 @@ struct BlockDefinition final {
     // 与 `skipsRenderingAgainstSelf` 分开：那一位问「同类之间画不画」，这一位问
     // 「压不压暗邻居的角」，玻璃两位都要，冰只要前一位。
     bool shadeTransparent = false;
+    // RN-37：这个方块的**不透明部分**挡太阳光。
+    //
+    // 只对半透明桶有意义：Opaque 与 Cutout 本来就进阴影预通道。半透明整桶不投影，
+    // 而那是对的——水面不该在水底压一块黑影，染色玻璃的纹理是整片不透明的（它的
+    // 半透明来自渲染层而不是 alpha），投出来就是一个黑方块。
+    //
+    // 玻璃不一样：它的纹理 alpha 只有 0 与 255 两个值（实测 vanilla 的 glass.png 是
+    // 191 个全透 + 65 个不透明），所以按 alpha 裁出来的影子恰好只有边框那一圈——
+    // 物理上正确，也正是「玻璃看得见边框却不投影」这个现场缺陷要的答案。
+    //
+    // ★ 这一位**不认识「边框」**。它说的是「这个方块的面要按纹理 alpha 投一份影」，
+    // 边框是纹理的产物。将来做无缝玻璃（按邻居掩码选无框纹理）时，内部那些面的
+    // alpha 整片为 0，自动不投影，这里一个字都不用改。
+    bool opaquePartsCastShadow = false;
     bool collision = true;
     BlockModel model = BlockModel::Cube;
     // The height of the block's solid box, in [0, 1]. Full cubes are 1.0; a
@@ -1471,6 +1485,13 @@ class BlockProperties final {
         return copy;
     }
 
+    // RN-37：半透明桶里，这个方块的不透明纹素要投影。见 `opaquePartsCastShadow`。
+    [[nodiscard]] constexpr BlockProperties opaquePartsCastShadow() const {
+        BlockProperties copy = *this;
+        copy.definition_.opaquePartsCastShadow = true;
+        return copy;
+    }
+
     // RN-8e: vanilla's `skipRendering` override. Name the vanilla class it comes
     // from at every call site — this is a per-block decision in 26.1 and the
     // whole point of the bit is that it stops being guessed from the bucket.
@@ -1765,6 +1786,10 @@ inline constexpr std::array<BlockDefinition, static_cast<std::size_t>(Block::Cou
         .noOcclusion()
         // `TransparentBlock.getShadeBrightness` → 1.0F：玻璃不压暗邻居的角。
         .transparentShade()
+        // RN-37：玻璃的纹理 alpha 是二值的（191 个全透 + 65 个不透明边框），所以
+        // 按 alpha 裁出来的影子恰好只有边框那一圈。染色玻璃**不标**：它的纹理整片
+        // 不透明，标了就是一个黑方块的影子。
+        .opaquePartsCastShadow()
         .creative(CreativeCategory::ColoredBlocks),
     BlockProperties::of(Block::CoalOre, "coal_ore", "Coal Ore")
         .texture("coal_ore")

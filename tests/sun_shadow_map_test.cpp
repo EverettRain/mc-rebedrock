@@ -1317,6 +1317,26 @@ void checkEntityWiring() {
             record.find("sizeof(draw.push), &draw.push") != std::string::npos &&
             record.find("draw.vertexCount, 1, draw.firstVertex") != std::string::npos,
             "shadow pass must select and submit the collected entity geometry");
+    // RN-37：玻璃的阴影几何与镂空地形共用**同一条**管线（同一个顶点程序、同一次
+    // alpha 测试），所以它们必须在一次绑定里画完；分两次调用是白切一次管线。
+    // 顶点则与半透明层共用——两层的 vertexOffset 必须是同一个值，写错的症状是
+    // 玻璃的影子长在别的方块上。
+    REQUIRE(record.find("{&GpuMesh::cutout, &GpuMesh::translucentShadow}") != std::string::npos,
+            "the glass shadow geometry must ride the cutout pipeline's single bind");
+    REQUIRE(record.find("mesh.translucentShadow.indexCount == 0U") != std::string::npos,
+            "a section whose only caster is glass must still pass the caster filter");
+    const auto upload = functionBody(world, "void uploadRenderMesh(");
+    REQUIRE(upload.find("destination.translucentShadow.vertexOffset = vertexOffset;") !=
+                    std::string::npos &&
+                upload.find("destination.translucent.vertexOffset = vertexOffset;") !=
+                    std::string::npos,
+            "both layers must take the same vertex offset: the shadow layer is indices only");
+    REQUIRE(upload.find("translucentShadowIndices.size() * sizeof(std::uint32_t)") !=
+                    std::string::npos &&
+                upload.find("translucentShadowIndices.data()") != std::string::npos,
+            "the shadow layer must upload indices and nothing else — copying its vertices is the "
+            "expensive way to get the same picture");
+
     REQUIRE(record.find("vkCmdBeginRenderPass") == std::string::npos &&
             record.find("vkCmdEndRenderPass") == std::string::npos &&
             record.find("vkCmdPipelineBarrier") == std::string::npos,

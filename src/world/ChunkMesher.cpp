@@ -2408,10 +2408,37 @@ void appendMesh(render::MeshData& destination, const render::MeshData& source) {
     }
 }
 
+namespace {
+
+// RN-37：一个 cell 往半透明层里推的索引区间，离开作用域时抄进阴影几何。
+// 见 buildSectionImpl 里那处构造的注释。
+struct TranslucentShadowTrail final {
+    const render::MeshData* mesh = nullptr;
+    std::vector<std::uint32_t>* trail = nullptr;
+    std::size_t mark = 0;
+
+    TranslucentShadowTrail(const render::MeshData* source, std::vector<std::uint32_t>* sink,
+                           std::size_t indexMark)
+        : mesh(source), trail(sink), mark(indexMark) {}
+    TranslucentShadowTrail(const TranslucentShadowTrail&) = delete;
+    TranslucentShadowTrail& operator=(const TranslucentShadowTrail&) = delete;
+
+    ~TranslucentShadowTrail() {
+        if (mesh == nullptr || mesh->indices.size() <= mark) {
+            return;
+        }
+        trail->insert(trail->end(), mesh->indices.begin() + static_cast<std::ptrdiff_t>(mark),
+                      mesh->indices.end());
+    }
+};
+
+} // namespace
+
 template <typename Sampler>
 bool buildSectionImpl(
     const World& world,
     ChunkPosition position,
+
     int sectionY,
     const Sampler& lighting,
     render::RenderMeshData& result) {
@@ -2423,6 +2450,7 @@ bool buildSectionImpl(
     result.cutoutMesh.indices.clear();
     result.translucentMesh.vertices.clear();
     result.translucentMesh.indices.clear();
+    result.translucentShadowIndices.clear();
     if (sectionY < 0 || sectionY >= kSectionCount || !world.hasChunk(position)) {
         result.bounds = {};
         return false;
@@ -2466,6 +2494,19 @@ bool buildSectionImpl(
                     : (definition.renderLayer == BlockRenderLayer::Cutout
                            ? result.cutoutMesh
                            : result.mesh);
+                // RN-37：半透明桶里标了「不透明部分投影」的方块（玻璃），把它往
+                // targetMesh 里推的每一条索引再记一份进阴影几何。
+                //
+                // 作用域守卫而不是在每个 model 分支后各写一遍：这个循环体里有十几处
+                // `continue`，漏掉一处的症状是「有的玻璃有影子、有的没有」，而源码
+                // 读起来毫无异样。守卫在不记录时是三个字段赋值加一个分支，编译器
+                // 看得穿——真正省钱的地方是**只记索引不记顶点**（见 RenderMeshData）。
+                const TranslucentShadowTrail shadowTrail{
+                    definition.opaquePartsCastShadow &&
+                            definition.renderLayer == BlockRenderLayer::Translucent
+                        ? &targetMesh
+                        : nullptr,
+                    &result.translucentShadowIndices, targetMesh.indices.size()};
                 if (definition.model == BlockModel::Cross) {
                     // Tall grass takes the biome grass tint per vertex (through
                     // appendCrossedPlant); flowers keep white. Both draw their own

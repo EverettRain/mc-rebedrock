@@ -831,6 +831,11 @@ class WorldRenderer final {
         }
         vertexBytes += static_cast<VkDeviceSize>(source.translucentMesh.vertices.size() *
                                                  sizeof(VoxelVertex));
+        // RN-37：玻璃的阴影索引跟着 opaque/cutout 待在主索引缓冲里。它们指的是
+        // 半透明层的顶点，所以**只有索引**要算进这条预算
+        const VkDeviceSize translucentShadowIndexBytes = static_cast<VkDeviceSize>(
+            source.translucentShadowIndices.size() * sizeof(std::uint32_t));
+        indexBytes += translucentShadowIndexBytes;
         const VkDeviceSize translucentIndexBytes =
             static_cast<VkDeviceSize>(translucentIndexScratch_.size() * sizeof(std::uint32_t));
         auto vertexStaging = acquireStreamBuffer(stagingBufferPool_, vertexBytes,
@@ -869,6 +874,17 @@ class WorldRenderer final {
         destination.translucent.indexOffset = 0;
         destination.translucent.indexCount =
             static_cast<std::uint32_t>(translucentIndexScratch_.size());
+        // RN-37：同一批顶点，另一段索引。vertexOffset 与上面那一行**必须**相同，
+        // 两者写在一起正是为了让它一眼可查——写错的症状是玻璃的影子长在别的方块上
+        destination.translucentShadow.vertexOffset = vertexOffset;
+        destination.translucentShadow.indexOffset = indexOffset;
+        destination.translucentShadow.indexCount =
+            static_cast<std::uint32_t>(source.translucentShadowIndices.size());
+        if (translucentShadowIndexBytes > 0U) {
+            std::memcpy(static_cast<std::byte*>(indexStaging.mapped) + indexOffset,
+                        source.translucentShadowIndices.data(),
+                        static_cast<std::size_t>(translucentShadowIndexBytes));
+        }
         if (translucentVertexBytes > 0U) {
             std::memcpy(static_cast<std::byte*>(vertexStaging.mapped) + vertexOffset,
                         source.translucentMesh.vertices.data(),
@@ -1158,7 +1174,10 @@ class WorldRenderer final {
         shadowCasterBounds_.clear();
         for (const auto& [position, mesh] : gpuMeshes) {
             static_cast<void>(position);
-            if (mesh.opaque.indexCount == 0U && mesh.cutout.indexCount == 0U) {
+            // RN-37：玻璃只在 translucentShadow 那一层里投影，纯玻璃的 section
+            // 三层里只有它非空——漏掉这一条，那些 section 连候选都进不来
+            if (mesh.opaque.indexCount == 0U && mesh.cutout.indexCount == 0U &&
+                mesh.translucentShadow.indexCount == 0U) {
                 continue;
             }
             shadowCasterMeshes_.push_back(&mesh);
@@ -1177,8 +1196,10 @@ class WorldRenderer final {
         VkRect2D scissor{{0, 0}, {shadowTarget.width(), shadowTarget.height()}};
         vkCmdSetScissor(frame.commandBuffer, 0, 1, &scissor);
         // 一层几何一次管线切换，而不是逐 section 在两条管线之间来回跳。
+        // RN-37：一次绑定可以画多层。镂空地形与玻璃的阴影几何走的是**同一条**管线
+        // （同一个顶点程序、同一次 alpha 测试），分两次调用就是白切一次管线
         const auto recordShadowLayer = [&](VkPipeline pipeline, VkPipelineLayout layout,
-                                           GpuMeshLayer GpuMesh::*layer) {
+                                           std::initializer_list<GpuMeshLayer GpuMesh::*> layers) {
             vkCmdBindPipeline(frame.commandBuffer, VK_PIPELINE_BIND_POINT_GRAPHICS, pipeline);
             if (layout == pipelines.shadowCutoutPipelineLayout) {
                 vkCmdBindDescriptorSets(frame.commandBuffer, VK_PIPELINE_BIND_POINT_GRAPHICS,
@@ -1186,8 +1207,9 @@ class WorldRenderer final {
             }
             for (const std::size_t index : shadowCasterSelection_) {
                 const GpuMesh* mesh = shadowCasterMeshes_[index];
+                for (const auto layer : layers) {
                 const GpuMeshLayer& draw = mesh->*layer;
-                // 选进来的 section 只保证**至少一层**非空，两层都要各自再问一次。
+                // 选进来的 section 只保证**至少一层**非空，每一层都要各自再问一次。
                 if (draw.indexCount == 0U) {
                     continue;
                 }
@@ -1200,12 +1222,15 @@ class WorldRenderer final {
                 vkCmdBindIndexBuffer(frame.commandBuffer, mesh->indexBuffer.buffer,
                                      draw.indexOffset, VK_INDEX_TYPE_UINT32);
                 vkCmdDrawIndexed(frame.commandBuffer, draw.indexCount, 1, 0, 0, 0);
+                }
             }
         };
         recordShadowLayer(pipelines.shadowPipeline, pipelines.shadowPipelineLayout,
-                          &GpuMesh::opaque);
+                          {&GpuMesh::opaque});
+        // 玻璃与镂空地形一起画：同一条管线、同一次 alpha 测试，玻璃的阴影因此恰好
+        // 只剩纹理里不透明的那一圈边框
         recordShadowLayer(pipelines.shadowCutoutPipeline, pipelines.shadowCutoutPipelineLayout,
-                          &GpuMesh::cutout);
+                          {&GpuMesh::cutout, &GpuMesh::translucentShadow});
         // 实体的矩阵走 UBO 而不是 push constant（ItemPush 正好满 128 字节），级别因此
         // 是一个特化常量——每级一条管线，见 item_entity.vert 的 sunShadowCascade
         vkCmdBindPipeline(frame.commandBuffer, VK_PIPELINE_BIND_POINT_GRAPHICS,

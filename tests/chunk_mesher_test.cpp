@@ -248,6 +248,37 @@ int main() {
     static_assert(!mc::world::isOpaque(mc::world::Block::Glass));
     static_assert(mc::world::hasCollision(mc::world::Block::Glass));
 
+    // RN-37：玻璃的不透明部分（纹理里那圈边框）要投太阳阴影。
+    //
+    // 现场（用户实机）：玻璃看得见边框却在地上不留任何影子。成因是阴影预通道只画
+    // opaque 与 cutout 两层，而玻璃在 translucent 层——整桶都不投影，那对水是对的
+    // （水面不该在水底压一块黑影），对玻璃不是。
+    //
+    // ★ 这一层**只有索引没有顶点**。复制一份顶点是这个特性最容易付错的一笔钱：
+    // 一个面 6 个索引 24 字节，而 6 个顶点是它的好几倍、还要再上传一遍。下面第一条
+    // 断言就是钉这个的——顶点数必须与不投影时一模一样。
+    assert(glassMesh.translucentShadowIndices.size() == 60U);
+    assert(glassMesh.translucentMesh.vertices.size() == 40U);
+    // 每一条索引都指向半透明层的顶点（GPU 侧靠这一点让两层共用一个 vertexOffset）
+    for (const std::uint32_t index : glassMesh.translucentShadowIndices) {
+        assert(index < glassMesh.translucentMesh.vertices.size());
+    }
+    // 而且就是那一层的那些面，顺序都一样——阴影写深度，不需要 RN-22 的视点排序
+    assert(glassMesh.translucentShadowIndices == glassMesh.translucentMesh.indices);
+
+    // ★ 不标那条属性的半透明方块**不得**产生阴影几何。染色玻璃的纹理是整片不透明的
+    // （它的半透明来自渲染层而不是 alpha），标了就是一个黑方块的影子；水同理，
+    // 它的半透明是着色器里另算的深度公式，纹理本身近乎不透明。
+    for (const auto block : {mc::world::Block::WhiteStainedGlass, mc::world::Block::Water}) {
+        mc::world::World other;
+        mc::world::Chunk chunk;
+        chunk.setBlock(1, mc::world::kMinY + 1, 1, block);
+        other.setChunk({0, 0}, std::move(chunk));
+        const auto mesh = mc::world::ChunkMesher::buildSection(other, {0, 0}, 0);
+        assert(!mesh.translucentMesh.indices.empty());
+        assert(mesh.translucentShadowIndices.empty());
+    }
+
     mc::world::World leavesWorld;
     mc::world::Chunk leavesChunk;
     leavesChunk.setBlock(1, mc::world::kMinY + 1, 1, mc::world::Block::OakLeaves);

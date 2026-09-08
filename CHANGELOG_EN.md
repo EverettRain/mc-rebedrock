@@ -44,6 +44,10 @@ simple versioned history while it is in beta.
 
 
 ### Fixed
+- Glass casts a shadow again -- just the frame of it. Panes of glass left no trace at all on the
+  ground under them, because the whole translucent bucket is skipped when the sun's shadows are
+  drawn. That is right for water, which should not stamp a dark rectangle on the seabed, but glass
+  is mostly holes: what falls on the ground now is the grid of its frames, not a black block.
 - A held block no longer shows the inside of itself. Every block icon -- in your hand, on the
   hotbar, dropped on the ground -- is a closed six-sided box, and the far side of that box was
   being drawn along with the near side. On an opaque block it made no difference, since the near

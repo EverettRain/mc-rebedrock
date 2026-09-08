@@ -128,6 +128,12 @@ struct GpuMesh final {
     GpuMeshLayer opaque;
     GpuMeshLayer cutout;
     GpuMeshLayer translucent;
+    // RN-37：半透明层里「不透明部分投影」的那些面（玻璃），只给太阳阴影预通道用。
+    //
+    // 它的 `vertexOffset` 与 `translucent` **相同**——顶点是同一批，这一层只多一段
+    // 索引。索引待在主 `indexBuffer` 里而不是 `translucentIndexBuffer`：后者每次
+    // quad 级重排都整条换掉，而阴影写的是深度、先后无关，跟着去换是白付一笔钱。
+    GpuMeshLayer translucentShadow;
     Aabb bounds;
     // 打包顶点坐标所相对的 section 原点，逐次绘制推给地形着色器
     // 由 SectionPosition 算出——稀疏 section 的 bounds.minimum 并不是它的原点
