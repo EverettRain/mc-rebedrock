@@ -20,6 +20,8 @@
 // 单位一律逻辑像素整数（护栏 5）。数值逐条带 26.1 出处。
 
 #include "ui/ScrollList.hpp"
+#include "ui/Widget.hpp"
+#include "ui/WidgetId.hpp"
 
 #include <cstddef>
 #include <cstdint>
@@ -59,6 +61,16 @@ inline constexpr int kListRowPadding = 2;
 // 写成常量而不是散落的 `* 3`，是因为改这个数要同时改两处（页面装配与矩形映射），
 // 而漏改一处的症状是"每一行的按钮都画在下一行的位置上"。
 inline constexpr std::size_t kKeyBindWidgetsPerRow = 3U;
+
+// 一个控件是不是绑定行的行内控件（名称 / 改键 / 重置）。
+//
+// 布局靠它把"列表里的控件"与"按钮网格里的控件"分开。用 debugId 判断而不是靠序号
+// 区间，是因为序号区间要外部先告诉它"前几个是列表控件"——那又是一份可以和装配
+// 不一致的信息。
+[[nodiscard]] inline bool isKeyBindRowWidget(const Widget& widget) {
+    return widget.debugId == static_cast<std::uint16_t>(WidgetId::KeyBindRow) ||
+           widget.debugId == static_cast<std::uint16_t>(WidgetId::ResetKeyBind);
+}
 
 inline constexpr int kKeyBindRowHeight = 20;      // KeyBindsList.ITEM_HEIGHT
 inline constexpr int kKeyBindChangeWidth = 75;    // changeButton.bounds(0, 0, 75, 20)

@@ -20,24 +20,16 @@ using namespace mc;
 
 namespace {
 
-// ★ 不再镜像渲染器的 rect provider —— 直接调**生产**函数 `ui::menuWidgetRect`。
+// 生产路径是**两趟**：`buildPageInto` 装配，`layoutPageInto` 填矩形。
 //
-// 从前这里抄了一份渲染器 lambda 的等价物。UI-6b 把按键绑定行拆成两个控件时，
-// 渲染器那边**有两份**同样的 lambda（绘制侧 buildDrawPage、输入侧 menuRectProvider），
-// 只改了一份；这份抄本跟着改的是绘制侧，于是测试全绿而点 Controls 底部任何一个按钮
-// 都会抛 `menu button index or count is invalid` 并闪退。
-//
-// 教训：**镜像不是覆盖**。测试要调被测的那个函数，不是它的另一份写法。
-ui::RectProvider providerFor(ui::PageId page, const ui::HudLayout& layout, float fbWidth,
-                             std::size_t count, std::size_t keyRows, std::size_t keyFirst = 0U) {
-    return [layout, page, fbWidth, count, keyFirst, keyRows](std::size_t index) {
-        return ui::menuWidgetRect(page, index, layout, fbWidth, count, keyFirst, keyRows);
-    };
-}
+// 从前这里抄了一份渲染器 rect provider 的等价物，而渲染器**有两份**同样的 lambda
+// （绘制侧与输入侧），改了一份就闪退——那次之后收成了一个 `menuWidgetRect`。
+// 这一轮更进一步：按钮数不再来自另一张表（`menuButtonCount`），而是由布局那一趟
+// 从装配结果**数出来**，于是"两份表述不一致"这一类缺陷整个消失了。
+// 测试因此直接调那两个生产函数，一份抄本都不留。
 
 void buildAndLayoutPage(ui::PageId page, bool worldOpen, float fbW, float fbH, int guiScale) {
     const ui::HudLayout layout{fbW, fbH, guiScale};
-    const std::size_t count = ui::menuButtonCount(page, worldOpen);
 
     ui::MenuBuildContext ctx;
     ctx.worldOpen = worldOpen;
@@ -46,55 +38,46 @@ void buildAndLayoutPage(ui::PageId page, bool worldOpen, float fbW, float fbH, i
         return ui::MenuBuildContext::KeyBindRowLabels{
             std::string{input::actionDisplayName(a)}, {}};
     };
-    std::size_t keyRows = 0U;
     if (page == ui::PageId::KeyBinds) {
-        // UI-6c：窗口数的是行（含分类标题行），不是动作。
-        const std::size_t total = ui::kKeyBindListRowCount;
-        const std::size_t window =
-            ui::keyBindsVisibleRowCount(fbW, fbH, guiScale, /*forceUnicode=*/false);
-        keyRows = std::min(window, total);
         ctx.keyBindFirstIndex = 0U;
-        ctx.keyBindRowCount = keyRows;
+        ctx.keyBindRowCount = std::min(
+            ui::keyBindsVisibleRowCount(fbW, fbH, guiScale, /*forceUnicode=*/false),
+            ui::kKeyBindListRowCount);
     }
 
     ui::MenuCallbacks cb;
-    const ui::RectProvider rectFor = providerFor(page, layout, fbW, count, keyRows);
-    const ui::Page built = ui::buildPage(page, ctx, cb, rectFor);
+    ui::Page built;
+    ui::buildPageInto(built, page, ctx, cb);
+    // 布局绝不能抛：从前它会，因为按钮数是另一张表说的，与装配对不上就越界。
+    ui::layoutPageInto(built, page, layout, fbW, ctx.keyBindFirstIndex);
 
-    // Every widget's rect must already be resolved (buildPage stamped it), and
-    // re-resolving each index through the provider must not throw. Rects must be
-    // finite and non-degenerate for interactive widgets.
-    for (std::size_t i = 0; i < built.size(); ++i) {
-        const ui::UiRect rect = rectFor(i);  // must not throw for any built index
-        if (built[i].interactive()) {
-            assert(rect.width > 0.0F && rect.height > 0.0F);
+    // 每个可交互控件都要拿到一个非退化的矩形。
+    for (const auto& widget : built) {
+        if (widget.interactive()) {
+            assert(widget.rect.width > 0.0F && widget.rect.height > 0.0F);
         }
-        // buildPage stored the same rect on the widget.
-        assert(built[i].rect.width == rect.width);
     }
 }
 
-// 每一页装配出的**按钮**数必须与 menuButtonCount 说的一致。
+// ★ 这一条曾经守的是"按钮数那张表与页面装配不一致"——那次不一致让点 Controls
+// 底部任何一个按钮都闪退。现在那张表**没有了**：按钮数由 `layoutPageInto` 从装配
+// 结果数出来，两者在类型上就不可能有两种说法。
 //
-// 不一致就会在 frontendButtonRect 里抛 out_of_range 并闪退——那正是 Controls 底部
-// 四个按钮遇到的事（列表后半段的序号被当成按钮序号）。这一条把它推广到每一页：
-// 任何一页只要多装配一个按钮、或者 menuButtonCount 少算一个，这里就红。
+// 留下来的断言因此换了个目标：**布局对每一页、每一种上下文都不抛**，而且它数出来的
+// 按钮数与自己数一遍一致。
 void testEveryPageButtonBudget() {
     const ui::PageId pages[] = {
         ui::PageId::Title,     ui::PageId::WorldList,     ui::PageId::CreateWorld,
         ui::PageId::EditWorld, ui::PageId::ConfirmDelete, ui::PageId::Options,
         ui::PageId::VideoSettings, ui::PageId::Controls,  ui::PageId::Language,
         ui::PageId::Experimental,  ui::PageId::Pause,     ui::PageId::Death,
-        // UI-6c：Controls 拆成了枢纽（§7.6）与绑定列表（§7.8）两屏，另加辅助功能（§7.11）
         ui::PageId::KeyBinds,      ui::PageId::Accessibility,
     };
     for (const bool worldOpen : {false, true}) {
         for (const ui::PageId page : pages) {
             const float fbW = 1280.0F;
             const float fbH = 720.0F;
-            const int scale = 3;
-            const ui::HudLayout layout{fbW, fbH, scale};
-            const std::size_t count = ui::menuButtonCount(page, worldOpen);
+            const ui::HudLayout layout{fbW, fbH, 3};
 
             ui::MenuBuildContext ctx;
             ctx.worldOpen = worldOpen;
@@ -103,37 +86,39 @@ void testEveryPageButtonBudget() {
                 return ui::MenuBuildContext::KeyBindRowLabels{
                     std::string{input::actionDisplayName(a)}, {}};
             };
-            std::size_t keyRows = 0U;
             if (page == ui::PageId::KeyBinds) {
-                keyRows = std::min(
-                    ui::keyBindsVisibleRowCount(fbW, fbH, scale, /*forceUnicode=*/false),
+                ctx.keyBindRowCount = std::min(
+                    ui::keyBindsVisibleRowCount(fbW, fbH, 3, /*forceUnicode=*/false),
                     ui::kKeyBindListRowCount);
-                ctx.keyBindFirstIndex = 0U;
-                ctx.keyBindRowCount = keyRows;
             }
             ui::MenuCallbacks cb;
-            const ui::Page built = ui::buildPage(
-                page, ctx, cb, providerFor(page, layout, fbW, count, keyRows));
+            ui::Page built;
+            ui::buildPageInto(built, page, ctx, cb);
+            ui::layoutPageInto(built, page, layout, fbW, ctx.keyBindFirstIndex);
 
-            // 列表控件之外的每一个控件都要落在按钮预算里。
-            // ★ UI-6c：可见窗口里夹着分类标题行，它占一行却不产生控件——
-            //   所以控件数要按**绑定行**数算，不是按行数。
-            const std::size_t keyWidgets =
-                ui::keyBindBindingRowsIn(0U, keyRows) * ui::kKeyBindWidgetsPerRow;
-            const std::size_t buttons = built.size() - keyWidgets;
-            assert(built.size() >= keyWidgets);
-            assert(buttons <= count);
-            // 而且**每一个**序号都要解得出矩形，不抛。这是闪退的直接复现条件：
-            // 输入侧解第 keyWidgets 个序号时越界。
-            for (std::size_t i = 0; i < built.size(); ++i) {
-                const ui::UiRect rect =
-                    ui::menuWidgetRect(page, i, layout, fbW, count, 0U, keyRows);
-                if (built[i].interactive()) {
-                    assert(rect.width > 0.0F && rect.height > 0.0F);
+            // 按钮 + 绑定行控件 = 全部控件，一个都不多一个都不少。
+            std::size_t keyWidgets = 0;
+            for (const auto& w : built) {
+                if (ui::isKeyBindRowWidget(w)) {
+                    ++keyWidgets;
                 }
+            }
+            assert(ui::countPageButtons(built) + keyWidgets == built.size());
+            // 只有绑定列表页会有行内控件。
+            if (page != ui::PageId::KeyBinds) {
+                assert(keyWidgets == 0U);
             }
         }
     }
+}
+
+// 装配 + 布局一页，返回结果。生产路径就是这两句。
+[[nodiscard]] ui::Page laidOutPage(ui::PageId page, const ui::HudLayout& layout, float fbW,
+                                   ui::MenuBuildContext& ctx, const ui::MenuCallbacks& cb) {
+    ui::Page built;
+    ui::buildPageInto(built, page, ctx, cb);
+    ui::layoutPageInto(built, page, layout, fbW, ctx.keyBindFirstIndex);
+    return built;
 }
 
 void testEveryPageLaysOut() {
@@ -169,13 +154,25 @@ void testEveryPageLaysOut() {
 // The list rows go to the list, not the button grid: the full action set is larger
 // than the cap, which is what made them impossible as fixed buttons (PX-6 Bug1).
 void testControlsBottomBandBounded() {
+    const float fbW = 1280.0F;
+    const float fbH = 720.0F;
+    const ui::HudLayout layout{fbW, fbH, 3};
+    ui::MenuBuildContext ctx;
+    ctx.keyBindLabelsFor = [](input::InputAction a) {
+        return ui::MenuBuildContext::KeyBindRowLabels{
+            std::string{input::actionDisplayName(a)}, {}};
+    };
+    ui::MenuCallbacks cb;
     // 一个跳转（Key Binds…）+ 七个设置项 + Done。少的那个跳转是 Mouse Settings…：
     // 本作没有那一屏，而"页面为空就完全不建"。
-    assert(ui::menuButtonCount(ui::PageId::Controls, false) == 9U);
-    assert(ui::menuButtonCount(ui::PageId::Controls, false) <=
-           ui::HudLayout::kMaximumMenuButtons);
+    // ★ 这个 9 是从**装配结果**数出来的，不是另一张表说的。
+    const auto controls = laidOutPage(ui::PageId::Controls, layout, fbW, ctx, cb);
+    assert(ui::countPageButtons(controls) == 9U);
+    assert(ui::countPageButtons(controls) <= ui::HudLayout::kMaximumMenuButtons);
     // 绑定列表页的页脚是横排两个：`controls.resetAll` 与 Done。
-    assert(ui::menuButtonCount(ui::PageId::KeyBinds, false) == 2U);
+    ctx.keyBindRowCount = 0U;   // 不要列表行，只看页脚
+    const auto binds = laidOutPage(ui::PageId::KeyBinds, layout, fbW, ctx, cb);
+    assert(ui::countPageButtons(binds) == 2U);
     assert(input::keyBindRows().size() > ui::HudLayout::kMaximumMenuButtons);
 }
 
@@ -195,10 +192,7 @@ void testControlsListWindowed() {
     };
     ui::MenuCallbacks cb;
     const ui::HudLayout layout{fbW, fbH, scale};
-    const ui::Page page = ui::buildPage(
-        ui::PageId::KeyBinds, ctx, cb,
-        providerFor(ui::PageId::KeyBinds, layout, fbW,
-                    ui::menuButtonCount(ui::PageId::KeyBinds, false), ctx.keyBindRowCount));
+    const ui::Page page = laidOutPage(ui::PageId::KeyBinds, layout, fbW, ctx, cb);
     // UI-6c：一行是**三个**控件——名称 Label、改键 Button、重置 Button。
     // 前两个带 KeyBindRow 这个 debugId，重置按钮带它自己的 ResetKeyBind
     // （它有自己的标签 `controls.reset`，与页脚那个"重置所有"不是一回事）。
@@ -244,8 +238,8 @@ void testControlsRowsInMiddleBandAndScroll() {
     assert(window < total);  // this canvas genuinely scrolls
 
     const ui::UiRect box = ui::keyBindsListBox(layout, fbW);
-    const ui::UiRect band =
-        layout.bottomMenuButton(0U, ui::menuButtonCount(ui::PageId::KeyBinds, false), 2U);
+    // 页脚两个按钮，横排——绑定列表就摆在它上方。
+    const ui::UiRect band = layout.bottomMenuButton(0U, 2U, 2U);
     // Every visible row sits inside the middle band: below the box top, and its
     // bottom stays above the bottom button band.
     for (std::size_t i = 0; i < window; ++i) {
@@ -277,13 +271,10 @@ void testControlsRowsInMiddleBandAndScroll() {
     //   取决于起点之后有几条标题行。两者不一致，控件数就对不上，多出来的序号会被当成
     //   页脚按钮而越界——生产代码里两侧都读 menuSystem.controlsListFirstIndex，所以
     //   一致是天然的；测试里是手传的，这条注释就是提醒。
-    const auto keyButtons = ui::menuButtonCount(ui::PageId::KeyBinds, false);
-    const ui::Page p0 = ui::buildPage(
-        ui::PageId::KeyBinds, ctx0, cb,
-        providerFor(ui::PageId::KeyBinds, layout, fbW, keyButtons, window, ctx0.keyBindFirstIndex));
-    const ui::Page p1 = ui::buildPage(
-        ui::PageId::KeyBinds, ctx1, cb,
-        providerFor(ui::PageId::KeyBinds, layout, fbW, keyButtons, window, ctx1.keyBindFirstIndex));
+    // ★ 装配与布局读的是**同一个** ctx.keyBindFirstIndex，所以"控件序号折回哪一行"
+    //   与"装配了哪几行"不可能对不上——从前那是手传两次的两个参数。
+    const ui::Page p0 = laidOutPage(ui::PageId::KeyBinds, layout, fbW, ctx0, cb);
+    const ui::Page p1 = laidOutPage(ui::PageId::KeyBinds, layout, fbW, ctx1, cb);
     // Slot 0 keeps its rect; the action shown there advances by one.
     //
     // UI-6b: slot 0 is now the row's NAME label, whose rect is the row's content

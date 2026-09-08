@@ -15,6 +15,7 @@
 #include "ui/HeaderAndFooterLayout.hpp"
 #include "ui/KeyBindList.hpp"
 #include "ui/MenuGeometry.hpp"
+#include "ui/PageBuilder.hpp"
 #include "ui/PageTitles.hpp"
 #include "ui/ListRow.hpp"
 #include "ui/OptionsList.hpp"
@@ -260,15 +261,20 @@ void testGroupedSlots() {
 
 // --- 6. Controls 枢纽的实际排版 ----------------------------------------------
 //
-// 用生产函数 `menuWidgetRect` 看：第一行只有左列有东西，第二行两列都有。
+// 走**生产路径**：装配一遍、布局一遍，然后看控件的矩形。
+// 第一行只有左列有东西，第二行两列都有，Done 在页脚。
 void testControlsHubLayout() {
     const mc::ui::HudLayout layout{1280.0F, 720.0F, 3};
-    const std::size_t count = mc::ui::menuButtonCount(mc::ui::PageId::Controls, false);
-    CHECK(count == 9U);   // 一个跳转 + 七个设置项 + Done
-    const auto rect = [&](std::size_t index) {
-        return mc::ui::menuWidgetRect(mc::ui::PageId::Controls, index, layout, 1280.0F, count,
-                                      0U, 0U);
-    };
+    mc::ui::MenuBuildContext ctx;
+    const mc::ui::MenuCallbacks cb;
+    mc::ui::Page page;
+    mc::ui::buildPageInto(page, mc::ui::PageId::Controls, ctx, cb);
+    mc::ui::layoutPageInto(page, mc::ui::PageId::Controls, layout, 1280.0F);
+    // 一个跳转 + 七个设置项 + Done。★ 这个 9 是数出来的，不是另一张表说的。
+    const std::size_t count = mc::ui::countPageButtons(page);
+    CHECK(count == 9U);
+    CHECK(page.size() == count);   // 枢纽页没有列表控件
+    const auto rect = [&](std::size_t index) { return page[index].rect; };
     // ★ Key Binds… 独占一行：下一个控件在**下一行**，不是它右边。
     CHECK(rect(1).y > rect(0).y);
     CHECK(rect(1).x == rect(0).x);

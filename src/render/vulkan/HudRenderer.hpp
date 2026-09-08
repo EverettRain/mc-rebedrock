@@ -49,6 +49,7 @@
 #include "ui/KeyBindList.hpp"
 #include "ui/ListRow.hpp"
 #include "ui/PageBuilder.hpp"
+#include "ui/PageLayoutKind.hpp"
 #include "ui/PageTitles.hpp"
 #include "ui/PageStack.hpp"
 #include "ui/TextField.hpp"
@@ -296,8 +297,9 @@ class HudRenderer final {
         return ui::windowToFramebuffer(cursorX, cursorY, windowWidth, windowHeight,
                                        framebufferWidth, framebufferHeight);
     }
+    // 一页有几个按钮：从**已装配的**页面数出来，不是另一张表说的。
     [[nodiscard]] std::size_t menuButtonCount() const {
-        return ui::menuButtonCount(menuSystem.pageStack.current(), currentSave.has_value());
+        return ui::countPageButtons(buildDrawPage());
     }
     [[nodiscard]] ui::UiRect worldListRow(std::size_t index, const ui::HudLayout& layout) const {
         return ui::worldListRow(index, layout, static_cast<float>(swapchainExtent.width));
@@ -342,15 +344,10 @@ class HudRenderer final {
         const ui::HudLayout layout{static_cast<float>(swapchainExtent.width),
                                    static_cast<float>(swapchainExtent.height),
                                    menuSystem.guiScaleSetting, menuSystem.forceUnicodeFont};
-        const std::size_t count = menuButtonCount();
         drawContext_.worldOpen = currentSave.has_value();
         drawContext_.worldSelectable = !menuSystem.saveSummaries.empty();
-        // 按键设置页喂进滚动窗口与实时按键标签，可见行按 keyBindsRow 排版
-        // 末尾四个是底部按钮带，其余页面不受影响
-        // 上下文是常驻的，因此这两个字段每帧先归零，非按键页看到的仍是「没有按键行」
-        const float fbWidth = static_cast<float>(swapchainExtent.width);
         // ★ UI-6c：窗口数的是**行**，不是动作——展开后的行表里夹着分类标题行。
-        std::size_t keyRows = 0U;
+        const float fbWidth = static_cast<float>(swapchainExtent.width);
         std::size_t keyFirst = 0U;
         drawContext_.keyBindFirstIndex = 0U;
         drawContext_.keyBindRowCount = 0U;
@@ -358,17 +355,15 @@ class HudRenderer final {
             const std::size_t window = ui::keyBindsVisibleRowCount(
                 fbWidth, static_cast<float>(swapchainExtent.height), menuSystem.guiScaleSetting, menuSystem.forceUnicodeFont);
             keyFirst = std::min(menuSystem.controlsListFirstIndex, ui::kKeyBindListRowCount);
-            keyRows = std::min(window, ui::kKeyBindListRowCount - keyFirst);
             drawContext_.keyBindFirstIndex = keyFirst;
-            drawContext_.keyBindRowCount = keyRows;
+            drawContext_.keyBindRowCount =
+                std::min(window, ui::kKeyBindListRowCount - keyFirst);
         }
-        // 页面 → 矩形只有一处：ui::menuWidgetRect。输入侧（menuRectProvider）调的是
-        // 同一个函数——两侧各留一份抄本，正是"点 Controls 底部按钮就闪退"的来源。
-        ui::buildPageInto(drawPage_, pageId, drawContext_, drawCallbacks_,
-                          [layout, pageId, count, fbWidth, keyFirst, keyRows](std::size_t index) {
-                              return ui::menuWidgetRect(pageId, index, layout, fbWidth, count,
-                                                        keyFirst, keyRows);
-                          });
+        // 两趟：先装配（这一页有哪些控件），再布局（它们在哪）。
+        // 按钮数由布局那一趟从装配结果**数出来**——从前它是另一张表说的，
+        // 而那张表与装配器是同一个事实的两份表述（见 ui::layoutPageInto 的注释）。
+        ui::buildPageInto(drawPage_, pageId, drawContext_, drawCallbacks_);
+        ui::layoutPageInto(drawPage_, pageId, layout, fbWidth, keyFirst);
         return drawPage_;
     }
 
@@ -2976,23 +2971,22 @@ class HudRenderer final {
             drawScreenBackground(commandBuffer, descriptorSet, currentBackgroundKind(),
                                  layout.scale());
         }
-        if (page == ui::PageId::Title || page == ui::PageId::WorldList ||
-            page == ui::PageId::CreateWorld || page == ui::PageId::EditWorld ||
-            page == ui::PageId::ConfirmDelete) {
+        // 走哪个绘制函数由 ui::pageDrawKind 那张表决定（不带 default 的 switch，
+        // 加一页会被 -Wswitch 点名）。从前这里是两串 `page == A || page == B || …`：
+        // 加一页忘了加进去，它会掉进后面"游戏内"的分支——症状是打开新页面却看到
+        // 游戏画面，而不是编译错误。
+        switch (ui::pageDrawKind(page)) {
+        case ui::PageDrawKind::Frontend:
             drawFrontend(commandBuffer, layout);
             return;
-        }
-
-        if (page == ui::PageId::Options || page == ui::PageId::VideoSettings ||
-            page == ui::PageId::Controls || page == ui::PageId::Language ||
-            page == ui::PageId::Experimental || page == ui::PageId::KeyBinds ||
-            page == ui::PageId::Accessibility) {
-            if (page == ui::PageId::Language) {
-                drawLanguageScreen(commandBuffer, layout);
-            } else {
-                drawPauseMenu(commandBuffer, layout);
-            }
+        case ui::PageDrawKind::Language:
+            drawLanguageScreen(commandBuffer, layout);
             return;
+        case ui::PageDrawKind::Settings:
+            drawPauseMenu(commandBuffer, layout);
+            return;
+        case ui::PageDrawKind::InGame:
+            break;
         }
 
         if (!worldReady) {

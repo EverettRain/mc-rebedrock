@@ -3591,10 +3591,6 @@ struct VulkanRenderer::Impl final : public gameplay::SimulationHost {
                                        framebufferWidth, framebufferHeight);
     }
 
-    [[nodiscard]] std::size_t menuButtonCount() const {
-        return ui::menuButtonCount(menuSystem.pageStack.current(), currentSave.has_value());
-    }
-
     // 存档界面的列表行位于标题与底部功能按钮之间的那条带内
     // saveListVisibleRowCount 决定能放几行，任何分辨率下行都不会撞上按钮
     [[nodiscard]] ui::UiRect worldListRow(std::size_t index, const ui::HudLayout& layout) const {
@@ -3815,26 +3811,7 @@ struct VulkanRenderer::Impl final : public gameplay::SimulationHost {
     }
 
     // 当前页面的矩形来自 HudLayout，按 widget 序号索引，遵循 frontendButtonRect 的约定
-    [[nodiscard]] ui::RectProvider menuRectProvider() const {
-        const ui::PageId page = menuSystem.pageStack.current();
-        const ui::HudLayout layout{static_cast<float>(swapchainExtent.width),
-                                   static_cast<float>(swapchainExtent.height),
-                                   menuSystem.guiScaleSetting, menuSystem.forceUnicodeFont};
-        const std::size_t count = menuButtonCount();
-        const float fbWidth = static_cast<float>(swapchainExtent.width);
-        // 页面 → 矩形只有一处：ui::menuWidgetRect。绘制侧（buildDrawPage）调的是
-        // 同一个函数。从前这两侧各有一份同样的 lambda，UI-6b 改了绘制侧那份、漏了这份，
-        // 结果点 Controls 底部任何一个按钮都会抛越界并闪退。
-        const std::size_t keyFirst =
-            page == ui::PageId::KeyBinds
-                ? std::min(menuSystem.controlsListFirstIndex, ui::kKeyBindListRowCount)
-                : 0U;
-        const std::size_t keyRows =
-            page == ui::PageId::KeyBinds ? keyBindsVisibleRowCountForFrame() : 0U;
-        return [layout, page, count, fbWidth, keyFirst, keyRows](std::size_t index) {
-            return ui::menuWidgetRect(page, index, layout, fbWidth, count, keyFirst, keyRows);
-        };
-    }
+
 
     // 本帧按键设置列表上可见的行数，即可见窗口，钳制到可重绑定动作的总数
     // 本帧绑定列表上可见的**行**数（含分类标题行），钳到行表尾。
@@ -3855,6 +3832,12 @@ struct VulkanRenderer::Impl final : public gameplay::SimulationHost {
     }
 
     // 把当前页面装配成一个 ui::Page 值，这是唯一的构建点
+    // 一页有几个按钮：从**已装配的**页面数出来，不是另一张表说的。
+    // 这一条与绘制侧读的是同一个事实——它们都装配一遍再数。
+    [[nodiscard]] std::size_t menuButtonCount() {
+        return ui::countPageButtons(buildCurrentPage());
+    }
+
     [[nodiscard]] ui::Page buildCurrentPage() {
         ui::MenuBuildContext ctx;
         ctx.reverseCycle = glfwGetKey(window, GLFW_KEY_LEFT_SHIFT) == GLFW_PRESS ||
@@ -3873,8 +3856,22 @@ struct VulkanRenderer::Impl final : public gameplay::SimulationHost {
         ctx.keyBindLabelsFor = [this](input::InputAction action) {
             return keyBindRowLabels(action);
         };
-        return ui::buildPage(menuSystem.pageStack.current(), ctx, buildMenuCallbacks(),
-                             menuRectProvider());
+        // 两趟：装配（这一页有哪些控件）→ 布局（它们在哪）。按钮数由布局那一趟从
+        // 装配结果数出来，所以输入侧与绘制侧不可能对"这一页有几个按钮"有两种说法——
+        // 从前那正是"点 Controls 底部按钮就闪退"的来源。
+        const ui::HudLayout layout{static_cast<float>(swapchainExtent.width),
+                                   static_cast<float>(swapchainExtent.height),
+                                   menuSystem.guiScaleSetting, menuSystem.forceUnicodeFont};
+        const auto page = menuSystem.pageStack.current();
+        const std::size_t keyFirst =
+            page == ui::PageId::KeyBinds
+                ? std::min(menuSystem.controlsListFirstIndex, ui::kKeyBindListRowCount)
+                : 0U;
+        ui::Page built;
+        ui::buildPageInto(built, page, ctx, buildMenuCallbacks());
+        ui::layoutPageInto(built, page, layout, static_cast<float>(swapchainExtent.width),
+                           keyFirst);
+        return built;
     }
 
     // 选项变更之后做出反应的**唯一**地方

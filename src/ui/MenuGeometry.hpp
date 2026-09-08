@@ -7,6 +7,7 @@
 #include "ui/HudLayout.hpp"
 #include "ui/ScrollList.hpp"
 #include "ui/PageStack.hpp"
+#include "ui/Widget.hpp"
 
 #include <cstddef>
 
@@ -14,7 +15,7 @@ namespace mc::ui {
 
 // 一个前端页面显示多少个底部按钮或菜单按钮
 // 只有在世界打开着的时候，选项页才多出一个难度项
-[[nodiscard]] std::size_t menuButtonCount(PageId page, bool worldOpen);
+
 
 // 标题与底部按钮之间那条带里的一个存档列表行
 [[nodiscard]] UiRect worldListRow(std::size_t index, const HudLayout& layout,
@@ -68,10 +69,25 @@ namespace mc::ui {
 //
 //   两份镜像的代码不是"两处要同步"，是"迟早会不同步"。收成一个函数之后，
 //   `menu_layout` 测的就是**生产代码本身**，而不是它在测试里的一份抄本。
-[[nodiscard]] UiRect menuWidgetRect(PageId page, std::size_t widgetIndex,
-                                    const HudLayout& layout, float framebufferWidth,
-                                    std::size_t buttonCount, std::size_t keyBindFirstRow,
-                                    std::size_t keyBindVisibleRows);
+// 把一页**已经装配好**的控件逐个填上矩形。
+//
+// ★ 这是"页面有几个按钮"这个事实的**唯一**来源：它从 `page` 里数出来，而不是另有
+//   一张表说这一页有几个。从前那张表（`menuButtonCount`）与页面装配器是同一个事实的
+//   两份表述，没有任何东西保证一致——UI-6c 把 Controls 从 4 个按钮改成 9 个时要手改
+//   两处，而漏改的症状是 `frontendButtonRect` 抛 out_of_range **闪退**（与上一轮那次
+//   崩溃同族）。更糟的是那张表带 `default: return 0`，把 -Wswitch 护栏也关掉了：
+//   加一页会静默返回 0，而 0 正好是抛异常的条件。
+//
+// 它也解开了原来那个鸡生蛋：装配需要矩形、矩形需要按钮数、按钮数需要知道装配了什么。
+// 分成两趟之后，装配只管"有哪些控件"，布局只管"它们在哪"。
+//
+// `keyBindFirstRow` 是绑定列表的滚动位置（那是屏幕状态，不是页面内容），
+// 只有 `PageId::KeyBinds` 会读它。
+void layoutPageInto(Page& page, PageId id, const HudLayout& layout, float framebufferWidth,
+                    std::size_t keyBindFirstRow = 0U);
+
+// 一页里有几个**按钮**（不含绑定列表那些行内控件）。布局用它，测试也用它断言页面形状。
+[[nodiscard]] std::size_t countPageButtons(const Page& page);
 
 // UI-6b：按键绑定行里的两个格子（动作名 / 改键按钮）。一行两个控件，
 // 几何在 ui/ListRow.hpp，这两个只是换算到帧缓冲像素。
