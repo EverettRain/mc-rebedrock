@@ -91,6 +91,12 @@ class MenuSystem final {
     // 按键设置列表的滚动偏移与滚动条拖拽状态
     std::size_t controlsListFirstIndex = 0U;
     bool controlsScrollbarDragging = false;
+    // UI-6d：三段式设置页（视频设置 / 控制 / 高级图形）那张 OptionsList 的滚动偏移。
+    //
+    // ★ 三页共用一个字段，与 26.1 一致：那三屏是**三个屏幕对象**，进哪一屏都是新建
+    //   一个 OptionsList、滚动位置从 0 起。共用一个字段而在换页时归零（`resetPageState`）
+    //   就是这个语义；每页各存一个反而会"退出去再进来还停在半截"。
+    std::size_t optionsListFirstIndex = 0U;
     bool optionsOpen = false;
     bool viewDistanceSliderDragging = false;
     bool simulationDistanceSliderDragging = false;

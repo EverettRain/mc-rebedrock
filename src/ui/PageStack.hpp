@@ -19,7 +19,11 @@ enum class PageId {
     VideoSettings,
     Controls,
     Language,
-    Experimental,
+    // UI-6d：**「实验性内容」那一页没有了**。雨、粒子、雨碰撞缓存是渲染表现项，
+    // 26.1 里它们的同类就在视频设置那一屏；太阳阴影与动态光源归新的 AdvancedGraphics。
+    // 留一个不可达的枚举项没有意义——删掉之后，凡是按 PageId 分派的地方都会被
+    // -Wswitch 点名，一处不漏。
+    AdvancedGraphics,
     // UI-6c：`Controls` 从前把 26.1 的**两屏**合成了一屏（偏差 D1）。
     // 26.1 的 §7.6 `ControlsScreen` 是个排版枢纽（两个跳转按钮加七个设置项），
     // §7.8 `KeyBindsScreen` 才是那张绑定列表。

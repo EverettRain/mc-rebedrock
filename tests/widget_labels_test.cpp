@@ -54,12 +54,16 @@ void testStaticLabelsAreComplete() {
 }
 
 // 后缀是数据而不是特例分支
-// vanilla 的 selectWorld.experimental 只有 "Experimental"，省略号由这一列拼上
-// 目前只有它一行用到
+//
+// UI-6d：从前唯一用到它的是「实验性内容」（vanilla 的 `selectWorld.experimental` 只有
+// "Experimental"，省略号靠这一列拼）。那一页取消之后，用户换成了本项目自有的
+// 「高级图形」——它的按钮键与标题键是同一个词，差别只在这一列。
 void testSuffixIsDataNotASpecialCase() {
-    const auto* experimental = findStaticLabel(WidgetId::Experimental);
-    assert(experimental != nullptr);
-    assert(experimental->suffix == std::string_view{"..."});
+    const auto* advanced = findStaticLabel(WidgetId::AdvancedGraphics);
+    assert(advanced != nullptr);
+    assert(advanced->suffix == std::string_view{"..."});
+    // 键本身不含省略号——含了就会变成 "Advanced Graphics......"
+    assert(advanced->fallback.find("...") == std::string_view::npos);
 
     std::size_t withSuffix = 0;
     for (const auto& row : kStaticWidgetLabels) {

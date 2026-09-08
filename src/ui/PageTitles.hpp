@@ -43,8 +43,9 @@ struct PageTitle final {
         return {"options.accessibility.title", "Accessibility Settings"};
     case PageId::Language:
         return {"options.language.title", "Language"};
-    case PageId::Experimental:
-        return {"selectWorld.experimental", "Experimental"};
+    // 本项目自有页，26.1 没有——键走 lang/rebedrock/。
+    case PageId::AdvancedGraphics:
+        return {"options.rebedrock.advancedGraphics.title", "Advanced Graphics"};
     case PageId::Death:
         return {"deathScreen.title", "You Died!"};
     case PageId::Pause:

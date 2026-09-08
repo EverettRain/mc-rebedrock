@@ -5,6 +5,7 @@
 // 这里的一切都是帧缓冲尺寸、GUI 缩放、当前页面，以及调用方传进来的几个状态标志的函数
 
 #include "ui/HudLayout.hpp"
+#include "ui/OptionsList.hpp"
 #include "ui/ScrollList.hpp"
 #include "ui/PageStack.hpp"
 #include "ui/Widget.hpp"
@@ -82,9 +83,12 @@ namespace mc::ui {
 // 分成两趟之后，装配只管"有哪些控件"，布局只管"它们在哪"。
 //
 // `keyBindFirstRow` 是绑定列表的滚动位置（那是屏幕状态，不是页面内容），
-// 只有 `PageId::KeyBinds` 会读它。
+// 只有 `PageId::KeyBinds` 会读它；`optionsFirstRow` 同理，只有三段式设置页会读它。
+//
+// ★ 这两个滚动位置必须与**装配**用的那一个是同一个值。装配按窗口跳过控件、布局按同一
+//   个 firstRow 折算行号，两边错开一行就是"名字和控件错位"或者"滚动条动了内容不动"。
 void layoutPageInto(Page& page, PageId id, const HudLayout& layout, float framebufferWidth,
-                    std::size_t keyBindFirstRow = 0U);
+                    std::size_t keyBindFirstRow = 0U, std::size_t optionsFirstRow = 0U);
 
 // 一页里有几个**按钮**（不含绑定列表那些行内控件）。布局用它，测试也用它断言页面形状。
 [[nodiscard]] std::size_t countPageButtons(const Page& page);
@@ -110,6 +114,20 @@ void layoutPageInto(Page& page, PageId id, const HudLayout& layout, float frameb
 // 各前端页面共用的按钮几何
 // 存档、编辑、删除与语言页贴底摆放，视频设置页分两列，其余按居中菜单摆放
 [[nodiscard]] UiRect frontendButtonRect(const HudLayout& layout, PageId page, std::size_t index,
-                                        std::size_t buttonCount);
+                                        std::size_t buttonCount,
+                                        std::size_t optionsFirstRow = 0U);
+
+// UI-6d：三段式设置页的滚动窗口。装配（PageBuilder）与布局（frontendButtonRect）
+// 必须读同一个窗口，所以它只有这一处来源。
+//
+// 非三段式的页面返回 `{0, 0}`——`rowCount == 0` 的约定是"不滚，全装配"。
+[[nodiscard]] OptionsWindow optionsWindowFor(const HudLayout& layout, PageId page,
+                                             std::size_t firstRow);
+// 这一页的设置列表最多能滚到第几行（再往下滚只会露出列表末尾之后的空白）。
+[[nodiscard]] std::size_t optionsMaximumFirstRow(const HudLayout& layout, PageId page);
+// 设置列表的滚动条轨道；只有真的滚得动才画（`rowCount` 覆盖不了所有行时）。
+[[nodiscard]] UiRect optionsScrollbarTrack(const HudLayout& layout);
+[[nodiscard]] UiRect optionsScrollbarThumb(const HudLayout& layout, PageId page,
+                                           std::size_t firstRow);
 
 } // namespace mc::ui

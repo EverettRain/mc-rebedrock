@@ -30,7 +30,7 @@ constexpr std::array kPageNames{
     PageName{ui::PageId::VideoSettings, "video-settings"},
     PageName{ui::PageId::Controls, "controls"},
     PageName{ui::PageId::Language, "language"},
-    PageName{ui::PageId::Experimental, "experimental"},
+    PageName{ui::PageId::AdvancedGraphics, "advanced-graphics"},
     PageName{ui::PageId::KeyBinds, "key-binds"},
     PageName{ui::PageId::Accessibility, "accessibility"},
 };

@@ -89,7 +89,7 @@ void testDefaults() {
 // --- 3. 页名 ---------------------------------------------------------------
 void testPageNames() {
     // 名字与 PageId 双向一致：一张表两个方向读，两边不可能各说各话。
-    for (int raw = 0; raw <= static_cast<int>(mc::ui::PageId::Experimental); ++raw) {
+    for (int raw = 0; raw <= static_cast<int>(mc::ui::PageId::AdvancedGraphics); ++raw) {
         const auto page = static_cast<mc::ui::PageId>(raw);
         const auto name = mc::render::uiCapturePageName(page);
         CHECK(name != "unknown");
@@ -152,7 +152,7 @@ void testPageNames() {
     CHECK(!mc::render::uiCapturePageShowsWorld(mc::ui::PageId::Loading));
     CHECK(mc::render::uiCapturePageNeedsWorld(mc::ui::PageId::Loading));
     // 看得见世界的页面必然需要夹具；反过来不成立（loading）
-    for (std::size_t i = 0; i <= static_cast<std::size_t>(mc::ui::PageId::Experimental); ++i) {
+    for (std::size_t i = 0; i <= static_cast<std::size_t>(mc::ui::PageId::AdvancedGraphics); ++i) {
         const auto page = static_cast<mc::ui::PageId>(i);
         if (mc::render::uiCapturePageShowsWorld(page)) {
             check(mc::render::uiCapturePageNeedsWorld(page),

@@ -81,6 +81,7 @@
 #include "ui/OptionCycle.hpp"
 #include "ui/KeyBindList.hpp"
 #include "ui/ListRow.hpp"
+#include "ui/OptionSlider.hpp"
 #include "ui/PageBuilder.hpp"
 #include "ui/PageStack.hpp"
 #include "ui/SubtitleFeed.hpp"
@@ -2214,6 +2215,18 @@ struct VulkanRenderer::Impl final : public gameplay::SimulationHost {
             std::clamp<long long>(requested, 0LL, static_cast<long long>(maximumFirst)));
     }
 
+    // UI-6d：滚三段式设置页的那张 OptionsList。钳制上界与其余三张列表同一约定。
+    void scrollOptionsList(int rows) {
+        const std::size_t maximumFirst = ui::optionsMaximumFirstRow(
+            ui::HudLayout{static_cast<float>(swapchainExtent.width),
+                          static_cast<float>(swapchainExtent.height),
+                          menuSystem.guiScaleSetting, menuSystem.forceUnicodeFont},
+            menuSystem.pageStack.current());
+        const auto requested = static_cast<long long>(menuSystem.optionsListFirstIndex) + rows;
+        menuSystem.optionsListFirstIndex = static_cast<std::size_t>(
+            std::clamp<long long>(requested, 0LL, static_cast<long long>(maximumFirst)));
+    }
+
     void updateLanguageScrollFromCursor() {
         if (menuSystem.pageStack.current() != ui::PageId::Language) {
             menuSystem.languageScrollbarDragging = false;
@@ -2920,7 +2933,7 @@ struct VulkanRenderer::Impl final : public gameplay::SimulationHost {
             menuSystem.viewDistanceSliderDragging = false;
             menuSystem.simulationDistanceSliderDragging = false;
             break;
-        case ui::PageId::Experimental:
+        case ui::PageId::AdvancedGraphics:
         // UI-6c：两页新子屏的返回与 Experimental 同形——出栈，清掉按下态。
         case ui::PageId::Accessibility:
             menuSystem.pageStack.pop();
@@ -2980,6 +2993,14 @@ struct VulkanRenderer::Impl final : public gameplay::SimulationHost {
             break;
         case ui::PageId::KeyBinds:
             scrollControlsList(direction);
+            break;
+        // 三段式设置页各有一张 OptionsList。Controls 与高级图形今天装得下（滚不动，
+        // scrollOptionsList 会把上界钳成 0），但它们与视频设置是同一种版面，
+        // 少写一个 case 的后果是"换个窗口尺寸就滚不了"。
+        case ui::PageId::VideoSettings:
+        case ui::PageId::Controls:
+        case ui::PageId::AdvancedGraphics:
+            scrollOptionsList(direction);
             break;
         default:
             break;
@@ -3728,7 +3749,25 @@ struct VulkanRenderer::Impl final : public gameplay::SimulationHost {
             menuSystem.languageStatus.clear();
             menuSystem.pageStack.push(ui::PageId::Language);
         };
-        cb.openExperimental = [this] { menuSystem.pageStack.push(ui::PageId::Experimental); };
+        // UI-6d：整数滑块的拖拽与提交。表在 ui/OptionSlider.hpp——加一个滑块只改那张表。
+        cb.intSliderFor = [this](ui::WidgetId id) {
+            ui::SliderBind bind;
+            const auto* desc = ui::findIntSlider(id);
+            if (desc == nullptr) {
+                return bind;
+            }
+            bind.value = [this, desc] {
+                return ui::intSliderFraction(*desc, options.*(desc->field));
+            };
+            bind.onDrag = [this, desc](float fraction) {
+                options.*(desc->field) = ui::intSliderValue(*desc, fraction);
+            };
+            bind.onCommit = [this, id] { applyOptionChanged(id); };
+            return bind;
+        };
+        cb.openAdvancedGraphics = [this] {
+            menuSystem.pageStack.push(ui::PageId::AdvancedGraphics);
+        };
         // UI-6c：26.1 的两条新入口（§7.6 枢纽 → §7.8 绑定列表，Options → §7.11 辅助功能）
         cb.resetKeyBind = [this](input::InputAction action) { keyBindScreen_.resetOne(action); };
         cb.openKeyBinds = [this] { menuSystem.pageStack.push(ui::PageId::KeyBinds); };
@@ -3870,10 +3909,14 @@ struct VulkanRenderer::Impl final : public gameplay::SimulationHost {
             page == ui::PageId::KeyBinds
                 ? std::min(menuSystem.controlsListFirstIndex, ui::kKeyBindListRowCount)
                 : 0U;
+        // UI-6d：与绘制侧读同一个窗口。这两处对 firstRow 说法不一致的后果不是"少画几行"，
+        // 而是命中测试整体错行——与 UI-6b 那次闪退同族。
+        ctx.optionsWindow =
+            ui::optionsWindowFor(layout, page, menuSystem.optionsListFirstIndex);
         ui::Page built;
         ui::buildPageInto(built, page, ctx, buildMenuCallbacks());
         ui::layoutPageInto(built, page, layout, static_cast<float>(swapchainExtent.width),
-                           keyFirst);
+                           keyFirst, ctx.optionsWindow.firstRow);
         return built;
     }
 

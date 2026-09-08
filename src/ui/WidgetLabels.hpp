@@ -42,7 +42,7 @@ struct StaticWidgetLabel final {
     std::string_view suffix{};
 };
 
-inline constexpr std::array<StaticWidgetLabel, 28> kStaticWidgetLabels{{
+inline constexpr std::array<StaticWidgetLabel, 29> kStaticWidgetLabels{{
     // 标题界面与世界列表
     {WidgetId::Singleplayer, "menu.singleplayer", "Singleplayer"},
     {WidgetId::Multiplayer, "menu.multiplayer", "Multiplayer"},
@@ -70,6 +70,13 @@ inline constexpr std::array<StaticWidgetLabel, 28> kStaticWidgetLabels{{
     // UI-6c：26.1 的 Controls 是个枢纽，它上面有一个跳到绑定列表的按钮（§7.8）。
     // 本作**没有** Mouse Settings 那个跳转：那一屏不存在，而空页不建。
     {WidgetId::MouseSettings, "options.mouse_settings", "Mouse Settings..."},
+    // UI-6d：§7.3 顶上那个 graphics preset 大按钮（26.1 的键是 `options.graphics.preset`，
+    // 不是 `options.graphics`——后者是"图像品质"这个类别名）。本作没有预设机制，置灰。
+    {WidgetId::GraphicsPreset, "options.graphics.preset", "Preset"},
+    // 本项目自有页，26.1 没有：太阳阴影与将来的内建光影参数都归它。
+    // 省略号由 suffix 那一列拼——本项目自有的两个键（按钮与标题）因此是同一个词，
+    // 差别只在这一列。「实验性内容」被取消后，suffix 的用户就是它了。
+    {WidgetId::AdvancedGraphics, "options.rebedrock.advancedGraphics", "Advanced Graphics", "..."},
     {WidgetId::OpenKeyBinds, "controls.keybinds", "Key Binds..."},
     // 单行的重置按钮。★ 是 `controls.reset`（"重置"），不是页脚那个
     // `controls.resetAll`（"重置按键"）——两个键差一个 All，而一整排都写着"重置按键"
@@ -79,14 +86,14 @@ inline constexpr std::array<StaticWidgetLabel, 28> kStaticWidgetLabels{{
     {WidgetId::Accessibility, "options.accessibility", "Accessibility Settings..."},
     {WidgetId::Language, "options.language", "Language..."},
     // vanilla 的 selectWorld.experimental 只有 "Experimental"，省略号在代码里拼
-    {WidgetId::Experimental, "selectWorld.experimental", "Experimental", "..."},
     {WidgetId::Done, "gui.done", "Done"},
     {WidgetId::ResetKeyBinds, "controls.resetAll", "Reset Keys"},
 }};
 
 // 标签要读运行期状态，仍由渲染器的 widgetLabel 现算
 // 登记在这里是为了让它有归属这件事可被编译期检查，而不是靠 switch 里恰好写了一行
-inline constexpr std::array<WidgetId, 8> kRuntimeWidgetLabels{{
+inline constexpr std::array<WidgetId, 9> kRuntimeWidgetLabels{{
+    WidgetId::MenuBackgroundBlurriness,  // 滑块当前值，最低档显示 OFF
     WidgetId::Resolution,          // 实时窗口尺寸（可能被拖拽或最大化过）
     WidgetId::GuiScale,            // 菜单状态里的缩放档位，0 表示 Auto
     WidgetId::ViewDistance,        // 滑块当前值

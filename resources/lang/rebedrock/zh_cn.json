@@ -1,6 +1,8 @@
 {
   "key.rebedrock.debug": "调试信息",
   "key.rebedrock.pause": "暂停/菜单",
+  "options.rebedrock.advancedGraphics": "高级图形",
+  "options.rebedrock.advancedGraphics.title": "高级图形",
   "options.rebedrock.antiAliasing": "抗锯齿",
   "options.rebedrock.antiAliasing.msaa": "多重采样 (MSAA)",
   "options.rebedrock.antiAliasing.taa": "时间性抗锯齿 (TAA)",
