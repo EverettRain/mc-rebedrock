@@ -22,6 +22,8 @@
 
 #include <array>
 #include <cstdio>
+#include <cstring>
+#include <iostream>
 #include <fstream>
 #include <sstream>
 
@@ -697,6 +699,54 @@ void testWindowSingleSourceGuard() {
         ++cursors;
     }
     CHECK(cursors == 3U);   // VideoSettings / AdvancedGraphics / Controls
+
+    // ★ 每一页**声明的设置项数**必须等于它实际装配的项数。
+    //
+    // 这两个数字长在两个文件里：`optionsGroupsOf()` 的那张表说「这一页有几项、怎么分组」，
+    // PageBuilder 的那个 case 说「实际加哪几个」。加一个设置项而忘了改表，两边都编译得过、
+    // 各自都自洽，症状是**多出来的那个控件叠在别人身上**——`optionsGroupedSlot` 走完所有
+    // 组还没找到这个下标，就返回「最后一行之后」，而它下一个也返回同一个位置。
+    // 屏幕上是两个按钮画在一处，测试里从前什么都不响。
+    const auto caseBody = [&builder](const char* label) {
+        const auto start = builder.find(label);
+        CHECK(start != std::string::npos);
+        if (start == std::string::npos) {
+            return std::string{};
+        }
+        const auto end = builder.find("case PageId::", start + std::strlen(label));
+        return builder.substr(start, end == std::string::npos ? std::string::npos : end - start);
+    };
+    const auto assembledCount = [](const std::string& body) {
+        std::size_t count = 0;
+        for (std::size_t at = body.find("add([&] {"); at != std::string::npos;
+             at = body.find("add([&] {", at + 1U)) {
+            ++count;
+        }
+        return count;
+    };
+    const auto declaredCount = [](mc::ui::PageId page) {
+        std::size_t count = 0;
+        for (const mc::ui::OptionsGroup& group : mc::ui::optionsGroupsOf(page)) {
+            count += group.count;
+        }
+        return count;
+    };
+    struct PageCase final {
+        const char* label;
+        mc::ui::PageId page;
+    };
+    for (const PageCase entry : {PageCase{"case PageId::VideoSettings: {",
+                                          mc::ui::PageId::VideoSettings},
+                                 PageCase{"case PageId::AdvancedGraphics: {",
+                                          mc::ui::PageId::AdvancedGraphics}}) {
+        const std::size_t assembled = assembledCount(caseBody(entry.label));
+        const std::size_t declared = declaredCount(entry.page);
+        CHECK(assembled == declared);
+        if (assembled != declared) {
+            std::cerr << "  " << entry.label << " 装配 " << assembled << " 项，"
+                      << "optionsGroupsOf 声明 " << declared << " 项\n";
+        }
+    }
 
     // 布局侧必须走 optionsScrolledSlot，不能直接用 optionsGroupedSlot：后者拿装配序号
     // 当设置项序号，滚动一开就整屏错行。

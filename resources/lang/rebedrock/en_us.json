@@ -6,6 +6,7 @@
   "options.rebedrock.antiAliasing": "Anti-Aliasing",
   "options.rebedrock.antiAliasing.msaa": "MSAA",
   "options.rebedrock.antiAliasing.taa": "TAA",
+  "options.rebedrock.cascadedShadows": "Cascaded Shadows",
   "options.rebedrock.dynamicLights": "Dynamic Lighting",
   "options.rebedrock.particleLevel.crazy": "Crazy (3x)",
   "options.rebedrock.particleLevel.high": "High (2x)",

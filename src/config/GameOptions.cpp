@@ -142,6 +142,8 @@ GameOptions GameOptions::load(const std::filesystem::path& path) {
                 mode = static_cast<int>(AntiAliasingMode::Msaa);
             }
             options.antiAliasing = static_cast<AntiAliasingMode>(mode);
+        } else if (key == "render.cascadedShadows") {
+            options.cascadedShadows = value == "true" || value == "1" || value == "on";
         } else if (key == "render.entityShadows") {
             options.entityShadows = value == "true" || value == "1" || value == "on";
         } else if (key == "render.viewBobbing") {
@@ -233,6 +235,8 @@ void GameOptions::save(const std::filesystem::path& path) const {
            << "render.fpsLimit=" << sanitized.frameRateLimit << '\n'
            << "render.anisotropy=" << sanitized.anisotropy << '\n'
            << "render.antiAliasing=" << static_cast<int>(sanitized.antiAliasing) << '\n'
+           << "render.cascadedShadows=" << (sanitized.cascadedShadows ? "true" : "false")
+           << '\n'
            << "render.viewBobbing=" << (sanitized.viewBobbing ? "true" : "false") << '\n'
            << "render.entityShadows=" << (sanitized.entityShadows ? "true" : "false") << '\n'
            << "control.autoJump=" << (sanitized.autoJump ? "true" : "false") << '\n'

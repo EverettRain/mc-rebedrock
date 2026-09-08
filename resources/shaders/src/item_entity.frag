@@ -111,9 +111,11 @@ void main() {
             // skyFactor still scales combined ambient/direct skylight.
             float shadowFactor = 1.0;
             if (camera.lightingSettings.w > 0.5) {
-                shadowFactor = sunShadowFactor(shadowDepth, shadowDepthRaw, camera.lightViewProj[0], camera.lightViewProj[1],
+                shadowFactor = sunShadowFactor(shadowDepth, shadowDepthRaw,
+                                               camera.lightViewProj[0], camera.lightViewProj[1],
                                                fragmentWorldPosition, normal,
-                                               camera.sunDirection.xyz);
+                                               camera.sunDirection.xyz,
+                                               camera.lightingSettings.z);
             }
             float diffuse = max(dot(normal, normalize(camera.sunDirection.xyz)), 0.0);
             terrainSunFactor = 0.72 + diffuse * shadowFactor * 0.28;

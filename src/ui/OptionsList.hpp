@@ -170,7 +170,7 @@ inline constexpr std::array<OptionsGroup, 3> kVideoSettingsGroups{
     {{1U, /*big=*/true}, {11U, false}, {4U, false}}};
 
 // 高级图形：本项目自有页，两项一组。
-inline constexpr std::array<OptionsGroup, 1> kAdvancedGraphicsGroups{{{2U, false}}};
+inline constexpr std::array<OptionsGroup, 1> kAdvancedGraphicsGroups{{{3U, false}}};
 
 // 这一屏的 addSmall 分组。三段式版面的页脚按钮不在其中（它由 buttonCount 单独认出来）。
 [[nodiscard]] constexpr std::span<const OptionsGroup> optionsGroupsOf(PageId page) {

@@ -43,9 +43,13 @@ bool sunShadowInsideCascade(vec3 shadowUv) {
            shadowUv.z >= 0.0 && shadowUv.z <= 1.0;
 }
 
+// `nearCascadeEnabled` 是 lightingSettings.z：近段那一层**这一帧有没有内容**。
+// 玩家把级联关掉时层 0 那一步在编译期被剪，图里留着的是上一次的内容——不跳过它，
+// 脚下会盖着一片陈旧的影子，而它随玩家走动而不动。
 float sunShadowFactor(sampler2DArrayShadow shadowMap, sampler2DArray shadowDepth,
                       mat4 lightViewProjNear, mat4 lightViewProjFar,
-                      vec3 worldPosition, vec3 normal, vec3 sunDirection) {
+                      vec3 worldPosition, vec3 normal, vec3 sunDirection,
+                      float nearCascadeEnabled) {
     // 三个接收者统一：没有太阳直射的面不受此方向的遮挡影响，也无需 PCF。
     // 受光面的光照权重保持原样；合并 sky 通道仍包含环境天光，这是待拆分的近似。
     float incidence = dot(normal, normalize(sunDirection));
@@ -57,15 +61,20 @@ float sunShadowFactor(sampler2DArrayShadow shadowMap, sampler2DArray shadowDepth
     // ★ 法线抬升要用**被选中那一级**的纹素，而抬升又发生在投影之前，所以两级各投影
     // 一次是不可避的：拿远段的抬升去投近段，抬的量是 8 倍，影子会整片从脚下浮起来。
     // 代价是一次多余的 mat4 乘（近段没命中时才发生），换来的是两级各自自洽。
-    int cascade = 0;
+    bool tryNear = nearCascadeEnabled > 0.5;
+    int cascade = tryNear ? 0 : 1;
     float texelBlocks = sunShadowTexelBlocks(cascade);
     vec3 offsetPosition = worldPosition + normal * sunShadowNormalOffsetBlocks(incidence, texelBlocks);
-    vec4 lightPosition = lightViewProjNear * vec4(offsetPosition, 1.0);
+    vec4 lightPosition = (tryNear ? lightViewProjNear : lightViewProjFar) * vec4(offsetPosition, 1.0);
     vec3 projected = lightPosition.xyz / lightPosition.w;
     // xy 从 [-1,1] 重映射到 [0,1]；z **不**重映射——投影是 orthoRH_ZO，
     // 深度已经在 [0,1] 里了，再 * 0.5 + 0.5 会把它压进 [0.5,1]
     vec3 shadowUv = vec3(projected.xy * 0.5 + 0.5, projected.z);
     if (!sunShadowInsideCascade(shadowUv)) {
+        if (!tryNear) {
+            // 已经在远段了：最远那一级的框之外没有阴影图可查，一律按全亮
+            return 1.0;
+        }
         cascade = 1;
         texelBlocks = sunShadowTexelBlocks(cascade);
         offsetPosition = worldPosition + normal * sunShadowNormalOffsetBlocks(incidence, texelBlocks);
@@ -73,7 +82,6 @@ float sunShadowFactor(sampler2DArrayShadow shadowMap, sampler2DArray shadowDepth
         projected = lightPosition.xyz / lightPosition.w;
         shadowUv = vec3(projected.xy * 0.5 + 0.5, projected.z);
         if (!sunShadowInsideCascade(shadowUv)) {
-            // 最远那一级的框之外没有阴影图可查，一律按全亮
             return 1.0;
         }
     }

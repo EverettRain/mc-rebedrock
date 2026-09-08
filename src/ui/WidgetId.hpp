@@ -34,7 +34,7 @@ enum class WidgetId : std::uint16_t {
     GraphicsPreset,
     // UI-6d：视频设置里跳进"高级图形"的按钮（本项目自有页，26.1 没有）。
     AdvancedGraphics,
-    RainMode, ParticleLevel, SunShadows, RainCollisionCache,
+    RainMode, ParticleLevel, SunShadows, CascadedShadows, RainCollisionCache,
     WorldRow, LanguageRow,
     KeyBindRow, ResetKeyBinds,
     // UI-6c：**单行**的重置按钮（`controls.reset`），与页脚那个重置**所有**

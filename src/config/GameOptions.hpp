@@ -95,6 +95,13 @@ struct GameOptions final {
     mc::world::SmoothLightingQuality smoothLightingQuality =
         mc::world::SmoothLightingQuality::On;
     bool dynamicLight = false;
+    // RN-35：太阳阴影的级联。开时近段一张 16 格框的阴影图（纹素 1/128 格）盖住玩家
+    // 周围，远段沿用 128 格那张；关时只画远段那一张，回到 RN-34 的形态。
+    // 默认开——它买到的是「影子贴着投它的方块」，代价是多一趟阴影预通道。
+    // ★ 这一档是**初始化期读一次**的：帧图在建交换链资源时编译，级联的那一步是
+    // 编译期剪枝而不是运行期 if。改它必须重编译帧图（applyOptionChanged 里那一条），
+    // 而离屏出图要钉死它就得钉在 glfwInit 之前（见 initialize()）。
+    bool cascadedShadows = true;
     // PX-6: show sound subtitles (26.1 accessibility captions). A client option,
     // not a gamerule; off by default, matching vanilla. Gates the subtitle
     // overlay feed — captions only appear when this is on.

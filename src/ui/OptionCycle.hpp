@@ -129,7 +129,7 @@ inline constexpr std::array<OptionValue, 4> kParticleLevelValues{{
 // 分辨率读实时窗口尺寸，GUI 缩放读菜单状态，难度读当前打开的存档
 // 这三项仍由渲染器直接处理
 
-inline constexpr std::array<OptionDesc, 21> kCyclingOptions{{
+inline constexpr std::array<OptionDesc, 22> kCyclingOptions{{
     // UI-6c：26.1 §7.6 Controls 的六个设置项（偏差 D3）。四个 Hold/Toggle 的 caption
     // 复用动作名本身，值标签是"按住 / 切换"。
     {WidgetId::ToggleCrouch, "key.sneak", "Sneak", &config::GameOptions::toggleCrouch,
@@ -178,6 +178,9 @@ inline constexpr std::array<OptionDesc, 21> kCyclingOptions{{
      &config::GameOptions::particleLevel, kParticleLevelValues},
     {WidgetId::SunShadows, "options.rebedrock.sunShadows", "Sun Shadows",
      &config::GameOptions::sunShadows, kOnOffValues},
+    // RN-35：太阳阴影的级联。关掉只画远段那一张 128 格的图，回到 RN-34 的形态
+    {WidgetId::CascadedShadows, "options.rebedrock.cascadedShadows", "Cascaded Shadows",
+     &config::GameOptions::cascadedShadows, kOnOffValues},
     {WidgetId::RainCollisionCache, "options.rebedrock.rainCollisionCache",
      "Rain Collision Cache", &config::GameOptions::rainCollisionCache, kOnOffValues},
 }};

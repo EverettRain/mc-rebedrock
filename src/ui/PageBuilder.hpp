@@ -471,6 +471,7 @@ inline void buildPageInto(Page& page, PageId id, const MenuBuildContext& ctx,
         case PageId::AdvancedGraphics: {
             detail::OptionCursor add{ctx, id};
             add([&] { addOptionButton(page, ctx, WidgetId::SunShadows, cb); });
+            add([&] { addOptionButton(page, ctx, WidgetId::CascadedShadows, cb); });
             add([&] { addOptionButton(page, ctx, WidgetId::DynamicLight, cb); });
             addButton(page, ctx, WidgetId::Done, cb.doneOptions);
             break;

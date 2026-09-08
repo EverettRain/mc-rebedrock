@@ -6,6 +6,7 @@
   "options.rebedrock.antiAliasing": "抗锯齿",
   "options.rebedrock.antiAliasing.msaa": "多重采样 (MSAA)",
   "options.rebedrock.antiAliasing.taa": "时间性抗锯齿 (TAA)",
+  "options.rebedrock.cascadedShadows": "级联阴影",
   "options.rebedrock.dynamicLights": "动态光源",
   "options.rebedrock.particleLevel.crazy": "疯狂（3倍）",
   "options.rebedrock.particleLevel.high": "高（2倍）",

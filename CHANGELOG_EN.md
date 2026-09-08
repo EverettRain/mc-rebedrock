@@ -15,6 +15,8 @@ simple versioned history while it is in beta.
   you, at a hundred-and-twenty-eighth of a block, and the old wide one for everything beyond it. In
   the fixture we measure, the ground right against the foot of a stone pillar went from fully lit to
   fully shadowed.
+  It can be switched off under Video Settings -> Advanced Graphics if you would rather have the
+  frame back.
 - Anti-aliasing is now a three-way setting -- Off, MSAA, TAA -- instead of a single on/off switch,
   and the new TAA option is temporal anti-aliasing: the camera is jittered by a fraction of a pixel
   each frame and the results are accumulated, which smooths the edges MSAA has never been able to

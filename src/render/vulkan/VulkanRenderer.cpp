@@ -578,6 +578,10 @@ struct VulkanRenderer::Impl final : public gameplay::SimulationHost {
             // 于是一张吃历史的图片连"同一台机器上跑两次"都不保证相同
             options.antiAliasing = config::AntiAliasingMode::Off;
             options.vsync = false;
+            // RN-35：级联也属于这一类——帧图在建交换链资源时编译，近段那一步是编译期
+            // 剪枝。钉成**开**（默认档）：出图要展示玩家实际看到的那一档，而不是
+            // 跑它那台机器的 options.properties 恰好写了什么
+            options.cascadedShadows = true;
         }
         if (glfwInit() != GLFW_TRUE) {
             throw std::runtime_error("GLFW initialization failed");
@@ -3959,9 +3963,13 @@ struct VulkanRenderer::Impl final : public gameplay::SimulationHost {
         case ui::WidgetId::ParticleLevel:
             applyParticleLevel();
             break;
+        // RN-35：级联开关走同一条路——它剪的是**近段那一步**，不是整对。
+        // 两者共用这个 case：翻哪一个都要重编译，而 shadowDisabled 的赋值对级联那一档
+        // 是幂等的（options.sunShadows 没变）
+        case ui::WidgetId::CascadedShadows:
         case ui::WidgetId::SunShadows:
             shadowDisabled = !options.sunShadows;
-            // shadow 那一步是在编译期剪掉的（连同它那条边界屏障），不是运行期 if，
+            // shadow 那两步是在编译期剪掉的（连同它们各自那条边界屏障），不是运行期 if，
             // 所以开关一翻就得重编译。这条落在 RN-20 §2.2 的「画质选项改变 → 全图重编译」
             // 那一行上，不是另造的生命周期。
             checkVk(vkDeviceWaitIdle(device), "vkDeviceWaitIdle");
@@ -6102,6 +6110,12 @@ struct VulkanRenderer::Impl final : public gameplay::SimulationHost {
         return VulkanResources::depthFormatHasStencil(format);
     }
 
+    // RN-35：近段那一级跑不跑。太阳阴影整个关掉时它当然也不跑——两个步一起被剪，
+    // 而接收端靠 lightingSettings.z 知道近段这一层这一帧有没有内容
+    [[nodiscard]] bool sunShadowNearCascadeEnabled() const {
+        return !shadowDisabled && options.cascadedShadows;
+    }
+
     // TAA-1：抗锯齿三档里的第三档。它与 MSAA 互斥（同一个字段的两个取值），
     // 于是 TAA 开着时 renderSampleCount() 恒为 1×——resolve 那一趟因此永远面对
     // 单采样的场景图与单采样的深度，不必再有一条"多采样深度怎么采样"的分支
@@ -6220,7 +6234,10 @@ struct VulkanRenderer::Impl final : public gameplay::SimulationHost {
         // renderpass 的四个操作只在 shadow 那步还在图里时可比：剪掉之后没有任何
         // renderpass 在消费这张图，那四个字段落不到实际对象上。这正是「翻转开关
         // 不必重建 image」那条结论的形状——变的字段不是 image 参数
-        if (!shadowDisabled) {
+        // 那一级的步被剪掉时没有任何 renderpass 在消费这一层，四个附件操作落不到实际
+        // 对象上——与「关掉太阳阴影不必重建 image」是同一条判断
+        const bool drawn = cascade == 0 ? sunShadowNearCascadeEnabled() : !shadowDisabled;
+        if (drawn) {
             const auto& ops =
                 resourcePlan_.ops(kShadowPassNames[cascade], kShadowDepthNames[cascade]);
             same = same && ops.loadOp == actual.loadOp && ops.storeOp == actual.storeOp &&
@@ -7312,24 +7329,31 @@ struct VulkanRenderer::Impl final : public gameplay::SimulationHost {
         // ⚠ 它必须跟着 shadow 步一起被剪：shadow 关掉时那张图停在
         // initializeAsShaderRead 留下的 SHADER_READ_ONLY_OPTIMAL，再下一次
         // DEPTH_ATTACHMENT → SHADER_READ 的转换 oldLayout 对不上。
-        VkImageMemoryBarrier shadowRead{};
-        shadowRead.sType = VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER;
-        shadowRead.oldLayout = VK_IMAGE_LAYOUT_DEPTH_STENCIL_ATTACHMENT_OPTIMAL;
-        shadowRead.newLayout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
-        shadowRead.srcQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
-        shadowRead.dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
-        shadowRead.image = shadowTarget.image();
-        shadowRead.subresourceRange.aspectMask = shadowTarget.aspect();
-        shadowRead.subresourceRange.levelCount = 1;
-        // RN-35：**所有层**一起转。级联的每一级是这张数组图像的一层，而采样端拿到的是
-        // 整张数组——漏掉第二层，那一层就停在 DEPTH_STENCIL_ATTACHMENT_OPTIMAL 被采样，
-        // 校验层报 imageLayout-00344，真机上是未定义行为
-        shadowRead.subresourceRange.layerCount =
-            static_cast<std::uint32_t>(render::kSunShadowCascadeCount);
-        shadowRead.srcAccessMask = VK_ACCESS_DEPTH_STENCIL_ATTACHMENT_WRITE_BIT;
-        shadowRead.dstAccessMask = VK_ACCESS_SHADER_READ_BIT;
+        // RN-35：**逐级一条**屏障，每条只覆盖自己那一层。
+        //
+        // 合成一条覆盖两层的屏障在两级都画的时候是对的，但级联一关，层 0 那一步被剪、
+        // 它停在 SHADER_READ_ONLY，而屏障的 oldLayout 仍写着 DEPTH_STENCIL_ATTACHMENT
+        // ——对不上。这与 RN-20a 那条「屏障必须跟着它的步一起被剪」是同一条规矩，
+        // 只是粒度从「整张图」细到了「一层」。
         tables.worldBarriers.clear();
-        if (withHandles && !shadowDisabled) {
+        for (std::size_t cascade = 0; cascade < render::kSunShadowCascadeCount; ++cascade) {
+            const bool drawn = cascade == 0 ? sunShadowNearCascadeEnabled() : !shadowDisabled;
+            if (!withHandles || !drawn) {
+                continue;
+            }
+            VkImageMemoryBarrier shadowRead{};
+            shadowRead.sType = VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER;
+            shadowRead.oldLayout = VK_IMAGE_LAYOUT_DEPTH_STENCIL_ATTACHMENT_OPTIMAL;
+            shadowRead.newLayout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
+            shadowRead.srcQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
+            shadowRead.dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
+            shadowRead.image = shadowTarget.image();
+            shadowRead.subresourceRange.aspectMask = shadowTarget.aspect();
+            shadowRead.subresourceRange.levelCount = 1;
+            shadowRead.subresourceRange.baseArrayLayer = static_cast<std::uint32_t>(cascade);
+            shadowRead.subresourceRange.layerCount = 1;
+            shadowRead.srcAccessMask = VK_ACCESS_DEPTH_STENCIL_ATTACHMENT_WRITE_BIT;
+            shadowRead.dstAccessMask = VK_ACCESS_SHADER_READ_BIT;
             tables.worldBarriers.push_back(shadowRead);
         }
 
@@ -7354,7 +7378,10 @@ struct VulkanRenderer::Impl final : public gameplay::SimulationHost {
              .clears = withHandles ? std::span<const VkClearValue>{tables.shadowClears}
                                    : std::span<const VkClearValue>{},
              .extent = {shadowTarget.width(), shadowTarget.height()},
-             .enabled = !shadowDisabled},
+             // 级联关掉时只剪这一步。层 0 因此停在上一次留下的 SHADER_READ_ONLY，
+             // 而接收端也不再采样它——两件事必须同时成立，见下面那条屏障与
+             // lightingSettings.z
+             .enabled = sunShadowNearCascadeEnabled()},
             {.name = kShadowPassNames[1],
              .attachments = tables.shadowAttachments[1],
              .record = &WorldRenderer::graphShadowStep<1>,
@@ -8022,7 +8049,10 @@ struct VulkanRenderer::Impl final : public gameplay::SimulationHost {
         // 三档收成开/关之后只剩 vanilla 一条曲线，没有第二条可选，这一位因此没有读者
         // 它是既有 vec4 的一个分量而不是独立字段，删掉它不会移动任何偏移，
         // 所以保留为恒 0 并在两个片元着色器里一并注明它是保留位，而不是留半删状态
-        uniform.lightingSettings.z = 0.0F;
+        // RN-35：.z 从 RN-19b 起是保留位，现在是**近段级联这一帧有没有内容**。
+        // 关掉级联时层 0 那一步被剪，接收端必须跳过它直接用远段——否则它会去采样
+        // 一张停在上一次内容上的图，脚下出现一片陈旧的影子
+        uniform.lightingSettings.z = sunShadowNearCascadeEnabled() ? 1.0F : 0.0F;
         // lightingSettings.w 是太阳阴影开关，本帧预通道跑过时为 1.0
         // 地形着色器因此只在阴影图确实有效时才采样它
         uniform.lightingSettings.w = shadowDisabled ? 0.0F : 1.0F;

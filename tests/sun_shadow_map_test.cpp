@@ -100,6 +100,11 @@ using mc::render::Aabb;
 // 「近段命中时会怎样」由 checkCascadeSelection 单独钉。
 const glm::mat4 kMissNearCascade = glm::scale(glm::mat4{1.0F}, glm::vec3{10.0F});
 
+// lightingSettings.z：近段那一层这一帧有没有内容。玩家关掉级联时它是 0，接收端必须
+// 直接用远段——checkCascadeSwitch 单独钉那一档
+const float kNearCascadeOn = 1.0F;
+const float kNearCascadeOff = 0.0F;
+
 void require(bool condition, const std::string& message, int line) {
     if (!condition) {
         throw std::runtime_error{"sun_shadow_map_test line " + std::to_string(line) + ": " +
@@ -184,7 +189,7 @@ void checkShadowFacing() {
                 samples.blockerDepth = {0.0F, 0.0F, 0.0F, 0.0F};
                 const float factor = shaderReceiver::sunShadowFactor(
                     &samples, &samples, kMissNearCascade, glm::mat4{1.0F},
-                    glm::vec3{0, 0, 0.5F}, normal, sun);
+                    glm::vec3{0, 0, 0.5F}, normal, sun, kNearCascadeOn);
                 const std::string context = " at N.L=" + std::to_string(incidence);
                 if (incidence <= 0.0F) {
                     REQUIRE(factor == 1.0F && samples.count == 0,
@@ -229,8 +234,8 @@ void checkShadowFacing() {
     // The existing outside-frustum early return remains active for front faces.
     shaderReceiver::Samples outside;
     REQUIRE(shaderReceiver::sunShadowFactor(&outside, &outside, kMissNearCascade, glm::mat4{1.0F},
-                glm::vec3{3, 0, 0.5F}, glm::vec3{0, 1, 0}, glm::vec3{0, 1, 0}) == 1.0F &&
-                outside.count == 0,
+                glm::vec3{3, 0, 0.5F}, glm::vec3{0, 1, 0}, glm::vec3{0, 1, 0},
+                kNearCascadeOn) == 1.0F && outside.count == 0,
             "sun-facing receiver outside the shadow map must remain fully lit without PCF");
 }
 
@@ -663,15 +668,26 @@ void checkRendererSourceGuards() {
             "recordShadow still reads the camera position — the caster ordering must not depend "
             "on it, or sections pop in and out as the player walks");
 
-    // RN-35：把阴影图转成 SHADER_READ_ONLY 的那条边界屏障必须覆盖**所有**级联层。
+    // RN-35：把阴影图转成 SHADER_READ_ONLY 的边界屏障是**逐级一条**的。
     //
-    // 这一条只有校验层抓得到（headless 没有 layout），而它的现场是
-    // imageLayout-00344：第二层停在 DEPTH_STENCIL_ATTACHMENT_OPTIMAL 却被采样，
-    // 真机上是未定义行为。所以这里退一步钉源码：层数必须从级联数来，不是字面量 1。
+    // 这一条只有校验层抓得到（headless 没有 layout），所以退一步钉源码。两件事：
+    //  * 每条只覆盖自己那一层，层号来自循环变量而不是字面量——写死 0 就是「第二层
+    //    停在 DEPTH_STENCIL_ATTACHMENT_OPTIMAL 却被采样」，现场是 imageLayout-00344；
+    //  * 屏障跟着它那一步的启用状态走。合成一条覆盖两层的屏障在两级都画时是对的，
+    //    可级联一关，层 0 那一步被剪、它停在 SHADER_READ_ONLY，而屏障的 oldLayout
+    //    仍写着 DEPTH_STENCIL_ATTACHMENT——对不上。这是 RN-20a 那条「屏障必须跟着
+    //    它的步一起被剪」，粒度从整张图细到一层。
     const std::string tables = functionBody(renderer, "void buildFrameGraphTables(");
-    REQUIRE(tables.find("shadowRead.subresourceRange.layerCount =") != std::string::npos &&
-                tables.find("shadowRead.subresourceRange.layerCount = 1;") == std::string::npos,
-            "the shadow-read boundary barrier must cover every cascade layer, not just the first");
+    REQUIRE(tables.find("shadowRead.subresourceRange.baseArrayLayer = "
+                        "static_cast<std::uint32_t>(cascade);") != std::string::npos &&
+                tables.find("shadowRead.subresourceRange.baseArrayLayer = 0") == std::string::npos,
+            "each shadow-read boundary barrier must carry its own cascade's layer index");
+    REQUIRE(tables.find("shadowRead.subresourceRange.layerCount = 1;") != std::string::npos,
+            "one barrier per cascade layer: a single barrier spanning both cannot be pruned with "
+            "the near step when cascades are switched off");
+    REQUIRE(tables.find("const bool drawn = cascade == 0 ? sunShadowNearCascadeEnabled() : "
+                        "!shadowDisabled;") != std::string::npos,
+            "the per-cascade barrier must be pruned with the step that writes that layer");
     REQUIRE(tables.find("render::kSunShadowCascadeCount") != std::string::npos,
             "the frame-graph tables must derive their cascade count from SunShadowMap.hpp");
 
@@ -964,9 +980,9 @@ void checkCascades() {
     shaderReceiver::Samples samples{};
     samples.visibility = {1, 1, 1, 1, 1, 1, 1, 1, 1};
     samples.blockerDepth = {0.0F, 0.0F, 0.0F, 0.0F};
-    const float factor = shaderReceiver::sunShadowFactor(&samples, &samples, glm::mat4{1.0F},
-                                                          kMissNearCascade, glm::vec3{0, 0, 0.5F},
-                                                          glm::vec3{0, 1, 0}, glm::vec3{0, 1, 0});
+    const float factor = shaderReceiver::sunShadowFactor(
+        &samples, &samples, glm::mat4{1.0F}, kMissNearCascade, glm::vec3{0, 0, 0.5F},
+        glm::vec3{0, 1, 0}, glm::vec3{0, 1, 0}, kNearCascadeOn);
     REQUIRE(samples.count == 4 && factor == 1.0F,
             "a receiver inside the near box must take the near cascade and still do four taps");
     for (std::size_t tap = 0; tap < samples.count; ++tap) {
@@ -990,9 +1006,9 @@ void checkCascades() {
         shaderReceiver::Samples grazing{};
         grazing.visibility = {1, 1, 1, 1, 1, 1, 1, 1, 1};
         grazing.blockerDepth = {0.0F, 0.0F, 0.0F, 0.0F};
-        static_cast<void>(shaderReceiver::sunShadowFactor(&grazing, &grazing, glm::mat4{1.0F},
-                                                          kMissNearCascade, glm::vec3{0, 0, 0.5F},
-                                                          up, grazingSun));
+        static_cast<void>(shaderReceiver::sunShadowFactor(
+            &grazing, &grazing, glm::mat4{1.0F}, kMissNearCascade, glm::vec3{0, 0, 0.5F}, up,
+            grazingSun, kNearCascadeOn));
         REQUIRE(grazing.count == 4, "the grazing near-cascade probe must reach the PCF taps");
         const float nearLift = shaderBias::sunShadowNormalOffsetBlocks(
             incidence, shaderBias::kSunShadowNearTexelBlocks);
@@ -1013,6 +1029,65 @@ void checkCascades() {
             REQUIRE(std::abs(actualY - wrongY) > 1.0F / 2048.0F,
                     "fixture check: the far cascade's lift must be distinguishable here");
         }
+    }
+
+    // ---- 5. 玩家把级联关掉 -------------------------------------------------
+    //
+    // 关掉时近段那一步在**编译期**被剪，层 0 里留着的是上一次的内容。接收端不跳过它，
+    // 脚下就盖着一片陈旧的影子，而且它随玩家走动而不动——按钮能点、值能存、画面却
+    // 「有效果但是错的」，比毫无效果更难查。
+    {
+        shaderReceiver::Samples off{};
+        off.visibility = {1, 1, 1, 1, 1, 1, 1, 1, 1};
+        off.blockerDepth = {0.0F, 0.0F, 0.0F, 0.0F};
+        // 近段给恒等（点落在它框内），远段也给恒等：关掉之后必须**直接**用远段，
+        // 而不是「先试近段命中了就用」
+        static_cast<void>(shaderReceiver::sunShadowFactor(&off, &off, glm::mat4{1.0F},
+                                                          glm::mat4{1.0F}, glm::vec3{0, 0, 0.5F},
+                                                          glm::vec3{0, 1, 0}, glm::vec3{0, 1, 0},
+                                                          kNearCascadeOff));
+        REQUIRE(off.count == 4, "switching cascades off must still shadow, just from the far map");
+        for (std::size_t tap = 0; tap < off.count; ++tap) {
+            REQUIRE(off.coordinates[tap].z == 1.0F,
+                    "with cascades off every tap must read layer 1: layer 0 holds whatever the "
+                    "pruned near step left there");
+        }
+        for (std::size_t tap = 0; tap < off.blockerCount; ++tap) {
+            REQUIRE(off.blockerCoordinates[tap].z == 1.0F,
+                    "the blocker search must not read the stale near layer either");
+        }
+        // 同一个夹具、只翻这一档：开时读层 0。两条并排才说明这一档真的被读了
+        shaderReceiver::Samples on{};
+        on.visibility = {1, 1, 1, 1, 1, 1, 1, 1, 1};
+        on.blockerDepth = {0.0F, 0.0F, 0.0F, 0.0F};
+        static_cast<void>(shaderReceiver::sunShadowFactor(&on, &on, glm::mat4{1.0F},
+                                                          glm::mat4{1.0F}, glm::vec3{0, 0, 0.5F},
+                                                          glm::vec3{0, 1, 0}, glm::vec3{0, 1, 0},
+                                                          kNearCascadeOn));
+        REQUIRE(on.count == 4 && on.coordinates[0].z == 0.0F,
+                "fixture check: with the same matrices, cascades on must select layer 0 — "
+                "otherwise the assertion above passes for the wrong reason");
+    }
+
+    // ---- 6. 那一档必须真的接到渲染器上 ------------------------------------
+    //
+    // 漏掉这一步是最安静的一种：按钮能点、值能存进 options.properties、下次启动也读得
+    // 回来，但帧图不重编译，近段那一步照跑。headless 看不到 Vulkan，所以钉源码。
+    {
+        const auto renderer = stripLineComments(readFile(MC_REBEDROCK_RENDERER_SRC));
+        const auto applied = functionBody(renderer, "void applyOptionChanged(ui::WidgetId id)");
+        const auto switchCase = applied.find("case ui::WidgetId::CascadedShadows:");
+        REQUIRE(switchCase != std::string::npos,
+                "toggling cascades must have a case in applyOptionChanged, or the button stores a "
+                "value and changes nothing");
+        REQUIRE(applied.find("rebuildFrameGraph();", switchCase) != std::string::npos,
+                "the cascade toggle prunes a compile-time step, so it must recompile the graph");
+        // 剪枝与接收端那一位必须来自**同一个**判据，否则会出现「这一步不画了但着色器
+        // 还在读它」的半开状态
+        REQUIRE(renderer.find("bool sunShadowNearCascadeEnabled() const") != std::string::npos &&
+                    renderer.find("uniform.lightingSettings.z = sunShadowNearCascadeEnabled()") !=
+                        std::string::npos,
+                "the pruning predicate and the receiver's flag must be one function, not two");
     }
 
     // 近段的半影上限仍是 0.5 个**纹素**，而纹素细八倍 ⇒ 物理半影细八倍。
@@ -1087,7 +1162,7 @@ void checkContactHardening() {
         samples.blockerDepth = {blockerDepth, blockerDepth, blockerDepth, blockerDepth};
         const float factor = shaderReceiver::sunShadowFactor(
             &samples, &samples, kMissNearCascade, glm::mat4{1.0F}, glm::vec3{0, 0, 0.5F},
-            glm::vec3{0, 1, 0}, glm::vec3{0, 1, 0});
+            glm::vec3{0, 1, 0}, glm::vec3{0, 1, 0}, kNearCascadeOn);
         return std::pair{factor, samples};
     };
     const auto tapSpreadTexels = [](const shaderReceiver::Samples& samples) {
@@ -1250,7 +1325,8 @@ void checkEntityWiring() {
     REQUIRE(sampling.find("offsetPosition = worldPosition + normal * "
                           "sunShadowNormalOffsetBlocks(incidence, texelBlocks)") !=
                     std::string::npos &&
-            sampling.find("lightViewProjNear * vec4(offsetPosition, 1.0)") != std::string::npos &&
+            sampling.find("(tryNear ? lightViewProjNear : lightViewProjFar) * "
+                         "vec4(offsetPosition, 1.0)") != std::string::npos &&
             sampling.find("lightViewProjFar * vec4(offsetPosition, 1.0)") != std::string::npos &&
             sampling.find("* vec4(worldPosition, 1.0)") == std::string::npos,
             "the normal offset must be applied to the world position before projection");
