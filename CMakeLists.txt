@@ -792,6 +792,15 @@ if(BUILD_TESTING)
     )
     add_test(NAME world_generation COMMAND mc_rebedrock_world_generation_test)
 
+    # 描述符集重建时必须写全布局声明的每一个绑定。改语言/切字体/改各向异性都会销毁
+    # 描述符池；漏写的那个绑定此后就是未写入的，采样它是未定义行为——现场表现为
+    # 开着太阳阴影时整个阴影范围全黑，时有时无，关掉校验层时一声不吭。
+    add_executable(mc_rebedrock_descriptor_bindings_test
+        tests/descriptor_bindings_test.cpp)
+    target_compile_definitions(mc_rebedrock_descriptor_bindings_test PRIVATE
+        "MC_REBEDROCK_RENDERER_SRC=\"${CMAKE_CURRENT_SOURCE_DIR}/src/render/vulkan/VulkanRenderer.cpp\"")
+    add_test(NAME descriptor_bindings COMMAND mc_rebedrock_descriptor_bindings_test)
+
     add_executable(mc_rebedrock_sky_light_column_test
         tests/sky_light_column_test.cpp
     )
