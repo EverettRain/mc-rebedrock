@@ -169,6 +169,12 @@ class HudRenderer final {
         const TitleArtUv& titleArtUv;
         // UI-2：截图通道钉死的光标位置；空表示照常读 GLFW
         const std::optional<ui::UiPoint>& pinnedCursor;
+        // UI-6-0：这一趟是不是界面截图。
+        //
+        // 不复用 `pinnedCursor.has_value()`：那个字段的含义是"光标被钉住了"，
+        // 让它同时兼职"我在拍界面"就是一个字段两个意思——RN-14 让所有方块图标
+        // 变成黑菱形的正是这种兼职。
+        const bool& uiCaptureActive;
         bool& paused;
         double& uiTimeSeconds;
         std::function<bool()> cameraSubmergedInWater;
@@ -214,7 +220,7 @@ class HudRenderer final {
           peakPendingSectionCount(b.peakPendingSectionCount),
           pendingSectionUpdates(b.pendingSectionUpdates), testScene(b.testScene),
           guiWidgetSprites(b.guiWidgetSprites), titleArtUv(b.titleArtUv),
-          pinnedCursor(b.pinnedCursor), paused(b.paused),
+          pinnedCursor(b.pinnedCursor), uiCaptureActive(b.uiCaptureActive), paused(b.paused),
           uiTimeSeconds(b.uiTimeSeconds), cameraSubmergedInWater(b.cameraSubmergedInWater),
           keyBindLabel(b.keyBindLabel),
           drawHeldItem(b.drawHeldItem), currentFrameDescriptorSet(b.currentFrameDescriptorSet),
@@ -2897,7 +2903,9 @@ class HudRenderer final {
     }
 
     void drawHud(VkCommandBuffer commandBuffer, VkDescriptorSet descriptorSet) const {
-        if (testScene.has_value())
+        // 测试场景是方块预览的取景台，它要的是**一张只有方块的图**，所以那条路径不画界面。
+        // UI-6-0 之后同一个夹具也给界面截图当世界背景用——那时界面正是要拍的东西。
+        if (testScene.has_value() && !uiCaptureActive)
             return;
         const ui::HudLayout layout{static_cast<float>(swapchainExtent.width),
                                    static_cast<float>(swapchainExtent.height),
@@ -3148,6 +3156,7 @@ class HudRenderer final {
     const TitleArtUv& titleArtUv;
     // UI-2：截图通道钉死的光标位置；空表示照常读 GLFW
     const std::optional<ui::UiPoint>& pinnedCursor;
+    const bool& uiCaptureActive;
     bool& paused;
     double& uiTimeSeconds;
 

@@ -542,6 +542,14 @@ struct VulkanRenderer::Impl final : public gameplay::SimulationHost {
     // from the options file, because the options file is a user setting and this
     // is a measurement.
     static constexpr glm::ivec3 kPreviewBlockPosition{8, 64, 8};
+    // UI-6-0：截图夹具的相机朝向。yaw 90° = +Z（见 PerspectiveCamera::forward），
+    // 俯视 30° 让石台顶面占住画面下半。两个都是常量，因此每次运行的世界画面相同。
+    // 石台以 kPreviewBlockPosition 为原点，地面在 y = 63、x/z ∈ [4, 12]。
+    // 相机在它南侧 8 格、上方 4 格，朝 +Z 俯视 25°，视线约在 z = 8.6 触地，
+    // 也就是平台正中。三个数都是常量，所以每次运行的世界画面完全相同。
+    static constexpr glm::vec3 kUiCaptureCameraEye{8.0F, 67.0F, 0.0F};
+    static constexpr float kUiCaptureCameraYawDegrees = 90.0F;
+    static constexpr float kUiCaptureCameraPitchDegrees = -25.0F;
     static constexpr float kPreviewFieldOfViewDegrees = 60.0F;
     // Frames to render before capturing. The first frames of a scene upload the
     // section mesh and settle the streaming state; capturing frame one would
@@ -1393,6 +1401,96 @@ struct VulkanRenderer::Impl final : public gameplay::SimulationHost {
         chatHistory.clear();
     }
 
+    // UI-6-0：截图通道的**确定性世界夹具**。
+    //
+    // 在这之前，`--ui-shot` 在解析期就拒绝 game / pause / death / loading，理由是
+    // "世界内容不是命令行的函数"。那句话对的是*真实*世界；这里装的不是真实世界，而是
+    // `--test-scene` 那条路径已经在用的固定单方块场景——固定方块、固定光照、固定日时、
+    // 不启动模拟线程。方块预览的八角图已经用它逐字节复现过很多轮，所以它的确定性是
+    // 既有事实，不是这一轮新引入的假设。
+    //
+    // 代价是这条通道从此**能拍到世界**：UI-5 的暂停屏模糊、容器灰渐变、死亡屏红渐变
+    // 此前只有无头断言、一张照片都没有（偏差表 D14）。
+    //
+    // 只建一次。建完之后"这一页有没有世界"靠 `worldReady` 开关，而不是拆掉世界：
+    // 无世界的页面会整屏铺全景（一次全屏三角形）把世界画面盖掉，所以两类页面能在
+    // 同一次运行里混着拍，UI-5 的十屏基线不受影响。
+    void ensureUiCaptureWorldFixture() {
+        if (uiCaptureFixtureBuilt_) {
+            return;
+        }
+        // 走 RN-17 的 sceneCells 那条路：一片 9x9 的石台，上面立四根高低不等的柱子。
+        //
+        // 为什么不用现成的那两个场景：
+        //   - 默认的**单方块**场景画出来是清除色加一个远处的小方块，几乎是纯色，
+        //     而纯色糊了跟没糊长得一模一样——这条通道存在的理由之一就是给整帧模糊
+        //     一张能看出差别的照片，夹具必须带高频细节。
+        //   - `--test-scene occlusion` 那个场景**当前画不出任何东西**：它把方块放在
+        //     y ∈ [0,48)，却把网格更新推到 section 1 与 2；世界底是 kMinY = -64，
+        //     那两个 section 是 y ∈ [-48,-16)，网格化的是空的。这是那个诊断场景自己的
+        //     缺陷（同「y<0 世界底不互通」那一类），归 RN 线，这里只是绕开它。
+        TestSceneOptions fixture;
+        for (int dx = -4; dx <= 4; ++dx) {
+            for (int dz = -4; dz <= 4; ++dz) {
+                fixture.sceneCells.push_back(
+                    SceneCell{{dx, -1, dz}, world::BlockState{world::Block::Stone}});
+            }
+        }
+        // 四根柱子：给画面加上轮廓与自遮挡。模糊看不看得出来靠的就是这些边。
+        for (const auto& pillar : std::array<glm::ivec3, 4>{glm::ivec3{-3, 0, 3},
+                                                            glm::ivec3{3, 0, 3},
+                                                            glm::ivec3{-2, 0, -2},
+                                                            glm::ivec3{2, 0, 0}}) {
+            for (int dy = 0; dy <= pillar.x % 3 + 1; ++dy) {
+                fixture.sceneCells.push_back(
+                    SceneCell{{pillar.x, pillar.y + dy, pillar.z},
+                              world::BlockState{world::Block::Stone}});
+            }
+        }
+        testScene = fixture;
+        initializeTestScene();
+        // ★ 相机朝向要**显式**设。
+        //
+        // 遮挡场景只设了位置（它的验收看的是查询结果，不是画面），朝向留的是相机的
+        // 出厂默认 yaw = -90°，也就是 forward = (0, 0, -1)。相机在 z = -8，石台在
+        // z ∈ [0, 16)：默认朝向正好**背对**整个场景，拍出来是一整屏清除色。
+        // yaw 90° 是 +Z（forward = (cos yaw, sin pitch, sin yaw)），俯视 30° 让石台
+        // 顶面占住画面下半，石头纹理的高频细节因此进得了画——那正是模糊看不看得出来
+        // 的全部前提。
+        // ★ 位置也要显式设，而且**不能**走 snapshotCameraEye()。
+        //
+        // 那个函数读的是 clientMirror 里的玩家位置，而这条通道不启动模拟线程——镜像
+        // 永远停在它的初始值上，与 `gameSession.teleportPlayer` 放的那个点毫无关系。
+        // 症状是一整屏清除色加一个右下角的手持物：世界确实画了，只是相机在别处。
+        // （runPreviewExport 没踩到是因为它每个机位都自己 setPosition。）
+        camera.setPosition(kUiCaptureCameraEye);
+        camera.setRotation(kUiCaptureCameraYawDegrees, kUiCaptureCameraPitchDegrees);
+        uiCaptureFixtureBuilt_ = true;
+    }
+
+    // 这一页要拍成什么状态：有没有世界、暂停没暂停。
+    //
+    // 三个标志是**同一个事实的三种说法**，分散着设就会出现"世界准备好了但会话没开"
+    // 这种谁也没打算过的组合。收在一处，于是"pause 页拍出来却是主菜单"这类错误
+    // 只有一个地方可能发生。
+    void applyUiCapturePageState(ui::PageId page) {
+        const bool needsWorld = uiCapturePageNeedsWorld(page);
+        if (needsWorld) {
+            ensureUiCaptureWorldFixture();
+        }
+        // loading 是 needsWorld 与 showsWorld 的差集，理由见 uiCapturePageShowsWorld。
+        // 那条判断住在 UiCapture 里而不是这里，因为这个翻译单元没有测试看得见。
+        worldReady = uiCapturePageShowsWorld(page);
+        worldSessionActive = needsWorld;
+        paused = uiCapturePageIsPaused(page);
+        inventoryOpen = false;
+        // loading 页那行文字是这两个的函数。不钉住，它显示的百分比就取决于夹具
+        // 恰好留下了多少待上传的区段。
+        spawnPositionInitialized = false;
+        peakPendingSectionCount = 0U;
+        menuSystem.pageStack.reset(page);
+    }
+
     // UI-2：界面截图循环。
     //
     // 与 runPreviewExport 同形，理由也同它那两条：预览分支不落在渲染热路径上；
@@ -1410,7 +1508,7 @@ struct VulkanRenderer::Impl final : public gameplay::SimulationHost {
                 //    逻辑画布（ceil(帧缓冲 / scale)）上的整数运算。只拍一档等于没拍。
                 options.guiScale = guiScale;
                 menuSystem.guiScaleSetting = guiScale;
-                menuSystem.pageStack.reset(page);
+                applyUiCapturePageState(page);
                 applyUiCaptureDeterminism();
                 const auto file = uiCaptureImagePath(*uiCapture, page, guiScale);
                 std::error_code directoryError;
@@ -7881,6 +7979,11 @@ struct VulkanRenderer::Impl final : public gameplay::SimulationHost {
     // say. The exporter sizes the camera off this rather than off
     // testScene->state, so the picture and the box around it are the same block.
     world::BlockState previewState_{world::Block::Stone};
+    // UI-6-0：截图通道的世界夹具建过没有。只建一次，之后靠 worldReady 开关。
+    bool uiCaptureFixtureBuilt_ = false;
+    // UI-6-0：这一趟是不是界面截图。世界夹具装上以后 `testScene` 也有值了，
+    // 而 drawHud 对测试场景是早退的——这个标志把两种"有测试场景"分开。
+    const bool uiCaptureActive_ = uiCapture.has_value();
     audio::AudioSystem audioSystem;
     // 在渲染线程上复刻工作线程的增量光照，即时编辑预览因此用的是正确光照而不是陈旧的存值
     world::WorldLightEngine interactionLightEngine;
@@ -8249,6 +8352,7 @@ struct VulkanRenderer::Impl final : public gameplay::SimulationHost {
             .guiWidgetSprites = textures_.guiWidgetSprites,
             .titleArtUv = textures_.titleArtUv,
             .pinnedCursor = pinnedCursor,
+            .uiCaptureActive = uiCaptureActive_,
             .paused = paused,
             .uiTimeSeconds = uiTimeSeconds,
             .cameraSubmergedInWater = [this] { return cameraSubmergedInWater(); },
