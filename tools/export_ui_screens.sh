@@ -78,7 +78,8 @@ if [[ -z "$PAGES" ]]; then
     echo "          game / pause / death / loading" >&2
     echo "  容器屏：inventory / inventory-creative / creative-catalog / chest /" >&2
     echo "          crafting-table / furnace / enchanting-table / anvil" >&2
-    echo "  （这份清单的单一来源是 src/render/UiCapture.cpp 的 kTargetNames）" >&2
+    echo "  （这份清单的单一来源是 src/render/UiCapture.cpp 的 kTargetNames；" >&2
+    echo "    `mc_rebedrock --ui-list` 会把它原样打印出来，别再手抄）" >&2
     exit 2
 fi
 

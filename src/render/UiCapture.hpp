@@ -176,6 +176,13 @@ struct UiCaptureOptions final {
 //   --ui-out   <目录>              默认 export/ui-preview
 // 没有 --ui-shot 时返回 nullopt。参数写错直接抛，免得自动化跑着跑着悄悄拍了别的屏幕
 // 还当成功——这与 parseTestSceneArguments 的理由是同一条。
+// UI-12：全部拍摄目标的名字，与 `kTargetNames` 同序。
+//
+// ★ 立它是为了让"有哪些屏"**只有一处**。README 与出图脚本此前各抄了一份清单，
+//   而那两份都已经落后过（`experimental` 删了、容器八屏加了、UI-11 又加了两个）。
+//   回归门禁必须遍历**全部**目标，抄一份清单等于"新加的屏不在门禁里"。
+[[nodiscard]] std::vector<std::string_view> uiCaptureTargetNames();
+
 [[nodiscard]] std::optional<UiCaptureOptions> parseUiCaptureArguments(
     std::span<const std::string_view> arguments);
 

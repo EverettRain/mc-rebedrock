@@ -13,6 +13,7 @@
 #include <stdexcept>
 #include <filesystem>
 #include <fstream>
+#include <algorithm>
 #include <iostream>
 #include <memory>
 #include <streambuf>
@@ -146,6 +147,14 @@ int main(int argc, char** argv) {
     try {
         std::vector<std::string_view> arguments;
         for (int index = 1; index < argc; ++index) arguments.emplace_back(argv[index]);
+        // UI-12：`--ui-list` 打印全部拍摄目标的名字后退出。回归门禁靠它遍历**全部**
+        // 屏幕，而不是在脚本里抄一份会落后的清单。
+        if (std::find(arguments.begin(), arguments.end(), "--ui-list") != arguments.end()) {
+            for (const std::string_view name : mc::render::uiCaptureTargetNames()) {
+                std::cout << name << '\n';
+            }
+            return 0;
+        }
         const auto testScene = mc::render::parseTestSceneArguments(arguments);
         const auto uiCapture = mc::render::parseUiCaptureArguments(arguments);
         // 一次运行只能对"我在拍什么"有一个答案。两个都给了，就会有一个被静默忽略。

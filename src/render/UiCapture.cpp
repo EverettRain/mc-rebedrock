@@ -163,6 +163,15 @@ std::string_view uiCaptureTargetName(const UiCaptureTarget& target) {
     return "unknown";
 }
 
+std::vector<std::string_view> uiCaptureTargetNames() {
+    std::vector<std::string_view> names;
+    names.reserve(kTargetNames.size());
+    for (const TargetName& entry : kTargetNames) {
+        names.push_back(entry.name);
+    }
+    return names;
+}
+
 std::optional<UiCaptureTarget> uiCaptureTargetFromName(std::string_view name) {
     for (const TargetName& entry : kTargetNames) {
         if (entry.name == name) {
