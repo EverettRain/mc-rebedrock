@@ -1531,7 +1531,7 @@ struct CellCullContext final {
     // through the notch in the lower one.
     bool skipsAgainstSame = false;
     bool leaves = false;
-    // RN-48：这一格是液面**低于整格**的流体吗（顶上没有同种流体时，水面在 8/9 处）。
+    // RN-48：这一格是流体吗。
     //
     // 邻居的 `faceOccludes` 位回答的是「它封不封得住这面**格墙**」，而流体的顶面根本
     // 不在格墙上——它低了 1/9 格。vanilla 把这一条写在 `FluidRenderer.isFaceOccludedByState`
@@ -1543,7 +1543,17 @@ struct CellCullContext final {
     //
     // 整块的遮挡体**只有在液面正好是 1.0 时**才挡得住向上那一面。液面 8/9 时，
     // 上面压一块石头也挡不住——它们之间还有 1/9 格的缝，水面从那道缝里看得见。
-    bool fluidBelowFullHeight = false;
+    //
+    // ★ 这里**不再判液面高度**，因为「液面 = 1.0」只有一种成因：顶上压着同种流体
+    // （`waterCellHeight` 的第一条分支）。而那种情况早在上面「同块不画」那条规则里就
+    // 返回了。判一次高度是**不可观测的冗余**——实测：把 `< 1.0` 改成 `<= 1.0`，
+    // 一条测试都不会红。于是规则简化成 vanilla 那句话本身：
+    //
+    //     流体的顶面永远不会被非流体的邻居剔除。
+    //
+    // 代价是**顺序变成承重的**：这一条必须排在同块规则之后。排到前面，水下面还是水的
+    // 那几格会各发一片顶面——有 sabotage 钉着。
+    bool fluid = false;
 };
 
 [[nodiscard]] CellCullContext cellCullContext(Block block) {
@@ -1577,7 +1587,7 @@ struct CellCullContext final {
     //
     // 现场（用户从 RN-46a 的出图里看出来的）：水池上盖一块石头，水面被整片剔除——
     // 而水面比石头底面低 1/9 格，那道缝里本该看得见水。
-    if (current.fluidBelowFullHeight && face.dy > 0) {
+    if (current.fluid && face.dy > 0) {
         return true;
     }
     return !neighborSealsShared;
@@ -2537,11 +2547,7 @@ bool buildSectionImpl(
                 // RN-8a: the current cell's half of the cull criterion, read once
                 // here for all six faces instead of once per face.
                 CellCullContext cull = cellCullContext(current);
-                // RN-48：液面高度是**这一格**的性质，不是方块类型的性质——同一种水，
-                // 顶上有水时液面是 1.0，没水时是 8/9。所以它在这里补，不在
-                // cellCullContext 里
-                cull.fluidBelowFullHeight =
-                    isFluid(current) && waterCellHeight(world, worldX, worldY, worldZ) < 1.0F;
+                cull.fluid = isFluid(current);
                 auto& targetMesh = definition.renderLayer == BlockRenderLayer::Translucent
                     ? result.translucentMesh
                     : (definition.renderLayer == BlockRenderLayer::Cutout
