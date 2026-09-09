@@ -293,18 +293,28 @@ std::size_t keyBindsScrollIndexFromCursor(const HudLayout& layout,
 
 // 三段式设置页那张列表的几何。三个滚动条函数与布局都从这一处取，免得视口再有第二份。
 namespace {
-[[nodiscard]] ScrollList optionsListOf(const HudLayout& layout) {
-    return optionsScrollList(
-        headerAndFooterLayout(layout.logicalWidth(), layout.logicalHeight()).contentBox());
+[[nodiscard]] HeaderAndFooterLayout optionsFrameImpl(const HudLayout& layout, PageId page) {
+    // 带副页眉的页面（Options）页眉更高，内容区相应变矮。
+    return optionsSubHeaderCount(page) > 0U
+               ? headerAndFooterLayoutWithSubHeader(layout.logicalWidth(), layout.logicalHeight())
+               : headerAndFooterLayout(layout.logicalWidth(), layout.logicalHeight());
+}
+
+[[nodiscard]] ScrollList optionsListOf(const HudLayout& layout, PageId page) {
+    return optionsScrollList(optionsFrameImpl(layout, page).contentBox());
 }
 } // namespace
+
+HeaderAndFooterLayout optionsFrame(const HudLayout& layout, PageId page) {
+    return optionsFrameImpl(layout, page);
+}
 
 OptionsWindow optionsWindowFor(const HudLayout& layout, PageId page, std::size_t firstRow) {
     if (pageLayoutKind(page) != PageLayoutKind::HeaderFooterList) {
         // 不是三段式列表页：rowCount = 0，约定是"不滚，全装配"。
         return OptionsWindow{};
     }
-    const auto list = optionsListOf(layout);
+    const auto list = optionsListOf(layout, page);
     const auto groups = optionsGroupsOf(page);
     const std::size_t rows = optionsRowCountOf(page);
     // ★ 变高版：分节行高 13 / 31，不是 25。等高公式在有分节行的页面上会算错
@@ -317,22 +327,22 @@ std::size_t optionsMaximumFirstRow(const HudLayout& layout, PageId page) {
     if (pageLayoutKind(page) != PageLayoutKind::HeaderFooterList) {
         return 0U;
     }
-    const auto list = optionsListOf(layout);
+    const auto list = optionsListOf(layout, page);
     return optionsMaxFirstRow(optionsGroupsOf(page), list.height, optionsRowCountOf(page));
 }
 
-UiRect optionsScrollbarTrack(const HudLayout& layout) {
-    return fbRect(layout, scrollListScrollbar(optionsListOf(layout)));
+UiRect optionsScrollbarTrack(const HudLayout& layout, PageId page) {
+    return fbRect(layout, scrollListScrollbar(optionsListOf(layout, page)));
 }
 
 std::size_t optionsScrollIndexFromCursor(const HudLayout& layout, PageId page, float cursorY) {
     // 与其余两张列表同一条换算（scrollListRowFromScrollbar 抓的是滑块中心）。
-    return scrollListRowFromScrollbar(optionsListOf(layout), optionsRowCountOf(page),
+    return scrollListRowFromScrollbar(optionsListOf(layout, page), optionsRowCountOf(page),
                                       cursorY / layout.scale());
 }
 
 UiRect optionsScrollbarThumb(const HudLayout& layout, PageId page, std::size_t firstRow) {
-    return fbRect(layout, scrollListThumb(optionsListOf(layout), optionsRowCountOf(page),
+    return fbRect(layout, scrollListThumb(optionsListOf(layout, page), optionsRowCountOf(page),
                                           firstRow));
 }
 
@@ -369,7 +379,16 @@ UiRect frontendButtonRect(const HudLayout& layout, PageId page, std::size_t inde
         return layout.videoSettingsButton(index, buttonCount);
     case PageLayoutKind::HeaderFooterList: {
         // 26.1 的 OptionsSubScreen：三段式版面里一张 OptionsList 双列，页脚一个按钮。
-        const auto frame = headerAndFooterLayout(layout.logicalWidth(), layout.logicalHeight());
+        const auto frame = optionsFrameImpl(layout, page);
+        // ★ UI-6f（D23）：前 `optionsSubHeaderCount(page)` 个控件摆在**副页眉**里
+        //   （26.1 `OptionsScreen.init()` 的页眉是 vertical layout：标题 + 一行控件）。
+        //   它们不进内容区，所以后面那些的序号要减掉这个数——两侧对序号的含义
+        //   必须一致，这与滚动窗口那次是同一族问题。
+        const std::size_t subHeader = optionsSubHeaderCount(page);
+        if (index < subHeader) {
+            return fbRect(layout, subHeaderButton(layout.logicalWidth(), frame.headerHeight,
+                                                  index, subHeader));
+        }
         // 最后一个控件是 Done，它在页脚里居中，不在列表里。
         if (buttonCount > 0U && index + 1U == buttonCount) {
             return fbRect(layout, frame.footerButton());
@@ -379,7 +398,9 @@ UiRect frontendButtonRect(const HudLayout& layout, PageId page, std::size_t inde
         //   造出来，因此不占序号。这条换算只有 `optionsScrolledSlot` 一处，装配侧
         //   （PageBuilder 的 `optionVisible`）与它走的是同一遍循环。
         const auto groups = optionsGroupsOf(page);
-        const auto slot = optionsScrolledSlot(groups, optionsFirstRow, index);
+        // ★ 副页眉那几个控件不在列表里，所以内容区的序号要减掉它们——
+        //   装配侧（optionVisible）做同样的减法，两侧对序号的含义必须一致。
+        const auto slot = optionsScrolledSlot(groups, optionsFirstRow, index - subHeader);
         // ★ y 走**像素偏移**，不是"可见行号 × 25"：分节行高 13 / 31，等高公式会让
         //   分节之后的每一个控件都偏。`slot.row` 是可见行号，加回 firstRow 才是绝对行号。
         const int rowTop = optionsRowTop(groups, slot.row + optionsFirstRow) -

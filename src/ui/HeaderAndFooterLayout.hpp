@@ -29,6 +29,22 @@ inline constexpr int kContentMarginTop = 30;
 inline constexpr int kFooterButtonWidth = 200;
 inline constexpr int kFooterButtonHeight = 20;
 
+// UI-6f（D23）：**副页眉**——页眉里除标题之外的那一行控件。
+//
+// 26.1 `OptionsScreen.init()` 的页眉是 `LinearLayout.vertical().spacing(8)`：
+//   标题（StringWidget，行高 9）
+//   一行水平排布：fov 滑块 + （世界内 Difficulty / 世界外 Online），spacing 8
+// 26.1 的 HeaderAndFooterLayout 会按内容把页眉撑高；本作的页眉是固定值，
+// 所以这里给出"带一行副页眉时的页眉高"，由 optionsHubLayout 使用。
+inline constexpr int kSubHeaderSpacing = 8;      // LinearLayout.vertical().spacing(8)
+inline constexpr int kSubHeaderButtonWidth = 150;   // OptionInstance.createButton 的默认宽
+inline constexpr int kSubHeaderButtonHeight = 20;
+// 标题 9 + 间距 8 + 控件 20 = 37，再给上下各 6 的呼吸 = 49。
+// ★ 它必须 ≥ kHeaderAndFooterHeight，否则带副页眉的页面反而比普通页面矮。
+inline constexpr int kSubHeaderTotalHeight = 49;
+static_assert(kSubHeaderTotalHeight >= kHeaderAndFooterHeight,
+              "带副页眉的页眉不能比普通页眉矮");
+
 struct HeaderAndFooterLayout final {
     // 逻辑画布。26.1 的 `getWidth()/getHeight()` 直接返回 screen 的宽高。
     int width = 0;
@@ -87,10 +103,31 @@ struct HeaderAndFooterLayout final {
     }
 };
 
+// 页眉里那一行控件（第 `index` 个，共 `count` 个），水平居中、spacing 8。
+[[nodiscard]] constexpr UiRect subHeaderButton(int logicalWidth, int headerHeight,
+                                               std::size_t index, std::size_t count) {
+    const int total = static_cast<int>(count) * kSubHeaderButtonWidth +
+                      (static_cast<int>(count) - 1) * kSubHeaderSpacing;
+    const int left = logicalWidth / 2 - total / 2;
+    // 竖直方向：标题在上，这一行贴在页眉下部。
+    const int top = headerHeight - kSubHeaderButtonHeight - 6;
+    return {static_cast<float>(left + static_cast<int>(index) *
+                                          (kSubHeaderButtonWidth + kSubHeaderSpacing)),
+            static_cast<float>(top), static_cast<float>(kSubHeaderButtonWidth),
+            static_cast<float>(kSubHeaderButtonHeight)};
+}
+
 // 由逻辑画布直接造一个默认三段式版面。
 [[nodiscard]] constexpr HeaderAndFooterLayout headerAndFooterLayout(int logicalWidth,
                                                                     int logicalHeight) {
     return HeaderAndFooterLayout{logicalWidth, logicalHeight, kHeaderAndFooterHeight,
+                                 kHeaderAndFooterHeight};
+}
+
+// 带副页眉的三段式（Options 主页）。页眉更高，内容区相应变矮。
+[[nodiscard]] constexpr HeaderAndFooterLayout headerAndFooterLayoutWithSubHeader(
+    int logicalWidth, int logicalHeight) {
+    return HeaderAndFooterLayout{logicalWidth, logicalHeight, kSubHeaderTotalHeight,
                                  kHeaderAndFooterHeight};
 }
 

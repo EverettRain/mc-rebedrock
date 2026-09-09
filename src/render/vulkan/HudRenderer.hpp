@@ -1728,8 +1728,7 @@ class HudRenderer final {
                                    float scale) const {
         const auto page = menuSystem.pageStack.current();
         const auto groups = ui::optionsGroupsOf(page);
-        const auto frame =
-            ui::headerAndFooterLayout(layout.logicalWidth(), layout.logicalHeight());
+        const auto frame = ui::optionsFrame(layout, page);
         const auto list = ui::optionsScrollList(frame.contentBox());
         const std::size_t total = ui::optionsRowCountOf(page);
         const auto window = ui::optionsWindowFor(layout, page, menuSystem.optionsListFirstIndex);
@@ -2219,9 +2218,10 @@ class HudRenderer final {
             drawKeyBindCategoryRows(commandBuffer, layout, scale);
         } else if (headerAndFooterPage &&
                    ui::pageLayoutKind(currentPage) == ui::PageLayoutKind::HeaderFooterList) {
-            const auto frameBox =
-                ui::headerAndFooterLayout(layout.logicalWidth(), layout.logicalHeight())
-                    .contentBox();
+            // ★ 走 ui::optionsFrame，不是自己造一个默认 frame：带副页眉的页面
+            //   （Options）页眉高 49 而不是 33。自己造的后果是副页眉的控件压在
+            //   页眉分隔线上——实测如此。
+            const auto frameBox = ui::optionsFrame(layout, currentPage).contentBox();
             const auto box = ui::UiRect{frameBox.x * scale, frameBox.y * scale,
                                         frameBox.width * scale, frameBox.height * scale};
             drawListBackground(commandBuffer, box, scale);

@@ -1691,7 +1691,7 @@ void testOptionsScrollbarDrag() {
     const std::size_t maximum = mc::ui::optionsMaximumFirstRow(layout, page);
     CHECK(maximum > 0U);   // 这一屏确实滚得动，否则下面是空转
 
-    const auto track = mc::ui::optionsScrollbarTrack(layout);
+    const auto track = mc::ui::optionsScrollbarTrack(layout, page);
     // 光标在轨道顶端 → 第 0 行
     CHECK(mc::ui::optionsScrollIndexFromCursor(layout, page, track.y) == 0U);
     // 光标在轨道底端 → **最后一屏**，不是别的数

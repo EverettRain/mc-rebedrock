@@ -5,6 +5,7 @@
 // 这里的一切都是帧缓冲尺寸、GUI 缩放、当前页面，以及调用方传进来的几个状态标志的函数
 
 #include "ui/HudLayout.hpp"
+#include "ui/HeaderAndFooterLayout.hpp"
 #include "ui/OptionsList.hpp"
 #include "ui/ScrollList.hpp"
 #include "ui/PageStack.hpp"
@@ -116,10 +117,14 @@ void layoutPageInto(Page& page, PageId id, const HudLayout& layout,
 // 非三段式的页面返回 `{0, 0}`——`rowCount == 0` 的约定是"不滚，全装配"。
 [[nodiscard]] OptionsWindow optionsWindowFor(const HudLayout& layout, PageId page,
                                              std::size_t firstRow);
+// 这一页的三段式版面。★ **绘制侧与布局侧都要走它**：带副页眉的页面（Options）
+// 页眉更高（49 而不是 33），内容区相应变矮。两处各自造 frame 的后果是副页眉的控件
+// 压在页眉分隔线上——实测如此。
+[[nodiscard]] HeaderAndFooterLayout optionsFrame(const HudLayout& layout, PageId page);
 // 这一页的设置列表最多能滚到第几行（再往下滚只会露出列表末尾之后的空白）。
 [[nodiscard]] std::size_t optionsMaximumFirstRow(const HudLayout& layout, PageId page);
 // 设置列表的滚动条轨道；只有真的滚得动才画（`rowCount` 覆盖不了所有行时）。
-[[nodiscard]] UiRect optionsScrollbarTrack(const HudLayout& layout);
+[[nodiscard]] UiRect optionsScrollbarTrack(const HudLayout& layout, PageId page);
 [[nodiscard]] UiRect optionsScrollbarThumb(const HudLayout& layout, PageId page,
                                            std::size_t firstRow);
 // UI-6e ⑤（D18）：拖设置列表的滚动条——光标位置 → 首行。
