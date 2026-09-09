@@ -643,6 +643,15 @@ void testCursorPin() {
     CHECK(both.has_value() && both->carryStack && both->cursorX == 10.0F);
     EXPECT_THROWS({"--ui-carry"});   // 只给参数不说拍什么
 
+    // UI-9：带标签页的屏幕开在第几页。默认 0，所以既有基线不动。
+    CHECK(byDefault->tabIndex == 0U);
+    const auto second = parse({"--ui-shot", "create-world", "--ui-tab", "2"});
+    CHECK(second.has_value() && second->tabIndex == 2U);
+    EXPECT_THROWS({"--ui-shot", "create-world", "--ui-tab", "x"});
+    EXPECT_THROWS({"--ui-shot", "create-world", "--ui-tab", "-1"});
+    EXPECT_THROWS({"--ui-shot", "create-world", "--ui-tab"});
+    EXPECT_THROWS({"--ui-tab", "1"});
+
     // 夹具：不拿的时候手上是空的，拿的时候不是——而且拿的那一堆要**带附魔**，
     // 好让"提示框被抑制"这件事在图上看得出区别（多行提示框 vs 一格物品）。
     const auto chest = containerTarget(mc::gameplay::ContainerScreen::Chest);

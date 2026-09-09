@@ -16,6 +16,7 @@
 #include "ui/KeyBindList.hpp"
 #include "ui/MenuGeometry.hpp"
 #include "ui/PageBuilder.hpp"
+#include "ui/TabBar.hpp"
 #include "ui/PageLayoutKind.hpp"
 #include "ui/PageTitles.hpp"
 #include "ui/ScrollingText.hpp"
@@ -1327,6 +1328,40 @@ void testCreateWorldForm() {
     // 版式判定走表，不是手写清单
     CHECK(mc::ui::pageLayoutKind(mc::ui::PageId::CreateWorld) ==
           mc::ui::PageLayoutKind::HeaderFooterForm);
+
+    // ★ UI-9：**装配顺序与布局顺序必须一致**——前三个控件是页签，它们的矩形要正好
+    //   是标签栏那三格。错开一位就是"点 Game 却切到 World"，而两边各自都自洽
+    //   （护栏 21 那一族）。这里走**生产路径**：装配一遍、布局一遍，再对矩形。
+    {
+        mc::ui::MenuBuildContext ctx;
+        const mc::ui::MenuCallbacks cb;
+        mc::ui::Page built;
+        mc::ui::buildPageInto(built, mc::ui::PageId::CreateWorld, ctx, cb);
+        mc::ui::layoutPageInto(built, mc::ui::PageId::CreateWorld, layout, 0U, 0U,
+                               mc::ui::CreateWorldTab::Game);
+        const auto bar = mc::ui::tabBarLayout(layout.logicalWidth(),
+                                              mc::ui::kCreateWorldTabCount);
+        std::size_t tabsSeen = 0;
+        for (std::size_t i = 0; i < built.size(); ++i) {
+            if (built[i].kind != mc::ui::WidgetKind::Tab) {
+                continue;
+            }
+            const auto expected = bar.tab(tabsSeen);
+            check(built[i].rect.x == expected.x * 3.0F && built[i].rect.y == expected.y * 3.0F &&
+                      built[i].rect.width == expected.width * 3.0F,
+                  "a tab widget must land on its own slot in the tab bar", __LINE__);
+            check(i == tabsSeen, "the tabs must be the first widgets on the page", __LINE__);
+            ++tabsSeen;
+        }
+        check(tabsSeen == mc::ui::kCreateWorldTabCount, "all three tabs must be laid out",
+              __LINE__);
+        // 页脚两个按钮仍在最后两位，三页都是。
+        check(built[built.size() - 2U].debugId ==
+                  static_cast<std::uint16_t>(mc::ui::WidgetId::CreateConfirm),
+              "Create must be the second-to-last widget", __LINE__);
+        check(built.back().debugId == static_cast<std::uint16_t>(mc::ui::WidgetId::Back),
+              "Back must be the last widget", __LINE__);
+    }
 
     // ★ 走**生产路径**看具体控件落在哪。上面那些只量了几何函数——把布局侧
     //   页脚两个按钮的序号判定写反（Create 跑到右边、Back 跑到左边），或者让内容区的

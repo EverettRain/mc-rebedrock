@@ -1669,11 +1669,18 @@ class HudRenderer final {
             //   背后的世界/全景会直接透出来。未选中那张自带 alpha 219 的底色，
             //   所以只有选中的需要。
             //   26.1 `TabButton.extractMenuBackground`：(x+2, y+2) 到 (right-2, bottom)。
-            drawListBackground(commandBuffer,
-                               {widget.rect.x + 2.0F * scale, widget.rect.y + 2.0F * scale,
-                                widget.rect.width - 4.0F * scale,
-                                widget.rect.height - 2.0F * scale},
-                               scale);
+            const ui::UiRect inlay{widget.rect.x + 2.0F * scale, widget.rect.y + 2.0F * scale,
+                                   widget.rect.width - 4.0F * scale,
+                                   widget.rect.height - 2.0F * scale};
+            // ★ 用的是 **menu_background** 那张平铺纹理（26.1 `TabButton` 传的就是
+            //   `Screen.MENU_BACKGROUND` 这个常量），**不是**列表底衬那张——
+            //   两张都叫"背景"，但列表底衬在这个 uv 范围内几乎全透明，画上去等于没画
+            //   （实测：换成纯色能看见，换回列表底衬就只剩背后的全景）。
+            const auto background =
+                titleBackgroundLayer(ui::ScreenBackgroundKind::PanoramaBlur);
+            drawGuiSprite(commandBuffer, inlay, background.guiLayer,
+                          ui::tiledBackgroundSource(inlay.width, inlay.height, scale),
+                          background.tint);
             const auto underline = ui::tabUnderline(
                 {widget.rect.x / scale, widget.rect.y / scale, widget.rect.width / scale,
                  widget.rect.height / scale},
