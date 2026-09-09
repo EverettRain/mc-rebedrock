@@ -494,6 +494,12 @@ void TextureManager::createGuiTexture() {
                0);
     blitWidget(widgets, GuiWidgetSprite::IconLanguage, "icon/language", 216, 0);
     blitWidget(widgets, GuiWidgetSprite::IconAccessibility, "icon/accessibility", 216, 16);
+    // UI-8 / D30：槽位高亮的两张 24x24。同样落在 `widgets` 这一层的空处（y>=200，
+    // 上面那些用到 y=186），**不新增图集层**——加层要同步改三处，能不加就不加。
+    blitWidget(widgets, GuiWidgetSprite::SlotHighlightBack, "container/slot_highlight_back", 0,
+               200);
+    blitWidget(widgets, GuiWidgetSprite::SlotHighlightFront, "container/slot_highlight_front", 32,
+               200);
 
     auto hud = emptyRgbaAtlas();
     blit(hud, sprite("hud/crosshair"), 0, 0);

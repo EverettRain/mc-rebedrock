@@ -369,13 +369,42 @@ void testContainerFixture() {
     CHECK(mc::render::uiCapturePlayerSnapshot(
               containerTarget(mc::gameplay::ContainerScreen::PlayerInventory, true))
               .gameMode == mc::gameplay::GameMode::Creative);
-    // ★ 非容器目标拿到的是**默认**玩家快照。这条断言守的是既有十八屏基线：
+    // ★ **前端页面**（看不见世界的）拿的是默认玩家快照。这条断言守的是它们的基线：
     //   ui::UiFrameData 的默认值与默认 PlayerTickSnapshot 逐字段相等，所以
-    //   "从默认快照同步一次"与 A0-0 之前的"从不同步"结果相同——一旦这里开始返回
-    //   非默认值，game/pause/death 三页的图就会静默改变。
-    CHECK(mc::render::uiCapturePlayerSnapshot(pageTarget(mc::ui::PageId::Title)) ==
-          mc::gameplay::PlayerTickSnapshot{});
-    CHECK(mc::render::uiCapturePlayerSnapshot(pageTarget(mc::ui::PageId::Game)) ==
+    //   "从默认快照同步一次"与"从不同步"结果相同——一旦这里开始返回非默认值，
+    //   那十几张前端图就会静默改变。
+    for (const auto page : {mc::ui::PageId::Title, mc::ui::PageId::Options,
+                            mc::ui::PageId::WorldList, mc::ui::PageId::Language}) {
+        check(mc::render::uiCapturePlayerSnapshot(pageTarget(page)) ==
+                  mc::gameplay::PlayerTickSnapshot{},
+              "a frontend page must keep the default player snapshot", __LINE__);
+        check(mc::render::uiCaptureWorldSnapshot(pageTarget(page)) ==
+                  mc::gameplay::WorldSnapshot{},
+              "a frontend page must keep the default world snapshot", __LINE__);
+    }
+
+    // ★ UI-8 / D26：**世界页**（game / pause / death）画的是游戏内 HUD，它要有内容
+    //   ——空血、空饥饿、空手的 HUD 对照 26.1 时没有参考价值。
+    for (const auto page : {mc::ui::PageId::Game, mc::ui::PageId::Pause,
+                            mc::ui::PageId::Death}) {
+        const auto player = mc::render::uiCapturePlayerSnapshot(pageTarget(page));
+        check(player.health > 0.0F && player.health < 20.0F,
+              "a world page must show a partial health bar", __LINE__);
+        check(player.foodLevel > 0 && player.foodLevel < 20,
+              "a world page must show a partial hunger bar", __LINE__);
+        std::size_t hotbar = 0;
+        const auto world = mc::render::uiCaptureWorldSnapshot(pageTarget(page));
+        for (std::size_t i = 0; i < 9U; ++i) {
+            if (!world.inventorySlots[i].empty()) ++hotbar;
+        }
+        check(hotbar >= 8U, "a world page must show a stocked hotbar", __LINE__);
+    }
+
+    // ★ `loading` 是 needsWorld 与 showsWorld 的**差集**：它属于世界会话，但画的是
+    //   全景加一行进度，HUD 根本不可见。给它内容只会让一张看不见的东西参与比对。
+    CHECK(mc::render::uiCaptureWorldSnapshot(pageTarget(mc::ui::PageId::Loading)) ==
+          mc::gameplay::WorldSnapshot{});
+    CHECK(mc::render::uiCapturePlayerSnapshot(pageTarget(mc::ui::PageId::Loading)) ==
           mc::gameplay::PlayerTickSnapshot{});
     const auto player = mc::render::uiCapturePlayerSnapshot(
         containerTarget(mc::gameplay::ContainerScreen::PlayerInventory, false));

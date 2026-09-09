@@ -83,8 +83,18 @@ gameplay::WorldSnapshot uiCaptureWorldSnapshot(const UiCaptureTarget& target,
                                               bool carryStack) {
     gameplay::WorldSnapshot snapshot;
     if (!target.container.has_value()) {
-        // 非容器目标：一份默认快照，与 A0-0 之前逐字节一致。既有十八屏的基线
-        // 因此不受这一节点影响。
+        // UI-8 / D26：**世界页也要有内容**。`game / pause / death` 三页画的是游戏内
+        // HUD，而 A0-0 只给容器目标配了夹具——那三张图里玩家空血、空饥饿、空手，
+        // 快捷栏一件东西都没有。一张不像游戏的 HUD 对照 26.1 时没有参考价值。
+        //
+        // ★ 判据是 `uiCapturePageShowsWorld`（世界画面看得见吗），不是"需不需要夹具"：
+        //   `loading` 属于世界会话但画的是全景加一行进度，HUD 根本不可见，给它内容
+        //   只会让一张看不见的东西参与比对。这两个谓词的差集就是 loading，
+        //   而那正是它们分成两个函数的理由。
+        if (uiCapturePageShowsWorld(target.page)) {
+            fillPlayerInventory(snapshot);
+        }
+        // 前端页面（title / options / …）仍然拿一份**默认**快照：既有基线不变。
         return snapshot;
     }
     snapshot.openContainerScreen = *target.container;
@@ -177,16 +187,13 @@ gameplay::WorldSnapshot uiCaptureWorldSnapshot(const UiCaptureTarget& target,
 
 gameplay::PlayerTickSnapshot uiCapturePlayerSnapshot(const UiCaptureTarget& target) {
     gameplay::PlayerTickSnapshot snapshot;
-    if (!target.container.has_value()) {
-        // ★ 非容器目标一律拿默认值，**这是既有十八屏基线逐字节不变的保证**，而且是
-        //   构造上的保证、不是"应该不会变"：`ui::UiFrameData` 的每一个默认值与默认
-        //   `PlayerTickSnapshot` 的对应字段逐个相等（health 0 / food 0 / air 0 /
-        //   ticksSinceDamage 1000 / 经验 0 / Survival / eating false / 空手 /
-        //   快捷栏第 0 格），所以"从一份默认快照同步一次"与 A0-0 之前的"从不同步"
-        //   得到的是同一份 uiFrameData_。
-        //   ——给 game/pause/death 三页也配上真实内容是一件独立的、值得做的事
-        //   （今天那三张图里玩家是空血空饥饿空手），但它会**改动既有基线**，
-        //   所以另立一条，不混在这一节点里。
+    if (!target.container.has_value() && !uiCapturePageShowsWorld(target.page)) {
+        // ★ **前端页面**（看不见世界的那些）一律拿默认值，这是它们的基线逐字节不变的
+        //   保证，而且是构造上的保证、不是"应该不会变"：`ui::UiFrameData` 的每一个
+        //   默认值与默认 `PlayerTickSnapshot` 的对应字段逐个相等（health 0 / food 0 /
+        //   air 0 / ticksSinceDamage 1000 / 经验 0 / Survival / eating false / 空手 /
+        //   快捷栏第 0 格），所以"从一份默认快照同步一次"与"从不同步"结果相同。
+        //   UI-8 / D26 把**世界页**移出了这一支：它们画的是游戏内 HUD，空的没有意义。
         return snapshot;
     }
     snapshot.gameMode =
