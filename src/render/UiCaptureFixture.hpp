@@ -69,4 +69,11 @@ namespace mc::render {
 // 上面那份清单里，哪一行是选中的。空清单时是 npos。
 [[nodiscard]] std::size_t uiCaptureSelectedWorldRow(const UiCaptureTarget& target);
 
+// 第 0 个存档那张 64x64 的缩略图（`hasIcon` 为真的那一行画的就是它）。
+//
+// ★ 它**过一遍生产的缩放函数** `render::worldIconFromFrame`，而不是直接画一张
+//   64x64 的图案：那样拍到的图既证明缩略图这条读取路径通了，也证明裁剪与缩放
+//   没把画面弄反——与容器夹具走 net::makeLoopbackPair 而不是给镜像开后门同理。
+[[nodiscard]] std::vector<std::uint8_t> uiCaptureWorldIcon();
+
 } // namespace mc::render

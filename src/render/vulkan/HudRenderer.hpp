@@ -1903,13 +1903,19 @@ class HudRenderer final {
         }
         const ui::UiRect icon{parts.icon.x * scale, parts.icon.y * scale,
                               parts.icon.width * scale, parts.icon.height * scale};
-        // 缩略图。本作还没有"退出世界时写 icon.png"那条路，所以每个存档都走
-        // 26.1 的**回落**分支（`FaviconTexture.MISSING_LOCATION`）。
-        drawGuiSprite(commandBuffer, icon, kTabWidgetLayer,
-                      {static_cast<float>(kWorldIconFallbackSpriteX),
-                       static_cast<float>(kWorldIconFallbackSpriteY),
-                       static_cast<float>(kWorldIconFallbackSize),
-                       static_cast<float>(kWorldIconFallbackSize)});
+        // 缩略图：这个存档有自己的 icon.png 就画它，没有就走 26.1 的**回落**分支
+        // （`FaviconTexture.MISSING_LOCATION` = `misc/unknown_server.png`）。
+        // ★ 槽位按 identifier 反查，不是"第几行就是第几个槽位"——列表滚起来以后
+        //   那两个数就不一样了（见 MenuSystem::worldIconSlots 上的注释）。
+        if (const auto slot = worldIconSlot(summary.identifier); slot.has_value()) {
+            drawGuiSprite(commandBuffer, icon, kWorldIconLayer, worldIconSlotRect(*slot));
+        } else {
+            drawGuiSprite(commandBuffer, icon, kTabWidgetLayer,
+                          {static_cast<float>(kWorldIconFallbackSpriteX),
+                           static_cast<float>(kWorldIconFallbackSpriteY),
+                           static_cast<float>(kWorldIconFallbackSize),
+                           static_cast<float>(kWorldIconFallbackSize)});
+        }
         if (hovered) {
             // `graphics.fill(contentX, contentY, +32, +32, -1601138544)` = 0xA0909090。
             drawHudQuad(commandBuffer, icon,
@@ -1931,6 +1937,16 @@ class HudRenderer final {
                     parts.infoY * scale, scale, secondary);
     }
 
+    // 这个存档的缩略图在图集那一层的第几个槽位。没有就是 nullopt（画回落图标）。
+    [[nodiscard]] std::optional<int> worldIconSlot(std::string_view identifier) const {
+        for (std::size_t slot = 0; slot < menuSystem.worldIconSlots.size(); ++slot) {
+            if (menuSystem.worldIconSlots[slot] == identifier) {
+                return static_cast<int>(slot);
+            }
+        }
+        return std::nullopt;
+    }
+
     // 三行字都受同一个宽度上限（`WorldSelectionList:421`，见 ui::kWorldRowMaxTextWidth）。
     // 26.1 用 `StringWidget.setMaxWidth` 把超长的一行**裁**掉（CLAMPED），不是换行。
     [[nodiscard]] std::string clipToWorldRow(std::string text, float scale) const {
@@ -1945,18 +1961,17 @@ class HudRenderer final {
         return text;
     }
 
-    // 第 3 行：26.1 `LevelSummary.getInfo()` 是"游戏模式 + 版本名"。
-    //
-    // ★ 本作的 `SaveSummary` 今天两样都没有（存档里没有持久化游戏模式，版本名在
-    //   另一个块里）。**不编造**：暂时只显示种子，并把这条差异登记进偏差表。
+    // 第 3 行：26.1 `LevelSummary.createInfo():166-186` —— 游戏模式 + 版本。
+    // 拼接在 ui::worldRowInfoLine 一处（那里有断言），这里只负责取译文。
     [[nodiscard]] std::string worldRowInfoLine(const persistence::SaveSummary& summary) const {
-        // ★ 键用本项目自己的命名空间：26.1 **没有** `selectWorld.seed` 这个键
-        //   （只有 `selectWorld.enterSeed` / `selectWorld.seedInfo`，两句都是别的意思）。
-        //   借一个不存在的 vanilla 键，等哪天原版真加了它，这一行会静默变成
-        //   "Seed for the world generator" 之类。
-        return formatTemplate(
-            translated("selectWorld.rebedrock.seedInfo", "Seed: %s"),
-            std::to_string(summary.seed));
+        const std::string modeKey =
+            "gameMode." + std::string{gameplay::gameModeName(summary.gameMode)};
+        const std::string_view modeFallback = summary.gameMode == gameplay::GameMode::Creative
+                                                  ? "Creative Mode"
+                                                  : "Survival Mode";
+        return ui::worldRowInfoLine(translated(modeKey, modeFallback),
+                                    translated("selectWorld.version", "Version"),
+                                    summary.versionName);
     }
 
     // 第 2 行括号里的日期。26.1 用 `Util.localizedDateFormatter(FormatStyle.SHORT)`，

@@ -1903,6 +1903,8 @@ if(BUILD_TESTING)
         tests/ui_capture_test.cpp
         src/render/UiCapture.cpp
         src/render/UiCaptureFixture.cpp
+        # UI-11 / A6：世界列表夹具那张缩略图过一遍生产的缩放函数。
+        src/render/WorldIcon.cpp
         src/ui/PageStack.cpp
         src/ui/MenuGeometry.cpp
         src/ui/TitleScreenLayout.cpp

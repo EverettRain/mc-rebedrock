@@ -706,8 +706,12 @@ void TextureManager::createGuiTexture() {
         listSeparators,
         // UI-9：四张 130x24 的页签精灵。层号是 HudTypes.hpp 的 kTabWidgetLayer。
         tabWidgets,
+        // UI-11 / A6：存档缩略图。启动时是**空的**——它的内容运行期才知道
+        // （进世界列表时按 SaveSummary::hasIcon 读盘），由 uploadWorldIcons()
+        // 用 uploadImageLayerRange 原地刷进来。
+        emptyRgbaAtlas(),
     };
-    constexpr std::uint32_t kGuiLayerCount = 21U;
+    constexpr std::uint32_t kGuiLayerCount = 22U;
     // 层号是写死在 HudTypes.hpp 里的常量（kTooltipGuiLayer 等），而层内容是上面
     // 这个数组的顺序。加一层却漏改这个数，上传就会按错误的层数切分整块像素，
     // 于是每一层都错位——编译期钉住它。
@@ -738,6 +742,36 @@ void TextureManager::createGuiTexture() {
                                                  VK_IMAGE_VIEW_TYPE_2D_ARRAY);
     std::cout << "Loaded Minecraft GUI texture array: " << width << 'x' << height << " x "
               << kGuiLayerCount << '\n';
+}
+
+// UI-11 / A6：把存档缩略图刷进 GUI 图集的最后一层。
+//
+// ★ 走 `uploadImageLayerRange` 而不是重建整张图集：重建会换掉 VkImage，
+//   于是描述符里那份绑定作废（本仓为此立过护栏），而且要重新解码上百个 PNG。
+//   原地改一层的像素两样都不沾。
+void TextureManager::uploadWorldIcons(std::span<const assets::ImageData> icons) {
+    if (guiTextureImage.image == VK_NULL_HANDLE) {
+        return;
+    }
+    auto layer = emptyRgbaAtlas();
+    const auto count = std::min<std::size_t>(icons.size(),
+                                             static_cast<std::size_t>(kWorldIconSlotCount));
+    for (std::size_t slot = 0; slot < count; ++slot) {
+        const auto rect = worldIconSlotRect(static_cast<int>(slot));
+        // 缩略图统一是 64x64（`render::worldIconFromFrame` 的产物，也是 vanilla 的
+        // icon.png 尺寸）。别的尺寸拉伸到槽位大小，而不是溢出到邻座。
+        const auto& icon = icons[slot];
+        if (icon.width == kWorldIconSlotSize && icon.height == kWorldIconSlotSize) {
+            blit(layer, icon, static_cast<int>(rect.x), static_cast<int>(rect.y));
+        } else {
+            blit(layer, stretchToAtlas(icon, kWorldIconSlotSize, kWorldIconSlotSize),
+                 static_cast<int>(rect.x), static_cast<int>(rect.y));
+        }
+    }
+    resources_->uploadImageLayerRange(
+        guiTextureImage, layer.rgba.data(), static_cast<VkDeviceSize>(layer.rgba.size()), 256U,
+        256U, static_cast<std::uint32_t>(kWorldIconLayer), 1U,
+        VK_PIPELINE_STAGE_FRAGMENT_SHADER_BIT);
 }
 
 // 标题全景面是 1024x1024 的实拍图，因此单独用一个原生分辨率的数组，而不是挤进 256px 的 GUI 数组

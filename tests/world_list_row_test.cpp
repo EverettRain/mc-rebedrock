@@ -11,6 +11,7 @@
 //     AbstractSelectionList:471-481  content 四周各让 2
 //     AbstractSelectionList:429-434  第二行是 `<目录名> (<日期>)`，lastPlayed 无记录时只有目录名
 
+#include "render/vulkan/HudTypes.hpp"
 #include "ui/MenuGeometry.hpp"
 #include "ui/PageBuilder.hpp"
 #include "ui/WorldListRow.hpp"
@@ -79,6 +80,47 @@ void testMetaLine() {
           "new-world (2024-01-02 03:04)");
     // 没有"最后游玩"记录时**只有目录名**，连括号都不画（26.1 的 lastPlayed != -1 分支）。
     CHECK(mc::ui::worldRowMetaLine("flat-testbed", "") == "flat-testbed");
+}
+
+// --- 4b. 第三行的拼接（26.1 LevelSummary.createInfo:166-186）-----------------
+void testInfoLine() {
+    // `gameMode.survival` + ", " + `selectWorld.version` + " " + 版本名。
+    // 三个键在 26.1 的 en_us 里分别是 "Survival Mode" / "Version:" / 版本号，
+    // 所以整行是 "Survival Mode, Version: 26.1"——那个冒号来自译文，不是这里加的。
+    CHECK(mc::ui::worldRowInfoLine("Survival Mode", "Version:", "26.1") ==
+          "Survival Mode, Version: 26.1");
+    // 旧存档的版本块是重建出来的（SaveVersionHeader::derived），版本名是空串：
+    // 那时不画", Version: " 这一段，而不是画一个空版本号。
+    CHECK(mc::ui::worldRowInfoLine("Creative Mode", "Version:", "") == "Creative Mode");
+}
+
+// --- 4c. 缩略图在图集那一层的槽位 -------------------------------------------
+void testIconSlots() {
+    // 一层 256x256 切成 4x4 的 64x64。
+    CHECK(mc::render::kWorldIconSlotCount == 16);
+    const auto first = mc::render::worldIconSlotRect(0);
+    CHECK(first.x == 0.0F && first.y == 0.0F);
+    CHECK(first.width == 64.0F && first.height == 64.0F);
+    // 第 3 个在第一行最右，第 4 个换行——`slot % 4` 是列、`slot / 4` 是行，
+    // 反过来写（列取商、行取余）在 slot 0..3 上**结果相同**，从第 4 个才分岔。
+    CHECK(mc::render::worldIconSlotRect(3).x == 192.0F);
+    CHECK(mc::render::worldIconSlotRect(3).y == 0.0F);
+    CHECK(mc::render::worldIconSlotRect(4).x == 0.0F);
+    CHECK(mc::render::worldIconSlotRect(4).y == 64.0F);
+    CHECK(mc::render::worldIconSlotRect(15).x == 192.0F);
+    CHECK(mc::render::worldIconSlotRect(15).y == 192.0F);
+    // 十六个槽位互不重叠、且都落在这一层里。
+    for (int slot = 0; slot < mc::render::kWorldIconSlotCount; ++slot) {
+        const auto rect = mc::render::worldIconSlotRect(slot);
+        CHECK(rect.x + rect.width <= 256.0F);
+        CHECK(rect.y + rect.height <= 256.0F);
+        for (int other = 0; other < slot; ++other) {
+            const auto previous = mc::render::worldIconSlotRect(other);
+            CHECK(previous.x != rect.x || previous.y != rect.y);
+        }
+    }
+    // 回落图标不在这一层（它是启动时烘死的静态美术，与运行期刷新的这一层是两回事）。
+    CHECK(mc::render::kWorldIconLayer != mc::render::kTabWidgetLayer);
 }
 
 // --- 5. 颜色 -----------------------------------------------------------------
@@ -179,6 +221,8 @@ int main() {
     testRowParts();
     testMaxTextWidth();
     testMetaLine();
+    testInfoLine();
+    testIconSlots();
     testColours();
     testPageLayout();
     testManyRowsDoNotThrow();

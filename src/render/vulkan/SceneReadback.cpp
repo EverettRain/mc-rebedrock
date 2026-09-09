@@ -35,13 +35,13 @@ void recordCopyToBuffer(VkCommandBuffer commandBuffer, VkImage image, VkImageLay
 
 } // namespace
 
-bool writeSceneImagePng(const VulkanResources& resources, VkDevice device, VkImage sceneImage,
-                        VkFormat sceneFormat, VkImageLayout currentLayout, std::uint32_t width,
-                        std::uint32_t height, const std::filesystem::path& file) {
-    static_cast<void>(device);
+std::vector<std::uint8_t> readSceneImageRgba(const VulkanResources& resources,
+                                             VkImage sceneImage, VkFormat sceneFormat,
+                                             VkImageLayout currentLayout, std::uint32_t width,
+                                             std::uint32_t height) {
     if (width == 0U || height == 0U) {
         std::cerr << "Scene readback: the frame has no size\n";
-        return false;
+        return {};
     }
     const VkDeviceSize byteSize =
         static_cast<VkDeviceSize>(width) * static_cast<VkDeviceSize>(height) * 4U;
@@ -49,7 +49,7 @@ bool writeSceneImagePng(const VulkanResources& resources, VkDevice device, VkIma
         resources.createBuffer(byteSize, VK_BUFFER_USAGE_TRANSFER_DST_BIT, /*hostVisible=*/true);
     if (staging.buffer == VK_NULL_HANDLE || staging.mapped == nullptr) {
         std::cerr << "Scene readback: could not allocate a host-visible staging buffer\n";
-        return false;
+        return {};
     }
 
     const auto commandBuffer = resources.beginSingleUseCommands();
@@ -70,6 +70,18 @@ bool writeSceneImagePng(const VulkanResources& resources, VkDevice device, VkIma
     static_assert(kFormatB8G8R8A8Srgb == static_cast<std::uint32_t>(VK_FORMAT_B8G8R8A8_SRGB));
     normalizePreviewPixels(pixels,
                            readbackNeedsRedBlueSwap(static_cast<std::uint32_t>(sceneFormat)));
+    return pixels;
+}
+
+bool writeSceneImagePng(const VulkanResources& resources, VkDevice device, VkImage sceneImage,
+                        VkFormat sceneFormat, VkImageLayout currentLayout, std::uint32_t width,
+                        std::uint32_t height, const std::filesystem::path& file) {
+    static_cast<void>(device);
+    std::vector<std::uint8_t> pixels =
+        readSceneImageRgba(resources, sceneImage, sceneFormat, currentLayout, width, height);
+    if (pixels.empty()) {
+        return false;
+    }
 
     std::error_code error;
     if (file.has_parent_path()) {

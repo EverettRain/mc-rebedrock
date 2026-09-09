@@ -272,6 +272,14 @@ class MenuSystem final {
     //   `options.skipMultiplayerWarning = true; options.save()`——勾上之后按 Back
     //   什么也不写。两者是两个字段，合成一个就等于"勾一下就已经生效了"。
     bool noticeStopShowing = false;
+    // UI-11 / A6：GUI 图集那一层的第 i 个槽位里放的是**哪个存档**的缩略图
+    // （空串 = 这个槽位没用上）。世界列表刷新时由渲染器读盘填好并上传一次，
+    // 绘制侧按存档 identifier 反查槽位；查不到就画 26.1 的回落图标。
+    //
+    // ★ 它是"存档 → 槽位"这件事的**唯一**表述。绘制侧另算一遍（比如"第几行就是
+    //   第几个槽位"）在滚动之后立刻分岔：窗口从第 3 行开始时，屏幕第 0 行的图标
+    //   在槽位 0，而行号是 3。
+    std::vector<std::string> worldIconSlots;
 };
 
 // 创建世界表单 -> GameRuntime::createWorld 的那五个实参。

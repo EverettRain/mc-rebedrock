@@ -76,6 +76,31 @@ inline constexpr float kWorldRowSecondaryChannel = 128.0F / 255.0F;
 inline constexpr float kWorldIconHoverChannel = 144.0F / 255.0F;
 inline constexpr float kWorldIconHoverAlpha = 160.0F / 255.0F;
 
+// 第 3 行：26.1 `LevelSummary.createInfo():166-186`。
+//
+//     gameMode.<模式名>  [, selectWorld.commands]  [, selectWorld.experimental]
+//     , selectWorld.version <版本名>
+//
+// ★ 本作的 `SaveSummary` 没有"开了作弊吗"与"用了实验性数据包吗"，那两段因此不画；
+//   两条差异登记在偏差表里，**不在这里编一个来源**。
+// ★ 译文由调用方给（这一层不碰语言表），拼接留在这里是为了那两个逗号与那个空格
+//   有地方被断言——26.1 是 `", "` 加 `selectWorld.version` 加 `CommonComponents.SPACE`。
+[[nodiscard]] inline std::string worldRowInfoLine(std::string_view gameModeLabel,
+                                                  std::string_view versionWord,
+                                                  std::string_view versionName) {
+    std::string line{gameModeLabel};
+    if (versionName.empty()) {
+        // 旧存档的版本块是重建出来的，`versionName` 是空串（SaveVersionHeader::derived）。
+        // 那时 26.1 会画 `getWorldVersionName()` 的兜底，本作没有那份兜底，就不画这一段。
+        return line;
+    }
+    line += ", ";
+    line += versionWord;
+    line += ' ';
+    line += versionName;
+    return line;
+}
+
 // 第 2 行：`<存档目录名> (<最后游玩日期>)`（`WorldSelectionList:429-434`）。
 //
 // ★ 26.1 的判据是 `lastPlayed != -1L`——"没有记录"是 -1，不是 0。本作的

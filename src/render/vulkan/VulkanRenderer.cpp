@@ -7,6 +7,7 @@
 #include "render/vulkan/TemporalResolve.hpp"
 #include "render/vulkan/OffscreenTarget.hpp"
 #include "render/vulkan/SwapchainFormat.hpp"
+#include "render/WorldIcon.hpp"
 #include "render/vulkan/SceneReadback.hpp"
 #include "render/vulkan/TextureManager.hpp"
 #include "render/vulkan/VulkanDevice.hpp"
@@ -1609,6 +1610,21 @@ struct VulkanRenderer::Impl final : public gameplay::SimulationHost {
         menuSystem.saveSummaries = uiCaptureSaveSummaries(target);
         menuSystem.selectedWorldIndex = uiCaptureSelectedWorldRow(target);
         menuSystem.worldListFirstIndex = 0U;
+        // ★ 缩略图**不走 refreshWorldIcons()**：那条路读的是磁盘上真实存档的
+        //   icon.png，而截图通道不许依赖工作树里有什么（options.properties 那次的
+        //   教训）。这里直接把夹具那张图上传进同一层、填同一张槽位表——读取与
+        //   绘制两侧走的仍是生产路径。
+        menuSystem.worldIconSlots.clear();
+        if (!menuSystem.saveSummaries.empty() && menuSystem.saveSummaries.front().hasIcon) {
+            assets::ImageData icon;
+            icon.width = kWorldIconSlotSize;
+            icon.height = kWorldIconSlotSize;
+            icon.rgba = uiCaptureWorldIcon();
+            menuSystem.worldIconSlots.push_back(menuSystem.saveSummaries.front().identifier);
+            textures_.uploadWorldIcons(std::span<const assets::ImageData>{&icon, 1U});
+        } else {
+            textures_.uploadWorldIcons({});
+        }
         // 背包屏那口黑井里画的是玩家模型，而它的骨骼姿态要动画器**求值过一次**才绑定
         // （`drawPlayerPreview`：未绑定就一根骨骼也不画）。求值发生在 run() 的帧循环里，
         // 而截图通道根本不走那条循环——不喂这一下，每一张背包截图都只有 vanilla
@@ -2347,6 +2363,54 @@ struct VulkanRenderer::Impl final : public gameplay::SimulationHost {
                                              ? menuSystem.saveSummaries.size() - visibleRows
                                              : 0U;
         menuSystem.worldListFirstIndex = std::min(menuSystem.worldListFirstIndex, maximumFirst);
+        refreshWorldIcons();
+    }
+
+    // UI-11 / A6：把有缩略图的存档读进 GUI 图集那一层，并记下"哪个存档在哪个槽位"。
+    //
+    // ★ 在 refreshSaveList 里做，也就是**每次存档清单变了**做一次；不是每帧、
+    //   也不是每次进世界列表——`hasIcon` 只在列目录时才可能变。
+    // ★ 只读 `hasIcon` 为真的那些：`SaveSummary::hasIcon` 是一次 stat 的结果，
+    //   而这里才是真正解码 PNG 的地方（那份注释就写在 hasIcon 上）。
+    void refreshWorldIcons() {
+        menuSystem.worldIconSlots.clear();
+        std::vector<assets::ImageData> icons;
+        for (const auto& summary : menuSystem.saveSummaries) {
+            if (!summary.hasIcon ||
+                icons.size() >= static_cast<std::size_t>(kWorldIconSlotCount)) {
+                continue;
+            }
+            auto image = assets::ImageData::loadRgba(saveRepository.iconPath(summary.identifier));
+            if (image.width <= 0 || image.height <= 0) {
+                continue;   // 文件在两次调用之间被删掉了，或者不是一张能解的 PNG
+            }
+            menuSystem.worldIconSlots.push_back(summary.identifier);
+            icons.push_back(std::move(image));
+        }
+        textures_.uploadWorldIcons(icons);
+    }
+
+    // 退出世界时把最后一帧存成 `<world>/icon.png`（26.1
+    // `GameRenderer.takeAutoScreenshot`：短边居中裁成正方形再缩到 64x64）。
+    //
+    // ★ 在 `clearRenderedWorld()` **之前**：那之后离屏的场景图里已经没有世界了。
+    // ★ 自己等一次 idle：`readSceneImageRgba` 会单开一次提交，不与在飞的帧同步。
+    void writeCurrentWorldIcon() {
+        if (!currentSave.has_value() || !lastSceneImageIndex_.has_value() ||
+            *lastSceneImageIndex_ >= sceneTargets.size()) {
+            return;
+        }
+        checkVk(vkDeviceWaitIdle(device), "vkDeviceWaitIdle(world icon)");
+        const auto frame = readSceneImageRgba(
+            resources_, sceneTargets[*lastSceneImageIndex_].image.image, sceneUnormFormat(),
+            VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL, swapchainExtent.width, swapchainExtent.height);
+        const auto icon = worldIconFromFrame(frame, static_cast<int>(swapchainExtent.width),
+                                             static_cast<int>(swapchainExtent.height));
+        if (icon.empty()) {
+            return;
+        }
+        static_cast<void>(saveRepository.writeIcon(currentSave->summary.identifier, icon,
+                                                   kWorldIconSize, kWorldIconSize));
     }
 
     void scrollWorldList(int rows) {
@@ -2816,8 +2880,13 @@ struct VulkanRenderer::Impl final : public gameplay::SimulationHost {
         simulationActive.store(false, std::memory_order_release);
         if (inventoryOpen)
             setInventoryOpen(false);
-        if (saveFirst)
+        if (saveFirst) {
+            // ★ 缩略图要在 saveCurrentWorld() **之前**写：那一步末尾会
+            //   refreshSaveList()，而 `hasIcon` 是那次列目录 stat 出来的。
+            //   写在后面，新存的图标要等下一次刷新才被看见。
+            writeCurrentWorldIcon();
             saveCurrentWorld();
+        }
         worldSessionActive = false;
         paused = true;
         menuSystem.optionsOpen = false;
@@ -8843,6 +8912,9 @@ struct VulkanRenderer::Impl final : public gameplay::SimulationHost {
         }
         currentFrame = (currentFrame + 1U) % kFramesInFlight;
         ++frameNumber_;
+        // UI-11 / A6：退出世界时要把**最后一帧**存成存档缩略图，而那时已经画不出
+        // 新的一帧了（世界正要被卸载）。记住这一帧用的是哪个离屏目标。
+        lastSceneImageIndex_ = imageIndex;
         return imageIndex;
     }
 
@@ -9192,6 +9264,9 @@ struct VulkanRenderer::Impl final : public gameplay::SimulationHost {
     std::array<FrameContext, kFramesInFlight> frames{};
     std::size_t currentFrame = 0;
     std::uint32_t frameNumber_ = 0;
+    // UI-11 / A6：上一帧画在哪个离屏目标上。退出世界时那一帧就是存档缩略图的来源
+    // ——那时已经画不出新的一帧了（世界正要被卸载）。
+    std::optional<std::uint32_t> lastSceneImageIndex_;
     // 压测的帧数上限，取自 MC_REBEDROCK_STRESS_FRAMES，为 0 表示不启用
     std::size_t stressFrames = 0;
     // MC_REBEDROCK_DISABLE_OCCLUSION 关掉遮挡通道

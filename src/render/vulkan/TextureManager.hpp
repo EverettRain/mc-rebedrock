@@ -14,6 +14,7 @@
 
 #include "assets/ResourceProvider.hpp"
 #include "gameplay/entities/SpeciesRenderData.hpp"
+#include "assets/ImageData.hpp"
 #include "ui/BitmapFontMetrics.hpp"
 #include "ui/TextFont.hpp"
 
@@ -21,6 +22,8 @@
 
 #include <vk_mem_alloc.h>
 #include <vulkan/vulkan.h>
+
+#include <span>
 
 #include <array>
 #include <cstdint>
@@ -69,6 +72,9 @@ class TextureManager final {
     // 建字体数组
     // `fontMetrics`/`textFont` 归渲染器所有（HUD 文本通道要读），在这里填充
     // 渲染器传入常驻的 BMP 页集合，因此切换语言不必重建整个数组
+    // UI-11 / A6：把存档缩略图刷进 GUI 图集最后一层的 16 个槽位（多的丢弃）。
+    void uploadWorldIcons(std::span<const assets::ImageData> icons);
+
     void createFontTexture(ui::BitmapFontMetrics& fontMetrics, ui::TextFont& textFont,
                            const std::set<int>& requiredPages, bool forceUnicode);
     // 强制 Unicode 字体开关变化时，释放旧字体数组并重建；描述符池的拆建仍由渲染器编排

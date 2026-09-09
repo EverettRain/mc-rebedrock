@@ -62,6 +62,34 @@ inline constexpr int kWorldIconFallbackSize = 64;
 inline constexpr int kWorldIconFallbackSpriteX = 0;
 inline constexpr int kWorldIconFallbackSpriteY = 128;
 
+// UI-11 / A6：**存档自己的**缩略图（`<world>/icon.png`）所在的层。
+//
+// ★ 这是本作第二次真的加一层（第一次是页签）。理由与那次同族：内容是**运行期
+//   才知道**的（每个存档一张，进世界列表时才读盘），不能挤进别的层的空白——
+//   那些层是启动时烘一次的静态美术，为了刷新一张缩略图去重烘整张图集，代价是
+//   重新解码上百个 PNG，还会换掉 VkImage 把描述符里的绑定作废。
+//   独占一层就能用 `uploadImageLayerRange` 原地改像素，图像句柄不变。
+//   加层要同步改三处：images 数组、kGuiLayerCount、这个常量。
+inline constexpr float kWorldIconLayer = 21.0F;
+// 一层 256x256 按 64x64 切成 4x4，共 16 个槽位。
+// 世界列表一屏最多放得下 (逻辑高 - 页眉 - 页脚) / 36 行，1080p@scale2 也只有十几行。
+inline constexpr int kWorldIconSlotSize = 64;
+inline constexpr int kWorldIconSlotsPerRow = 4;
+inline constexpr int kWorldIconSlotCount = kWorldIconSlotsPerRow * kWorldIconSlotsPerRow;
+
+// 第 `slot` 个槽位在那一层里的像素矩形。
+//
+// ★ 抽成纯函数而不是绘制侧的两行取模：槽位算错**不改变任何别的返回值**，
+//   症状只是"某一行显示的是另一个存档的缩略图"——没有任何东西会红。
+//   这正是 UI-4 图标居中那次的形状。
+[[nodiscard]] constexpr ui::UiRect worldIconSlotRect(int slot) {
+    const int column = slot % kWorldIconSlotsPerRow;
+    const int row = slot / kWorldIconSlotsPerRow;
+    return {static_cast<float>(column * kWorldIconSlotSize),
+            static_cast<float>(row * kWorldIconSlotSize),
+            static_cast<float>(kWorldIconSlotSize), static_cast<float>(kWorldIconSlotSize)};
+}
+
 // A1：容器界面那张面板底图在 GUI 图集里的层号。
 //
 // ★ 从前它是绘制侧一条**四段三元链**（`chestScreen ? 10 : CraftingTable ? 7 : …`），
