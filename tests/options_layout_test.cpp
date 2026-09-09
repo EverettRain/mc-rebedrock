@@ -426,6 +426,38 @@ void testEscapeUnbindsSourceGuard() {
     }
 }
 
+// UI-12（spec §13.2 #14 的答案）：设置列表的**分区标题行左对齐于行的左缘**，
+// 不是整屏居中。
+//
+// 26.1 `OptionsList.HeaderEntry.extractContent`（:196）是
+// `widget.setPosition(screen.width / 2 - 155, getContentY() + paddingTop)`，
+// 而 155 正是 `getRowWidth() / 2` —— 那张 310 宽列表的行左缘。
+// 本作从前按整屏中线居中，两者在任何画布上都差 155 逻辑像素的一半那么多。
+//
+// 这一行住在渲染器的翻译单元里，没有测试链接得到它，只能读源码守。
+void testOptionsHeaderIsLeftAlignedSourceGuard() {
+    std::ifstream input{MC_REBEDROCK_HUD_RENDERER_SRC, std::ios::binary};
+    if (!input) {
+        std::printf("options_layout_test: cannot open %s\n", MC_REBEDROCK_HUD_RENDERER_SRC);
+        ++failures;
+        return;
+    }
+    std::ostringstream buffer;
+    buffer << input.rdbuf();
+    const std::string source = buffer.str();
+    const std::size_t begin = source.find("void drawOptionsSectionHeaders(");
+    CHECK(begin != std::string::npos);
+    if (begin == std::string::npos) {
+        return;
+    }
+    const std::size_t end = source.find("\n    void ", begin + 1U);
+    const std::string body = source.substr(begin, end - begin);
+    // 左缘取自那张列表本身（`ScrollList::rowLeft()`），不是另算一遍。
+    CHECK(body.find("list.rowLeft()") != std::string::npos);
+    // 而且**不能**再出现按画布中线居中的那条式子。
+    CHECK(body.find("swapchainExtent.width") == std::string::npos);
+}
+
 // 同一条规矩也管滚动条本身：滑块长度与位置的分母是行数。
 void testScrollbarUsesRowCountSourceGuard() {
     std::ifstream input{MC_REBEDROCK_HUD_RENDERER_SRC, std::ios::binary};
@@ -2134,6 +2166,7 @@ int main() {
     testPageTitles();
     testKeyBindListRows();
     testEscapeUnbindsSourceGuard();
+    testOptionsHeaderIsLeftAlignedSourceGuard();
     testScrollbarUsesRowCountSourceGuard();
     testBigGroups();
     testScrolledSlots();
