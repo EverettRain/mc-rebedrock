@@ -103,13 +103,16 @@ UiRect HudLayout::hotbarSlot(std::size_t index) const {
 UiRect HudLayout::hotbarBackground() const {
     constexpr int kWidth = 182;
     constexpr int kHeight = 22;
-    // 底边留 4 逻辑像素。**这个 4 是本作既有的取值，不是 vanilla 的**——26.1 的
-    // `Gui#renderItemHotbar` 把快捷栏贴在 `scaledHeight - 22`。本轮只把算术搬到逻辑
-    // 像素整数网格上，不动各方法自己的常量（那是 §11 HUD 几何的活，登记给 UI-7）。
-    constexpr int kBottomMargin = 4;
+    // ★ UI-6f（D5）：**贴底**，没有边距。26.1 `Gui.java:554`：
+    //     blitSprite(HOTBAR_SPRITE, screenCenter - 91, guiHeight() - 22, 182, 22)
+    //   本作从前在底边留 4 逻辑像素——那是自造值。UI-3 整数化时**有意没动**它，
+    //   因为顺手改会让前后对照图无法解读；现在它自己是被对齐的那一项。
+    //
+    //   快捷栏格、选中框、经验条与绘制侧三处全部**相对本矩形**定位，所以这一个常量
+    //   一改，整排 HUD 一起下移 4 像素、相对关系不变——这也正是它们当初就该这么写的理由。
     return {
         toFramebuffer(centredLogicalX(kWidth)),
-        toFramebuffer(logicalHeight() - kHeight - kBottomMargin),
+        toFramebuffer(logicalHeight() - kHeight),
         toFramebuffer(kWidth),
         toFramebuffer(kHeight),
     };

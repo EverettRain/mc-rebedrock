@@ -3074,11 +3074,11 @@ class HudRenderer final {
                 }
                 drawHudQuad(commandBuffer,
                             {2.0F * scale, messageY, hudTextWidth(*line, scale) + 4.0F * scale,
-                             11.0F * scale},
+                             ui::kChatLineHeight * scale},
                             {0.0F, 0.0F, 0.0F, 0.55F});
                 drawHudText(commandBuffer, *line, 4.0F * scale, messageY + scale, scale, color,
                             false);
-                messageY -= 11.0F * scale;
+                messageY -= ui::kChatLineHeight * scale;
             }
         }
         if (!chatOpen) {
