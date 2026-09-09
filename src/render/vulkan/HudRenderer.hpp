@@ -3260,10 +3260,8 @@ class HudRenderer final {
     // 两张 24x24 的九宫格精灵，画在槽位的 (x-4, y-4)——比 16x16 的格子大一圈。
     void drawSlotHighlight(VkCommandBuffer commandBuffer, const ui::UiRect& slot,
                            GuiWidgetSprite sprite, float scale) const {
-        const ui::UiRect box{slot.x - 4.0F * scale, slot.y - 4.0F * scale, 24.0F * scale,
-                             24.0F * scale};
-        drawScaledGuiSprite(commandBuffer, box, 0.0F, guiWidgetSprite(guiWidgetSprites, sprite),
-                            scale, glm::vec4{1.0F});
+        drawScaledGuiSprite(commandBuffer, ui::slotHighlightRect(slot, scale), 0.0F,
+                            guiWidgetSprite(guiWidgetSprites, sprite), scale, glm::vec4{1.0F});
     }
 
     // A1：**容器屏的槽位一律走这一趟**——遍历容器页里的 `Slot` 控件。

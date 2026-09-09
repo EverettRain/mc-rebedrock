@@ -465,6 +465,30 @@ void testSnapshotSlotStack() {
     CHECK(at(SlotKind::Equipment, 5U).empty());
 }
 
+// --- 11b. UI-8 / D30：悬停高亮的矩形 -----------------------------------------
+//
+// ★ 断言钉的是 **26.1 的那四个数**（`AbstractContainerScreen:184/190`：
+//   `x-4, y-4, 24, 24`），不是本作实现的抄本。照实现写断言等于给缺陷发通行证
+//   （README 护栏 23 那一族）。
+void testSlotHighlightRect() {
+    for (int guiScale = 1; guiScale <= 4; ++guiScale) {
+        const auto scale = static_cast<float>(guiScale);
+        const mc::ui::UiRect slot{100.0F, 200.0F, 16.0F * scale, 16.0F * scale};
+        const auto box = mc::ui::slotHighlightRect(slot, scale);
+        check(box.x == slot.x - 4.0F * scale && box.y == slot.y - 4.0F * scale,
+              "the highlight starts 4 logical px above/left of the slot", __LINE__);
+        check(box.width == 24.0F * scale && box.height == 24.0F * scale,
+              "the highlight is 24x24 logical px", __LINE__);
+        // ★ 它**比格子大一圈**：这条性质是那两张精灵存在的全部理由。
+        //   本作从前画的是正好盖住格子的一层白方块——尺寸相同就说明改回去了。
+        check(box.width > slot.width && box.height > slot.height,
+              "the highlight must be larger than the slot itself", __LINE__);
+        // 上下左右各外扩 4：高亮相对槽位是对称的。
+        check((box.x + box.width) - (slot.x + slot.width) == 4.0F * scale,
+              "the highlight extends 4 logical px past the slot's right edge", __LINE__);
+    }
+}
+
 // --- 12. 源码护栏：生产路径真的走了这一页 ------------------------------------
 //
 // ★ README 护栏 29：「抽了一个纯函数」和「生产路径真的调了它」是两件事。把
@@ -549,6 +573,67 @@ void testTheRendererUsesThePage() {
         CHECK(dispatch.find("creativeSlot(") == std::string::npos);
         CHECK(dispatch.find("enchantingOption(") == std::string::npos);
     }
+    // 绘制侧那两条在 HudRenderer.hpp 里，不在渲染器内核那个 .cpp 里。
+    std::string hudSource;
+    {
+        std::ifstream hudInput{MC_REBEDROCK_HUD_RENDERER_SRC, std::ios::binary};
+        if (!hudInput) {
+            std::printf("container_page_test: cannot open %s\n", MC_REBEDROCK_HUD_RENDERER_SRC);
+            ++failures;
+        } else {
+            std::ostringstream hudBuffer;
+            hudBuffer << hudInput.rdbuf();
+            std::istringstream hudLines{hudBuffer.str()};
+            std::string line;
+            while (std::getline(hudLines, line)) {
+                const auto comment = line.find("//");
+                hudSource += comment == std::string::npos ? line : line.substr(0, comment);
+                hudSource += '\n';
+            }
+        }
+    }
+    const auto hudBodyOf = [&](const char* signature) -> std::string {
+        const auto at = hudSource.find(signature);
+        if (at == std::string::npos) {
+            std::printf("container_page_test: %s not found in the HUD renderer\n", signature);
+            ++failures;
+            return {};
+        }
+        const auto open = hudSource.find('{', at);
+        int depth = 0;
+        for (std::size_t i = open; i < hudSource.size() && open != std::string::npos; ++i) {
+            if (hudSource[i] == '{') { ++depth; }
+            else if (hudSource[i] == '}') {
+                --depth;
+                if (depth == 0) { return hudSource.substr(open, i - open + 1U); }
+            }
+        }
+        ++failures;
+        return {};
+    };
+
+    // ★ UI-8 / D30：两张高亮的**次序**是它的全部意义——back 在所有槽位内容之前、
+    //   front 在之后（26.1 `extractSlotHighlightBack` → `extractSlots` →
+    //   `extractSlotHighlightFront`）。次序颠倒不改变任何返回值，只让"盖在物品上的
+    //   那一张"消失，而那正是本作从前缺的那一半。
+    const std::string slots = hudBodyOf(
+        "std::optional<gameplay::ItemStack> drawContainerSlots(");
+    if (!slots.empty()) {
+        const auto back = slots.find("SlotHighlightBack");
+        const auto loop = slots.find("drawHudSlot(");
+        const auto front = slots.find("SlotHighlightFront");
+        CHECK(back != std::string::npos && loop != std::string::npos &&
+              front != std::string::npos);
+        if (back != std::string::npos && loop != std::string::npos &&
+            front != std::string::npos) {
+            check(back < loop && loop < front,
+                  "the back highlight must precede the slots and the front one follow them",
+                  __LINE__);
+        }
+        // 逐格那层白方块已经没有了：高亮只属于**一个** hoveredSlot。
+        CHECK(slots.find("hoveredSlot") != std::string::npos);
+    }
+
     const std::string immediate = bodyOf("bool immediateCreativeControlUnderCursor()");
     if (!immediate.empty()) {
         CHECK(immediate.find("containerImmediateControlAt(") != std::string::npos);
@@ -569,6 +654,7 @@ int main() {
     testFindSlotWidget();
     testHitTest();
     testSlotsStayInsideThePanel();
+    testSlotHighlightRect();
     testSnapshotSlotStack();
     testTheRendererUsesThePage();
     if (failures != 0) {

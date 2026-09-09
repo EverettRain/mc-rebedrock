@@ -383,8 +383,12 @@ void testContainerFixture() {
               "a frontend page must keep the default world snapshot", __LINE__);
     }
 
-    // ★ UI-8 / D26：**世界页**（game / pause / death）画的是游戏内 HUD，它要有内容
-    //   ——空血、空饥饿、空手的 HUD 对照 26.1 时没有参考价值。
+    // ★ UI-8 / D26：**世界页**要有内容——空血、空饥饿、空手的 HUD 对照 26.1 时没有
+    //   参考价值。
+    //   ★ 三页里画面上真看得见 HUD 的只有 `game`：`pause` 与 `death` 在 `drawHud`
+    //     里早退到暂停菜单那一支，HUD 不画。给它们同样的内容是为了**状态一致**
+    //     （三页同属一个世界会话，让其中一页的玩家空血空手是自相矛盾的），
+    //     而不是因为那两屏会显示它。
     for (const auto page : {mc::ui::PageId::Game, mc::ui::PageId::Pause,
                             mc::ui::PageId::Death}) {
         const auto player = mc::render::uiCapturePlayerSnapshot(pageTarget(page));

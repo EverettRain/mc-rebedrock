@@ -94,6 +94,20 @@ inline constexpr std::size_t kCreativeTabWidgetCount = 11U;
 void buildContainerPageInto(Page& page, const gameplay::ScreenContext& context,
                             const HudLayout& layout);
 
+// UI-8 / D30：光标下那一格的高亮矩形。
+//
+// 26.1 `AbstractContainerScreen:184/190`：
+//     blitSprite(SLOT_HIGHLIGHT_BACK_SPRITE,  hoveredSlot.x - 4, hoveredSlot.y - 4, 24, 24)
+//     blitSprite(SLOT_HIGHLIGHT_FRONT_SPRITE, hoveredSlot.x - 4, hoveredSlot.y - 4, 24, 24)
+// 也就是**比 16x16 的格子大一圈**：左上各外扩 4、边长 24。
+//
+// ★ 它是一个纯函数而不是绘制侧的四行算术，理由是 README 护栏 20：一处只改绘制、
+//   不改任何返回值的改动，没有任何断言抓得住它。而这四个数必须钉住 vanilla 的
+//   那一组，不能从本作的实现反推（护栏 23 那一族）。
+[[nodiscard]] constexpr UiRect slotHighlightRect(const UiRect& slot, float scale) {
+    return {slot.x - 4.0F * scale, slot.y - 4.0F * scale, 24.0F * scale, 24.0F * scale};
+}
+
 // 页面里对应某个槽的那个控件，没有则返回 nullptr。
 // 身份是 `kind + index` 两个值（`gameplay::SlotRef` 就是这两个字段）。
 [[nodiscard]] const Widget* findSlotWidget(const Page& page, gameplay::SlotKind kind,
