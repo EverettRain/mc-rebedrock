@@ -299,6 +299,16 @@ inline constexpr std::array<OptionsGroup, 5> kSoundSettingsGroups{
      {2U, OptionsGroupKind::Small},
      {2U, OptionsGroupKind::Small}}};
 
+// UI-6e ④：Options 主页。26.1 `OptionsScreen.init()`：
+//   副页眉一行两项：fov 滑块 + （世界内 Difficulty / 世界外 Online）
+//   内容区一张 2 列 GridLayout，十个跳转按钮
+// ★ 本作把副页眉那两项**放进内容区第一行**（26.1 在页眉里）。理由：本作的
+//   `HeaderAndFooterLayout` 页眉是固定 33 高，装不下一行控件；把页眉改成可变高
+//   是另一块工作。已登记为偏差。
+// 项数因此恒定 12（不随"在不在世界里"变），行数恒定 6 —— 正好装满内容区，不用滚。
+inline constexpr std::array<OptionsGroup, 2> kOptionsHubGroups{
+    {{2U, OptionsGroupKind::Small}, {10U, OptionsGroupKind::Small}}};
+
 // 高级图形：本项目自有页，两项一组。
 inline constexpr std::array<OptionsGroup, 1> kAdvancedGraphicsGroups{
     {{3U, OptionsGroupKind::Small}}};
@@ -327,6 +337,8 @@ static_assert(optionsHeadersProduceNoWidgets(kAdvancedGraphicsGroups),
               "a header row must not consume an option index");
 static_assert(optionsHeadersProduceNoWidgets(kSoundSettingsGroups),
               "a header row must not consume an option index");
+static_assert(optionsHeadersProduceNoWidgets(kOptionsHubGroups),
+              "a header row must not consume an option index");
 
 // 这一屏的 addSmall 分组。三段式版面的页脚按钮不在其中（它由 buttonCount 单独认出来）。
 [[nodiscard]] constexpr std::span<const OptionsGroup> optionsGroupsOf(PageId page) {
@@ -337,6 +349,8 @@ static_assert(optionsHeadersProduceNoWidgets(kSoundSettingsGroups),
         return kAdvancedGraphicsGroups;
     case PageId::SoundSettings:
         return kSoundSettingsGroups;
+    case PageId::Options:
+        return kOptionsHubGroups;
     default:
         break;
     }

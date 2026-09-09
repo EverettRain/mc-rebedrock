@@ -1,5 +1,8 @@
 #pragma once
 
+#include <string>
+#include <string_view>
+
 // UI-3：GUI spec §1.2 的字体度量，作为**布局公式的基础**。
 //
 // 这里只有纯算术，不碰 Vulkan 也不碰字体纹理，所以每一条都能被无头断言——而它们恰恰是
@@ -40,6 +43,46 @@ inline constexpr float kUnicodeShadowOffset = 0.5F;
 
 // `font.width(text)` 是**整数**：26.1 的 `Font.width` 对 splitter 的浮点宽度取 `Mth.ceil`。
 // 居中要用这个整数，用浮点宽度再取整是另一个数。
+// 把一段文字截到放得进 `maxWidth` 为止，末尾加省略号。
+//
+// ★ 26.1 对超宽标签的做法是 **scissor 剪裁 + 正弦缓动来回滚动**（marquee，
+//   `ActiveTextCollector.defaultScrollingHelper`），不是截断——那要 scissor、
+//   还要把时间钉进 determinism knob，否则截图两遍不再逐字节相同（偏差 D17）。
+//   在那之前，截断至少保证**文字不画到控件外、更不画到画布外**：资源包描述
+//   曾经一路画出屏幕右边缘。
+//
+// `measure` 是调用方给的字宽函数（字宽依赖字体与缩放，ui:: 不接触资源）。
+// 抽成纯函数而不是绘制侧的一段循环，理由是护栏 20：绘制侧的算术改坏了不动任何返回值。
+template <typename MeasureFn>
+[[nodiscard]] std::string truncateToWidth(std::string_view text, float maxWidth,
+                                          MeasureFn measure) {
+    if (maxWidth <= 0.0F) {
+        return {};
+    }
+    if (measure(text) <= maxWidth) {
+        return std::string{text};
+    }
+    constexpr std::string_view kEllipsis = "...";
+    const float ellipsisWidth = measure(kEllipsis);
+    // 连省略号都放不下：宁可给空串，也不要画一个比格子还宽的 "..."
+    if (ellipsisWidth > maxWidth) {
+        return {};
+    }
+    std::size_t keep = text.size();
+    while (keep > 0U) {
+        // ★ 按**字节**退是不对的：UTF-8 的多字节码点会被切成半个字符，画出来是乱码。
+        //   退到一个不是续字节（10xxxxxx）的位置为止。
+        --keep;
+        while (keep > 0U && (static_cast<unsigned char>(text[keep]) & 0xC0U) == 0x80U) {
+            --keep;
+        }
+        if (measure(text.substr(0, keep)) + ellipsisWidth <= maxWidth) {
+            break;
+        }
+    }
+    return std::string{text.substr(0, keep)} + std::string{kEllipsis};
+}
+
 [[nodiscard]] inline int textWidthLogical(float unscaledWidth) {
     return static_cast<int>(std::ceil(unscaledWidth - 1.0e-4F));
 }

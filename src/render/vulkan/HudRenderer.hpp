@@ -46,7 +46,9 @@
 #include "ui/Language.hpp"
 #include "ui/MenuGeometry.hpp"
 #include "ui/MenuSystem.hpp"
+#include "assets/ResourcePackLibrary.hpp"
 #include "ui/CreateWorldLayout.hpp"
+#include "ui/DualColumnList.hpp"
 #include "ui/HeaderAndFooterLayout.hpp"
 #include "ui/KeyBindList.hpp"
 #include "ui/ListRow.hpp"
@@ -115,6 +117,8 @@ class HudRenderer final {
 
     struct Bindings final {
         ui::MenuSystem& menuSystem;
+        // UI-6e ③：资源包选择屏要列出包并读草稿顺序。只读——启停与调序走输入侧的回调。
+        const assets::ResourcePackLibrary& packLibrary;
         ui::UiFrameData& uiFrameData_;
         gameplay::GameSession& gameSession;
         // HUD 对玩家与世界的读取一律取自客户端镜像
@@ -202,7 +206,7 @@ class HudRenderer final {
     };
 
     explicit HudRenderer(const Bindings& b)
-        : menuSystem(b.menuSystem), uiFrameData_(b.uiFrameData_), gameSession(b.gameSession),
+        : menuSystem(b.menuSystem), packLibrary(b.packLibrary), uiFrameData_(b.uiFrameData_), gameSession(b.gameSession),
           clientMirror(b.clientMirror),
           textFont(b.textFont), fontMetrics(b.fontMetrics), language(b.language),
           lightWorld(b.lightWorld), window(b.window), options(b.options),
@@ -327,7 +331,7 @@ class HudRenderer final {
         return ui::countPageButtons(buildDrawPage());
     }
     [[nodiscard]] ui::UiRect worldListRow(std::size_t index, const ui::HudLayout& layout) const {
-        return ui::worldListRow(index, layout, static_cast<float>(swapchainExtent.width));
+        return ui::worldListRow(index, layout);
     }
     [[nodiscard]] std::size_t saveListVisibleRowCount() const {
         return ui::saveListVisibleRowCount(static_cast<float>(swapchainExtent.width),
@@ -335,13 +339,13 @@ class HudRenderer final {
                                            menuSystem.guiScaleSetting, menuSystem.forceUnicodeFont);
     }
     [[nodiscard]] ui::UiRect languageListBox(const ui::HudLayout& layout) const {
-        return ui::languageListBox(layout, static_cast<float>(swapchainExtent.width));
+        return ui::languageListBox(layout);
     }
     [[nodiscard]] float languageWarningY(const ui::HudLayout& layout) const {
         return ui::languageWarningY(layout);
     }
     [[nodiscard]] ui::UiRect languageRow(std::size_t index, const ui::HudLayout& layout) const {
-        return ui::languageRow(index, layout, static_cast<float>(swapchainExtent.width));
+        return ui::languageRow(index, layout);
     }
     [[nodiscard]] std::size_t languageVisibleRowCount() const {
         return ui::languageVisibleRowCount(static_cast<float>(swapchainExtent.width),
@@ -364,6 +368,28 @@ class HudRenderer final {
     // 并不划算。真正让它可缓存的前置是把 widgetLabel 的 switch 变成表（见
     // docs/CODE_PROBLEMS-branches.md §2.1）：标签依赖收敛到「表行 + 该选项的值」之后，
     // 失效 key 才写得干净
+    // UI-6e ③：资源包两栏的行数与选中行。**与输入侧那份必须一致**——
+    // 两处各算一遍是 UI-6c/6d 已经栽过两次的形状，所以两边算的都是同一件事：
+    // 左栏 = 已注册但不在草稿里的，右栏 = 草稿本身，各自被视口容量夹住。
+    void fillPackContext(ui::MenuBuildContext& ctx, const ui::HudLayout& layout) const {
+        if (menuSystem.pageStack.current() != ui::PageId::ResourcePacks) {
+            return;
+        }
+        const auto lists = ui::dualColumnLists(
+            ui::headerAndFooterLayout(layout.logicalWidth(), layout.logicalHeight()).contentBox(),
+            layout.logicalWidth());
+        const std::size_t capacity = lists.available.visibleRows();
+        std::size_t available = 0;
+        for (const auto& pack : packLibrary.packs()) {
+            if (!packLibrary.isEnabled(pack.id)) {
+                ++available;
+            }
+        }
+        ctx.availablePackRowCount = std::min(available, capacity);
+        ctx.selectedPackRowCount = std::min(packLibrary.draftOrder().size(), capacity);
+        ctx.selectedPackRow = menuSystem.selectedPackRow;
+    }
+
     [[nodiscard]] const ui::Page& buildDrawPage() const {
         const ui::PageId pageId = menuSystem.pageStack.current();
         const ui::HudLayout layout{static_cast<float>(swapchainExtent.width),
@@ -391,8 +417,9 @@ class HudRenderer final {
         // 折算行号——两侧都从 ui::optionsWindowFor 取，钳制也只发生在那一处。
         drawContext_.optionsWindow =
             ui::optionsWindowFor(layout, pageId, menuSystem.optionsListFirstIndex);
+        fillPackContext(drawContext_, layout);
         ui::buildPageInto(drawPage_, pageId, drawContext_, drawCallbacks_);
-        ui::layoutPageInto(drawPage_, pageId, layout, fbWidth, keyFirst,
+        ui::layoutPageInto(drawPage_, pageId, layout, keyFirst,
                            drawContext_.optionsWindow.firstRow);
         return drawPage_;
     }
@@ -993,6 +1020,20 @@ class HudRenderer final {
         //   `(int)(value*100.0)`，不是四舍五入）；二是加一类音量就要再抄一个 case，
         //   而"登记进 kRuntimeWidgetLabels"只保证它**有归属**，不保证这里真的算了它
         //   ——实测九个新滑块的标签一开始全是空白，版面对了字没了。
+        // UI-6e ④：视场角。★ 26.1 的两个特例判据是**取值等于某个具体数**，
+        //   不是"到头了"：70 → `options.fov.min`（Normal）、110 → `options.fov.max`
+        //   （Quake Pro），其余显示数字。而滑块的最小值是 **30** 不是 70——
+        //   照"最小档显示 min 文本"写会让 30 显示 Normal、70 显示 70，两个都错。
+        case ui::WidgetId::FieldOfView: {
+            const std::string name = translated("options.fov", "FOV");
+            if (options.fieldOfView == 70) {
+                return optionValue(name, translated("options.fov.min", "Normal"));
+            }
+            if (options.fieldOfView == 110) {
+                return optionValue(name, translated("options.fov.max", "Quake Pro"));
+            }
+            return optionValue(name, std::to_string(options.fieldOfView));
+        }
         case ui::WidgetId::MasterVolume:
         case ui::WidgetId::MusicVolume:
         case ui::WidgetId::RecordVolume:
@@ -1633,7 +1674,7 @@ class HudRenderer final {
     void drawKeyBindCategoryRows(VkCommandBuffer commandBuffer, const ui::HudLayout& layout,
                                  float scale) const {
         const float fbWidth = static_cast<float>(swapchainExtent.width);
-        const auto list = ui::keyBindsScrollList(layout, fbWidth);
+        const auto list = ui::keyBindsScrollList(layout);
         const std::size_t first =
             std::min(menuSystem.controlsListFirstIndex, ui::kKeyBindListRowCount);
         const std::size_t visible = ui::keyBindsVisibleRowCount(
@@ -1672,9 +1713,111 @@ class HudRenderer final {
         if (total <= visible) {
             return;  // everything fits; no scrollbar
         }
-        const auto list = ui::keyBindsScrollList(layout, fbWidth);
+        const auto list = ui::keyBindsScrollList(layout);
         const std::size_t first = std::min(menuSystem.controlsListFirstIndex, total - visible);
         drawScrollbar(commandBuffer, layout, list, total, first);
+    }
+
+    // UI-6e ③：资源包选择的两栏。26.1 `PackSelectionScreen`：两张 200 宽的列表，
+    // 各自有标题（`pack.available.title` / `pack.selected.title`）与底衬。
+    //
+    // ★ 行的**矩形不在这里算**——它由 `layoutPageInto` 填进 Widget，绘制只按 Widget
+    //   走一遍。世界列表那一屏是反面教材：它的行矩形由绘制侧另算一份，命中测试
+    //   再算第三份，于是"点到的"和"看到的"是两条路。
+    void drawResourcePackColumns(VkCommandBuffer commandBuffer, const ui::HudLayout& layout,
+                                 float scale) const {
+        const auto frame =
+            ui::headerAndFooterLayout(layout.logicalWidth(), layout.logicalHeight());
+        const auto lists = ui::dualColumnLists(frame.contentBox(), layout.logicalWidth());
+        // 两栏各自的底衬与分隔线
+        for (const auto& list : {lists.available, lists.selected}) {
+            const ui::UiRect box{static_cast<float>(list.x) * scale,
+                                 static_cast<float>(list.y) * scale,
+                                 static_cast<float>(list.width) * scale,
+                                 static_cast<float>(list.height) * scale};
+            drawListBackground(commandBuffer, box, scale);
+            drawListSeparators(commandBuffer, box, scale);
+        }
+        // 两栏的标题，画在各自列表正上方
+        const auto columnTitle = [&](const ui::ScrollList& list, std::string_view key,
+                                     std::string_view fallback) {
+            const std::string text = translated(key, fallback);
+            const float centre = (static_cast<float>(list.x) +
+                                  static_cast<float>(list.width) * 0.5F) * scale;
+            drawHudText(commandBuffer, text, centre - hudTextWidth(text, scale) * 0.5F,
+                        (static_cast<float>(list.y) - 11.0F) * scale, scale,
+                        {1.0F, 1.0F, 1.0F, 1.0F});
+        };
+        columnTitle(lists.available, "pack.available.title", "Available");
+        columnTitle(lists.selected, "pack.selected.title", "Selected");
+
+        // 每一行的包名与描述。行矩形取自已经布局好的 Widget。
+        const auto& page = buildDrawPage();
+        std::size_t availableRow = 0;
+        std::size_t selectedRow = 0;
+        std::vector<std::string> available;
+        for (const auto& pack : packLibrary.packs()) {
+            if (!packLibrary.isEnabled(pack.id)) {
+                available.push_back(pack.id);
+            }
+        }
+        for (const auto& widget : page) {
+            if (!ui::isPackRowWidget(widget)) {
+                continue;
+            }
+            const bool right = ui::isSelectedPackRow(widget);
+            const std::size_t row = right ? selectedRow++ : availableRow++;
+            const auto& ids = right ? packLibrary.draftOrder() : available;
+            if (row >= ids.size()) {
+                continue;
+            }
+            const auto* entry = packLibrary.find(ids[row]);
+            if (entry == nullptr) {
+                continue;
+            }
+            // 右栏当前选中的那一行加一圈高亮框——调序按钮作用在它身上，
+            // 没有这个反馈玩家不知道自己在移哪一个。
+            if (right && row == menuSystem.selectedPackRow) {
+                drawHudQuad(commandBuffer, widget.rect, {1.0F, 1.0F, 1.0F, 1.0F});
+                drawHudQuad(commandBuffer,
+                            {widget.rect.x + scale, widget.rect.y + scale,
+                             widget.rect.width - 2.0F * scale,
+                             widget.rect.height - 2.0F * scale},
+                            {0.0F, 0.0F, 0.0F, 1.0F});
+            }
+            const auto text = ui::transferTextCell(
+                {widget.rect.x / scale, widget.rect.y / scale, widget.rect.width / scale,
+                 widget.rect.height / scale});
+            // ★ 截到格子里。不截的话包描述会一路画出画布右边缘——实测如此。
+            //   26.1 的做法是 scissor + 滚动（偏差 D17），截断是它之前的下界。
+            const float room = text.width * scale;
+            const auto fit = [&](std::string_view value) {
+                return ui::truncateToWidth(value, room, [&](std::string_view probe) {
+                    return hudTextWidth(probe, scale);
+                });
+            };
+            drawHudText(commandBuffer, fit(entry->title), text.x * scale, text.y * scale, scale,
+                        entry->compatible ? glm::vec4{1.0F, 1.0F, 1.0F, 1.0F}
+                                          : glm::vec4{1.0F, 0.6F, 0.4F, 1.0F});
+            if (!entry->description.empty()) {
+                drawHudText(commandBuffer, fit(entry->description), text.x * scale,
+                            (text.y + static_cast<float>(ui::kFontLineHeight) + 1.0F) * scale,
+                            scale, {0.66F, 0.66F, 0.66F, 1.0F});
+            }
+        }
+
+        // 提交过一次之后提示"重启生效"——换包不做热重载（依据见 known-debt），
+        // 没有这句提示玩家会以为开关没起作用。
+        if (menuSystem.packRestartRequired) {
+            const std::string note =
+                translated("options.rebedrock.pack.restart", "Changes apply after restart");
+            drawHudText(commandBuffer, note,
+                        (static_cast<float>(swapchainExtent.width) -
+                         hudTextWidth(note, scale)) * 0.5F,
+                        static_cast<float>(frame.contentBox().y + frame.contentBox().height +
+                                           2) * scale,
+                        scale, {1.0F, 0.85F, 0.4F, 1.0F});
+        }
     }
 
     // UI-6d：三段式设置页那张 OptionsList 的滚动条。装得下时不画——`optionsMaximumFirstRow`
@@ -1987,7 +2130,7 @@ class HudRenderer final {
                                  : glm::vec4{0.85F, 0.85F, 0.85F, 1.0F});
         }
         drawScrollbar(commandBuffer, layout,
-                      ui::languageScrollList(layout, static_cast<float>(swapchainExtent.width)),
+                      ui::languageScrollList(layout),
                       menuSystem.languageCodes.size(), first);
         // 列表与按钮之间的灰色提示行，vanilla 把它画在 height - 56 处
         const std::string warning = translated("options.languageWarning", "");
@@ -2024,13 +2167,16 @@ class HudRenderer final {
         //   UI-6d 把视频设置与高级图形也改成三段式之后，那份手写清单立刻就说了假话：
         //   两屏的标题会掉回"第一个按钮上方 30px"，而第一个按钮此时在列表里，
         //   标题于是压在列表第一行上。版面种类只有 ui/PageLayoutKind.hpp 一处来源。
-        const bool headerAndFooterPage =
-            ui::pageLayoutKind(currentPage) == ui::PageLayoutKind::HeaderFooterList;
+        // ★ 判据是"是不是三段式"，不是"是不是那一种三段式"。见 usesHeaderAndFooter
+        //   上面那段注释：这份判断已经说过两次假话，两次都是枚举了当时的取值。
+        const bool headerAndFooterPage = ui::usesHeaderAndFooter(ui::pageLayoutKind(currentPage));
         if (currentPage == ui::PageId::KeyBinds) {
-            const auto box = ui::keyBindsListBox(layout, static_cast<float>(swapchainExtent.width));
+            const auto box = ui::keyBindsListBox(layout);
             drawListBackground(commandBuffer, box, scale);
             drawListSeparators(commandBuffer, box, scale);
             drawKeyBindCategoryRows(commandBuffer, layout, scale);
+        } else if (currentPage == ui::PageId::ResourcePacks) {
+            drawResourcePackColumns(commandBuffer, layout, scale);
         } else if (headerAndFooterPage) {
             // 设置列表也是 AbstractSelectionList：同一套底衬 + 上下两道分隔线。
             const auto frameBox =
@@ -3332,6 +3478,7 @@ class HudRenderer final {
 
     // ---- 绑定到渲染器内核状态的引用 ----
     ui::MenuSystem& menuSystem;
+    const assets::ResourcePackLibrary& packLibrary;
     ui::UiFrameData& uiFrameData_;
     gameplay::GameSession& gameSession;
     const client::ClientMirror& clientMirror;

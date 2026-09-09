@@ -69,6 +69,27 @@ enum class WidgetId : std::uint16_t {
     // Options 主页上跳进这一屏的按钮。
     SoundSettings,
 
+    // UI-6e ④：26.1 `OptionsScreen.init()` 的十个跳转 + 副页眉那两项。
+    // 本作已有的：SoundSettings / VideoSettings / Controls / Language / Accessibility。
+    // 下面这五个的目标屏本作**没有**，一律置灰在位（与 MouseSettings 同一做法）：
+    SkinCustomization, ChatSettings, Telemetry, CreditsAndAttribution, OnlineOptions,
+    // 资源包选择：26.1 的 §7.12。后端（PackManager 的生命周期、真实元数据、
+    // 启用集合的持久化与重载）正在补，补齐前它也是置灰的。
+    ResourcePacks,
+    // 视场角滑块。26.1 把它放在 Options 的**副页眉**里（与 Difficulty/Online 并排）。
+    FieldOfView,
+
+    // UI-6e ③：资源包选择屏（26.1 §7.12）。左栏"可用"、右栏"已启用"，
+    // 一行一个包，点一下转移到对面。
+    // ★ 两栏各有自己的 id：**一行属于哪一栏**是布局要知道的事，而 debugId 是
+    //   布局唯一能读到的东西。共用一个 id 就得另开一条"第几个之后算右栏"的旁路，
+    //   那正是"同一事实两份表述"。
+    PackRowAvailable, PackRowSelected,
+    // 调序。26.1 把上下箭头画在行内，本作放页脚、作用于右栏选中的那一行（已登记偏差）。
+    PackMoveUp, PackMoveDown,
+    // 打开 resourcepacks/ 目录。本作没有"用默认程序打开路径"这条能力，置灰。
+    PackOpenFolder,
+
     // 哨兵，值等于 id 的个数，表因此能断言自己覆盖了每一个 id，ui/WidgetLabels.hpp 就是这么做的
     // 它永远不是一个控件，也永远排在最后
     Count,

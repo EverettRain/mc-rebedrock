@@ -37,6 +37,12 @@ class ZipResourcePackProvider final : public ResourceProvider {
         std::string_view space, std::string_view pathPrefix,
         PackType type = PackType::ClientResources) const override;
     [[nodiscard]] std::vector<PackLanguage> languages() const override;
+    // 归档根上那份 pack.mcmeta，打开档案时解析一次。
+    // 与 StandardPackResourceProvider::metadata() 同义：资源包选择界面要
+    // description 与格式范围，而 zip 包从前根本没人读过它的 pack.mcmeta——
+    // 目录包在启动流程里被单独读了一遍，zip 包那一支干脆跳过，于是同一批
+    // 包里只有一半有元数据。
+    [[nodiscard]] const PackMetadata& metadata() const;
     [[nodiscard]] std::filesystem::path resourceRoot() const override;
 
   private:

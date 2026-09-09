@@ -42,7 +42,12 @@ struct StaticWidgetLabel final {
     std::string_view suffix{};
 };
 
-inline constexpr std::array<StaticWidgetLabel, 33> kStaticWidgetLabels{{
+// ★ **suffix 只给本项目自有的键**。vanilla 的译文自己就带省略号
+//   （en_us.json 里 `options.online` = "Online..."、`options.resourcepack` =
+//   "Resource Packs..."），再加一个 suffix 会显示成 "Online......" —— 实测如此。
+//   本项目自有的 `options.rebedrock.advancedGraphics` 才需要它：那个键的按钮与标题
+//   是同一个词，省略号是唯一的区别。下面有一条断言钉住这条规则。
+inline constexpr std::array<StaticWidgetLabel, 42> kStaticWidgetLabels{{
     // 标题界面与世界列表
     {WidgetId::Singleplayer, "menu.singleplayer", "Singleplayer"},
     {WidgetId::Multiplayer, "menu.multiplayer", "Multiplayer"},
@@ -89,7 +94,7 @@ inline constexpr std::array<StaticWidgetLabel, 33> kStaticWidgetLabels{{
     {WidgetId::Done, "gui.done", "Done"},
     {WidgetId::ResetKeyBinds, "controls.resetAll", "Reset Keys"},
     // UI-6e：§7.4 音乐与声音。26.1 `OptionsScreen` 上那个跳转的键是 `options.sounds`。
-    {WidgetId::SoundSettings, "options.sounds", "Music & Sounds", "..."},
+    {WidgetId::SoundSettings, "options.sounds", "Music & Sounds..."},
     // 同屏上本作没有后端的三项，置灰。键都取自 26.1：
     //   soundDevice     → `options.audioDevice`（26.1 addBig 独占一行）
     //   musicFrequency  → `options.musicFrequency`
@@ -97,11 +102,25 @@ inline constexpr std::array<StaticWidgetLabel, 33> kStaticWidgetLabels{{
     {WidgetId::SoundDevice, "options.audioDevice", "Device"},
     {WidgetId::MusicFrequency, "options.musicFrequency", "Music Frequency"},
     {WidgetId::MusicToast, "options.showNowPlayingToast", "Show Now Playing Toast"},
+    // UI-6e ④：26.1 `OptionsScreen` 的十个跳转里本作没有目标屏的那五个，加资源包。
+    // 键全部取自 26.1 的 OptionsScreen 常量。
+    {WidgetId::SkinCustomization, "options.skinCustomisation", "Skin Customization..."},
+    {WidgetId::ChatSettings, "options.chat.title", "Chat Settings"},
+    {WidgetId::Telemetry, "options.telemetry", "Telemetry Data..."},
+    {WidgetId::CreditsAndAttribution, "options.credits_and_attribution",
+     "Credits & Attribution..."},
+    {WidgetId::OnlineOptions, "options.online", "Online..."},
+    {WidgetId::ResourcePacks, "options.resourcepack", "Resource Packs..."},
+    // UI-6e ③：资源包选择屏。26.1 的键：`pack.openFolder` 是页脚那个"打开文件夹"。
+    // 上下移在 26.1 是行内的箭头精灵、没有文字；本作放页脚，用本项目自有的键。
+    {WidgetId::PackOpenFolder, "pack.openFolder", "Open Pack Folder"},
+    {WidgetId::PackMoveUp, "options.rebedrock.pack.moveUp", "Move Up"},
+    {WidgetId::PackMoveDown, "options.rebedrock.pack.moveDown", "Move Down"},
 }};
 
 // 标签要读运行期状态，仍由渲染器的 widgetLabel 现算
 // 登记在这里是为了让它有归属这件事可被编译期检查，而不是靠 switch 里恰好写了一行
-inline constexpr std::array<WidgetId, 18> kRuntimeWidgetLabels{{
+inline constexpr std::array<WidgetId, 19> kRuntimeWidgetLabels{{
     WidgetId::MenuBackgroundBlurriness,  // 滑块当前值，最低档显示 OFF
     WidgetId::Resolution,          // 实时窗口尺寸（可能被拖拽或最大化过）
     WidgetId::GuiScale,            // 菜单状态里的缩放档位，0 表示 Auto
@@ -125,16 +144,22 @@ inline constexpr std::array<WidgetId, 18> kRuntimeWidgetLabels{{
     WidgetId::PlayerVolume,
     WidgetId::AmbientVolume,
     WidgetId::VoiceVolume,
+    // UI-6e ④：视场角。标签要读当前值，而且 70 / 110 两个取值显示为文字
+    // （`options.fov.min` / `options.fov.max`）而不是数字。
+    WidgetId::FieldOfView,
 }};
 
 // 不经 widgetLabel 取标签的 id
 // 三种列表行的文本各自在页面装配时给出，分别是世界名、语言名与按键行
 // None 则根本不是一个按钮
-inline constexpr std::array<WidgetId, 6> kUnlabelledWidgets{{
+inline constexpr std::array<WidgetId, 8> kUnlabelledWidgets{{
     WidgetId::None,
     WidgetId::WorldRow,
     WidgetId::LanguageRow,
     WidgetId::KeyBindRow,
+    // UI-6e ③：包行的文字（名字 + 描述）在装配时给出，与世界名/语言名同类。
+    WidgetId::PackRowAvailable,
+    WidgetId::PackRowSelected,
     // UI-2：主菜单的两个图标钮。26.1 用 SpriteIconButton 且 iconOnly=true，
     // 按钮上只有 15x15 的图标，没有文字（图标本身归 UI-4 的 IconButton）
     WidgetId::TitleLanguage,

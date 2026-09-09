@@ -34,6 +34,7 @@ constexpr std::array kPageNames{
     PageName{ui::PageId::KeyBinds, "key-binds"},
     PageName{ui::PageId::Accessibility, "accessibility"},
     PageName{ui::PageId::SoundSettings, "sound-settings"},
+    PageName{ui::PageId::ResourcePacks, "resource-packs"},
 };
 
 // 表必须覆盖 PageId 的每一个取值，否则 --ui-shot 会对某个真实存在的屏幕说"不认识"。

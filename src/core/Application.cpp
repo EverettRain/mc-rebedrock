@@ -6,6 +6,7 @@
 
 #include "assets/PackManager.hpp"
 #include "assets/PackMetadata.hpp"
+#include "assets/ResourcePackLibrary.hpp"
 #include "assets/ResourceProvider.hpp"
 #include "core/VersionManifest.hpp"
 #include "gameplay/DataPackStack.hpp"
@@ -111,6 +112,8 @@ int Application::run() {
     struct PackEntry final {
         std::filesystem::path path;
         bool isZip = false;
+        // `--pack` 点名的那些：强制启用、强制置顶，玩家在选择界面里关不掉
+        bool pinned = false;
     };
     std::vector<PackEntry> found;
     if (std::filesystem::is_directory(packDirectory, packError)) {
@@ -140,17 +143,18 @@ int Application::run() {
             });
         if (alreadyFound != found.end()) {
             // 已在扫描结果里，但命令行点了名 → 移到末尾，优先级最高
-            const PackEntry moved = *alreadyFound;
+            PackEntry moved = *alreadyFound;
+            moved.pinned = true;
             found.erase(alreadyFound);
             found.push_back(moved);
             continue;
         }
         if (std::filesystem::is_directory(pack, lookup) &&
             std::filesystem::exists(pack / "pack.mcmeta", lookup)) {
-            found.push_back({pack, false});
+            found.push_back({pack, false, true});
         } else if (std::filesystem::is_regular_file(pack, lookup) &&
                    pack.extension() == ".zip") {
-            found.push_back({pack, true});
+            found.push_back({pack, true, true});
         } else {
             std::cerr << "\n启动失败：--pack 指向的不是资源包 (Not a resource pack)\n  "
                       << pack.string() << "\n"
@@ -172,56 +176,45 @@ int Application::run() {
                       << packCacheRoot.string() << "\n";
         }
     }
-    // 用 deque：继续压入 provider（某个包的 overlay）不会让已交给 `enabled` 的指针失效
+    // 用 deque：继续压入 provider（某个包的 overlay）不会让已交出的指针失效
     std::deque<assets::StandardPackResourceProvider> directoryPacks;
     std::deque<assets::ZipResourcePackProvider> zipPacks;
-    // 启用顺序，每项配一个 provider
-    // 同一个包内低优先级在前，先主 assets，再是版本门控的 overlay
-    std::vector<const assets::ResourceProvider*> enabled;
-    // ReBedrock 对齐 26.1 的资源包格式号，门控到该格式的 overlay 才生效
-    constexpr int kTargetPackFormat = 84;
-    const auto readMetadata = [](const std::filesystem::path& mcmeta) -> assets::PackMetadata {
-        std::ifstream input{mcmeta, std::ios::binary};
-        if (!input) {
-            return {};
-        }
-        std::ostringstream text;
-        text << input.rdbuf();
-        try {
-            return assets::PackMetadata::parse(text.str());
-        } catch (const std::exception&) {
-            return {};
-        }
-    };
+    // 包身份与启用状态的所有者。渲染器拿到它就同时够得着「列出 / 启停 / 调序 / 提交」
+    // 四个操作和当前资源栈，因此它必须活得比渲染器久——本作用域正是最外层
+    // 启用名单与 options.properties 分家，理由见 ResourcePackLibrary 的构造函数注释
+    assets::ResourcePackLibrary packLibrary{configRoot_ / "resourcepacks.txt"};
+    // 对标的 JE 资源包格式号，门控到该格式的 overlay 才生效
+    // 与下面的 pack.mcmeta 兼容性判定共用同一个数，见 assets::kTargetJavaPackVersion
+    constexpr int kTargetPackFormat = static_cast<int>(assets::kTargetJavaPackVersion.resource);
     for (const auto& entry : found) {
+        // 身份规则（目录名/文件名，撞名加后缀）住在 ResourcePackLibrary 里，
+        // 因为 id 是要落盘的键——这里再手抄一份就是第二份可能走样的规则
+        const std::string id = packLibrary.deriveId(entry.path);
+        const assets::ResourceProvider* provider = nullptr;
+        const assets::PackMetadata* metadata = nullptr;
+        // 一个包内部按版本门控展开出来的附加层，自下而上
+        // 它们属于这个包，不是独立的包，因此不进选择界面的列表
+        std::vector<const assets::ResourceProvider*> overlays;
         if (entry.isZip) {
             zipPacks.emplace_back(entry.path, packCacheRoot / entry.path.stem());
             if (!zipPacks.back().valid()) {
                 std::cerr << "Skipping unreadable resource pack: " << entry.path.filename().string()
                           << "\n";
+                zipPacks.pop_back();
                 continue;
             }
-            enabled.push_back(&zipPacks.back());
-            std::cout << "Resource pack: " << entry.path.filename().string() << " (zip)\n";
+            provider = &zipPacks.back();
+            metadata = &zipPacks.back().metadata();
+            std::cout << "Resource pack: " << id << " (zip)\n";
         } else {
             directoryPacks.emplace_back(entry.path);
-            enabled.push_back(&directoryPacks.back());
-            std::cout << "Resource pack: " << entry.path.filename().string() << "\n";
+            provider = &directoryPacks.back();
+            // provider 构造时已经解析过这个包的 pack.mcmeta，不再自己开一遍文件
+            metadata = &directoryPacks.back().metadata();
+            std::cout << "Resource pack: " << id << "\n";
             // pack.mcmeta 的 overlay 是带自己 assets/ 的版本门控子目录，声明越靠后优先级越高
             // 每个都成为一个叠在主 assets 之上的 provider
-            const auto metadata = readMetadata(entry.path / "pack.mcmeta");
-            // pack_format 与本 build 的 packVersion 只做比对记录，不硬失败
-            // vanilla 对超范围的包同样是给个警告照样加载
-            // 这里比的是资源半边的格式号，因为整个扫描针对的就是资源包目录
-            // 逐存档的数据包走 packVersion.data 做同样的检查
-            const auto compat = assets::PackManager::checkCompatibility(
-                metadata, assets::PackStackKind::Resources, core::kVersion.packVersion);
-            if (!compat.compatible) {
-                std::cerr << "  警告：pack_format 不兼容 (declares " << compat.packFormatMin << "-"
-                          << compat.packFormatMax << ", build targets " << compat.buildPackVersion
-                          << ") — loading anyway\n";
-            }
-            for (const auto& overlay : metadata.overlays) {
+            for (const auto& overlay : metadata->overlays) {
                 if (!overlay.appliesTo(kTargetPackFormat)) {
                     continue;
                 }
@@ -230,20 +223,46 @@ int Application::run() {
                     continue;
                 }
                 directoryPacks.emplace_back(overlayRoot);
-                enabled.push_back(&directoryPacks.back());
+                overlays.push_back(&directoryPacks.back());
                 std::cout << "  overlay: " << overlay.directory << "\n";
             }
         }
+        // pack_format 只做比对记录，不硬失败
+        // vanilla 对超范围的包同样是给个警告照样加载
+        // 这里比的是资源半边的格式号，因为整个扫描针对的就是资源包目录
+        // 逐存档的数据包走 kTargetJavaPackVersion.data 做同样的检查
+        const auto compat = assets::PackManager::checkCompatibility(
+            *metadata, assets::PackStackKind::Resources, assets::kTargetJavaPackVersion);
+        if (!compat.compatible) {
+            std::cerr << "  警告：pack_format 不兼容 (declares " << compat.packFormatMin << "-"
+                      << compat.packFormatMax << ", build targets " << compat.buildPackVersion
+                      << ") — loading anyway\n";
+        }
+        packLibrary.addPack(
+            assets::ResourcePackEntry{id, assets::ResourcePackLibrary::titleFromId(id),
+                                      metadata->description, metadata->minFormat,
+                                      metadata->maxFormat, compat.compatible, entry.pinned},
+            *provider, std::move(overlays));
     }
+    // 启用名单：文件不存在就是「发现到的包全部启用」，即本特性之前的行为
+    packLibrary.loadSelection();
 
     // 资源包是必需品：本 build 不含任何 Mojang 资源，没有包就没有东西可画可放
     // 目录上面已经建好，这里直接告诉玩家往哪儿放并停下，而不是进到一个满屏缺失纹理的世界里
-    if (enabled.empty()) {
+    // 判据是**启用集合**而不是发现集合：玩家在选择界面里把包全关掉，与一个包都没有
+    // 是同一种处境，同样不能往下走
+    if (packLibrary.draftOrder().empty()) {
         const auto where = std::filesystem::weakly_canonical(packDirectory, packError);
-        std::cerr << "\n启动失败：缺少资源包 (Missing resource pack)\n"
-                  << "请将一个标准资源包（目录或 .zip，含 pack.mcmeta 与 assets/）放入：\n  "
-                  << where.string() << "\n"
-                  << "或用 --pack <目录或 .zip> 直接点名一个，然后重新启动。\n";
+        if (packLibrary.packs().empty()) {
+            std::cerr << "\n启动失败：缺少资源包 (Missing resource pack)\n"
+                      << "请将一个标准资源包（目录或 .zip，含 pack.mcmeta 与 assets/）放入：\n  "
+                      << where.string() << "\n"
+                      << "或用 --pack <目录或 .zip> 直接点名一个，然后重新启动。\n";
+        } else {
+            std::cerr << "\n启动失败：所有资源包都被停用 (Every resource pack is disabled)\n"
+                      << "请在 " << packLibrary.selectionFile().string()
+                      << " 里至少留一个包，或删掉该文件以恢复「全部启用」。\n";
+        }
         // 方块预览导出尤其不能在缺包的情况下往下走：它会产出八张缺失纹理的图片，
         // 而那正好是自动化最难发现的失败——文件都在，内容全错
         if (testScene_.has_value() && testScene_->exportPreview) {
@@ -259,14 +278,6 @@ int Application::run() {
     // 启动期对数据半边唯一要做的就是备好下面那层内置默认值
     // 于是在任何世界加载之前就读 blockTags()、recipeTable() 的调用方拿到的是干净的内置值
     // 直接构造这些表的进程内测试同理，都不会读到上一次运行残留在静态变量里的半截状态
-    assets::PackManager packManager;
-    for (std::size_t index = 0; index < enabled.size(); ++index) {
-        const std::string id = "pack" + std::to_string(index);
-        packManager.registerPack(id, *enabled[index], assets::PackMetadata{},
-                                 /*hasDataHalf=*/false, /*hasResourceHalf=*/true);
-        packManager.enable(assets::PackStackKind::Resources, id);
-    }
-
     // 数据驱动玩法表的内置底座，不挂任何包栈
     // 这就是一个没有 <save>/datapacks/ 的全新存档重建之后的状态
     gameplay::PerSaveDataStack::rebuildBuiltinOnly(bundled);
@@ -274,12 +285,11 @@ int Application::run() {
     // 资源栈：只服务渲染，只含 assets/ 半边
     // 专用服务器不会走到这里，这是结构性保证
     // 本行以上没有任何东西需要它，而 dedicated_server_main.cpp 根本不链接 render/vulkan
-    const assets::LayeredResourceProvider resourceStack =
-        packManager.buildProvider(assets::PackStackKind::Resources, bundled);
+    packLibrary.buildStack(bundled);
 
     render::VulkanRenderer renderer{
         shaderRoot_,
-        resourceStack,
+        packLibrary,
         chunkStreamer,
         options,
         optionsPath,

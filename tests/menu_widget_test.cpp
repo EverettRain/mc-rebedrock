@@ -198,7 +198,17 @@ void testPageAssembly() {
     ctx.worldOpen = true;
     const ui::Page optsWorld = ui::buildPage(ui::PageId::Options, ctx, cb, rowLayout());
     assert(indexOfId(optsWorld, ui::WidgetId::Difficulty) != ui::kNoWidget);
-    assert(optsWorld.size() == optsNoWorld.size() + 1);
+    // ★ UI-6e ④：项数**恒定**，不再是"世界内多一项"。26.1 `OptionsScreen.init()`
+    //   那一格是 `inWorld ? Difficulty : Online` —— **二选一**，不是可有可无。
+    //   照抄这个结构之后行数恒定 6、正好装满内容区，版面不会因为开没开世界而变。
+    assert(optsWorld.size() == optsNoWorld.size());
+    // 世界外那一格是置灰的 Online（本作没有多人）
+    const std::size_t onlineIndex = indexOfId(optsNoWorld, ui::WidgetId::OnlineOptions);
+    assert(onlineIndex != ui::kNoWidget);
+    assert(!optsNoWorld[onlineIndex].enabled);
+    // 世界内它换成 Difficulty，而 Online 不再出现——两者占**同一格**
+    assert(indexOfId(optsWorld, ui::WidgetId::OnlineOptions) == ui::kNoWidget);
+    assert(indexOfId(optsWorld, ui::WidgetId::Difficulty) == onlineIndex);
 
     // Video settings carries its two sliders as Slider widgets, not buttons.
     const ui::Page video = ui::buildPage(ui::PageId::VideoSettings, ctx, cb, rowLayout());

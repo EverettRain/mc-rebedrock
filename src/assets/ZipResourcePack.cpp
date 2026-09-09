@@ -14,7 +14,7 @@ struct ZipResourcePackProvider::Impl {
     mz_zip_archive zip{};
     bool opened = false;
     std::unordered_set<std::string> entries; // pack-relative names present in the archive
-    std::vector<PackLanguage> languages;
+    PackMetadata metadata;
     std::mutex archiveMutex;
 
     explicit Impl(std::filesystem::path zipPath, std::filesystem::path cache)
@@ -39,9 +39,9 @@ struct ZipResourcePackProvider::Impl {
             mz_zip_reader_extract_file_to_heap(&zip, "pack.mcmeta", &metadataSize, 0);
         if (metadataBytes != nullptr) {
             try {
-                const std::string_view metadata{static_cast<const char*>(metadataBytes),
-                                                metadataSize};
-                languages = PackMetadata::parse(metadata).languages;
+                const std::string_view text{static_cast<const char*>(metadataBytes),
+                                            metadataSize};
+                this->metadata = PackMetadata::parse(text);
             } catch (const std::exception&) {
                 // Pack discovery owns malformed-metadata diagnostics. Keep the
                 // archive usable for resource lookup, with no catalog entries.
@@ -165,8 +165,10 @@ std::vector<ResourceLocation> ZipResourcePackProvider::list(std::string_view spa
 }
 
 std::vector<PackLanguage> ZipResourcePackProvider::languages() const {
-    return impl_->languages;
+    return impl_->metadata.languages;
 }
+
+const PackMetadata& ZipResourcePackProvider::metadata() const { return impl_->metadata; }
 
 std::filesystem::path ZipResourcePackProvider::resourceRoot() const { return impl_->cacheRoot; }
 

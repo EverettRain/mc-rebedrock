@@ -76,6 +76,11 @@ void testSuffixIsDataNotASpecialCase() {
         ++withSuffix;
         assert(row.fallback.find("...") == std::string_view::npos);
         assert(row.key.find("...") == std::string_view::npos);
+        // ★ suffix 只给**本项目自有**的键。vanilla 的译文自己就带省略号
+        //   （en_us.json：`options.online` = "Online..."），再加一个 suffix 会显示成
+        //   "Online......" —— UI-6e ④ 实测撞上了这个，六个按钮全是六个点。
+        //   fallback 不含省略号这一条**拦不住它**：错的是译文，不是兜底文本。
+        assert(row.key.find("rebedrock") != std::string_view::npos);
     }
     // 至少 AdvancedGraphics 那一个在用它，否则这条性质是空转的
     assert(withSuffix >= 1U);

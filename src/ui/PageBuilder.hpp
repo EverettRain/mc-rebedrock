@@ -48,6 +48,12 @@ struct MenuBuildContext final {
     // 渲染器在装配之前已经把滚动偏移与可见窗口折算进这两个值
     std::size_t worldRowCount = 0;
     std::size_t languageRowCount = 0;
+    // UI-6e ③：资源包两栏各有几行**可见**（窗口内），以及右栏当前选中的是第几行。
+    // 与绑定列表同构：装配只造窗口里的行，页面因此不会超出布局容量。
+    std::size_t availablePackRowCount = 0;
+    std::size_t selectedPackRowCount = 0;
+    // 右栏没有选中行时是 npos —— 调序按钮据此置灰。
+    std::size_t selectedPackRow = static_cast<std::size_t>(-1);
     // 某个动作那一行的**两段**文字：左边的动作名与右边按钮上的键名。
     //
     // ★ 一个回调返回两个字段，而不是两个回调各返回一段。
@@ -159,6 +165,12 @@ struct MenuCallbacks final {
     std::function<SliderBind(WidgetId)> floatSliderFor{};
     // 跳进"音乐与声音"那一屏。
     std::function<void()> openSoundSettings{};
+    // UI-6e ③：资源包。row 是**栏内**行号；两栏各自从 0 数起。
+    std::function<void()> openResourcePacks{};
+    std::function<void(std::size_t)> togglePackAvailable{};
+    std::function<void(std::size_t)> togglePackSelected{};
+    std::function<void()> movePackUp{};
+    std::function<void()> movePackDown{};
 };
 
 namespace detail {
@@ -433,23 +445,46 @@ inline void buildPageInto(Page& page, PageId id, const MenuBuildContext& ctx,
             addButton(page, ctx, WidgetId::DeleteCancel, cb.cancelDelete);
             break;
 
-        case PageId::Options:
-            // ★ UI-6e：主音量滑块**挪进了"音乐与声音"那一屏**，与 26.1 一致
-            //   （`OptionsScreen` 上没有音量滑块，只有一个跳转）。它在这里曾是唯一
-            //   能调音量的地方，所以那个跳转必须同时上线，否则音量就没人能改了。
-            if (ctx.worldOpen) {
-                addButton(page, ctx, WidgetId::Difficulty, cb.cycleDifficulty);
-            }
-            addButton(page, ctx, WidgetId::SoundSettings, cb.openSoundSettings);
-            addButton(page, ctx, WidgetId::Controls, cb.openControls);
-            addButton(page, ctx, WidgetId::VideoSettings, cb.openVideoSettings);
-            addButton(page, ctx, WidgetId::Language, cb.openLanguage);
-            // UI-6c：26.1 的 Options 上有 Accessibility Settings…（§7.11）。
-            // 字幕开关跟着搬过去了——它在 26.1 里本来就属于那一屏
-            // （`AccessibilityOptionsScreen.java:25` 的 `options.showSubtitles()`）。
-            addButton(page, ctx, WidgetId::Accessibility, cb.openAccessibility);
+        // UI-6e ④：26.1 `OptionsScreen.init()` 的形状——副页眉两项 + 2 列十个跳转。
+        //
+        // ★ 项数**恒定 12**：26.1 的第二项是 `inWorld ? Difficulty : Online`，
+        //   二选一而不是"世界内多一项"。本作照抄这个结构，于是行数恒定 6、
+        //   正好装满内容区，不用滚，也不会因为开没开世界而改变版面。
+        //   从前这里是 `if (worldOpen) addButton(Difficulty)`，那会让两种情形差一行。
+        case PageId::Options: {
+            detail::OptionCursor add{ctx, id};
+            add([&] { addIntSlider(page, ctx, cb, WidgetId::FieldOfView); });
+            add([&] {
+                if (ctx.worldOpen) {
+                    addButton(page, ctx, WidgetId::Difficulty, cb.cycleDifficulty);
+                } else {
+                    // 本作没有多人/在线，置灰（与 26.1 的 telemetry 不可用时同一做法）
+                    addButton(page, ctx, WidgetId::OnlineOptions, nullptr, /*enabled=*/false);
+                }
+            });
+            // 十个跳转，顺序照 26.1 的 GridLayout 装配序
+            add([&] {
+                addButton(page, ctx, WidgetId::SkinCustomization, nullptr, /*enabled=*/false);
+            });
+            add([&] { addButton(page, ctx, WidgetId::SoundSettings, cb.openSoundSettings); });
+            add([&] { addButton(page, ctx, WidgetId::VideoSettings, cb.openVideoSettings); });
+            add([&] { addButton(page, ctx, WidgetId::Controls, cb.openControls); });
+            add([&] { addButton(page, ctx, WidgetId::Language, cb.openLanguage); });
+            add([&] {
+                addButton(page, ctx, WidgetId::ChatSettings, nullptr, /*enabled=*/false);
+            });
+            // 资源包：后端（PackManager 生命周期 / 真实元数据 / 启用集合持久化与重载）
+            // 还在补，补齐前置灰。
+            add([&] { addButton(page, ctx, WidgetId::ResourcePacks, cb.openResourcePacks); });
+            // UI-6c：字幕开关搬去了 Accessibility——它在 26.1 里本来就属于那一屏。
+            add([&] { addButton(page, ctx, WidgetId::Accessibility, cb.openAccessibility); });
+            add([&] { addButton(page, ctx, WidgetId::Telemetry, nullptr, /*enabled=*/false); });
+            add([&] {
+                addButton(page, ctx, WidgetId::CreditsAndAttribution, nullptr, /*enabled=*/false);
+            });
             addButton(page, ctx, WidgetId::Done, cb.doneOptions);
             break;
+        }
 
         // UI-6c：26.1 §7.11 辅助功能设置。这一轮只放两项——View Bobbing（从 Controls
         // 挪来，偏差 D2）与字幕开关（从 Options 挪来）。26.1 那一屏还有十几项，
@@ -477,6 +512,39 @@ inline void buildPageInto(Page& page, PageId id, const MenuBuildContext& ctx,
                 addButton(page, ctx, WidgetId::MusicFrequency, nullptr, /*enabled=*/false);
             });
             add([&] { addButton(page, ctx, WidgetId::MusicToast, nullptr, /*enabled=*/false); });
+            addButton(page, ctx, WidgetId::Done, cb.doneOptions);
+            break;
+        }
+
+        // UI-6e ③：26.1 §7.12 `PackSelectionScreen`——左栏"可用"、右栏"已启用"，
+        // 一行一个包，点一下转移到对面。
+        //
+        // ★ 两栏是**两张互相独立的列表**（各自的条目数与滚动位置），不是一张双列表。
+        //   装配顺序是"先左栏所有行、再右栏所有行"，而布局靠 **debugId** 分辨
+        //   一行属于哪一栏——不是靠"第几个之后算右栏"那种旁路。
+        case PageId::ResourcePacks: {
+            for (std::size_t row = 0; row < ctx.availablePackRowCount; ++row) {
+                addListRow(page, WidgetId::PackRowAvailable, row, [cb, row]() {
+                    if (cb.togglePackAvailable) {
+                        cb.togglePackAvailable(row);
+                    }
+                });
+            }
+            for (std::size_t row = 0; row < ctx.selectedPackRowCount; ++row) {
+                addListRow(page, WidgetId::PackRowSelected, row, [cb, row]() {
+                    if (cb.togglePackSelected) {
+                        cb.togglePackSelected(row);
+                    }
+                });
+            }
+            // 页脚。★ 26.1 把上下箭头画在**行内**；本作放页脚、作用于右栏选中的那一行
+            //   （已登记偏差）。没选中时置灰——否则"按了没反应"又是一个静默。
+            const bool hasSelection =
+                ctx.selectedPackRow != static_cast<std::size_t>(-1);
+            addButton(page, ctx, WidgetId::PackMoveUp, cb.movePackUp, hasSelection);
+            addButton(page, ctx, WidgetId::PackMoveDown, cb.movePackDown, hasSelection);
+            // 本作没有"用默认程序打开路径"这条能力，置灰。
+            addButton(page, ctx, WidgetId::PackOpenFolder, nullptr, /*enabled=*/false);
             addButton(page, ctx, WidgetId::Done, cb.doneOptions);
             break;
         }

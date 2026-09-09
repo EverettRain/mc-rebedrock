@@ -50,7 +50,7 @@ void buildAndLayoutPage(ui::PageId page, bool worldOpen, float fbW, float fbH, i
     ui::Page built;
     ui::buildPageInto(built, page, ctx, cb);
     // 布局绝不能抛：从前它会，因为按钮数是另一张表说的，与装配对不上就越界。
-    ui::layoutPageInto(built, page, layout, fbW, ctx.keyBindFirstIndex);
+    ui::layoutPageInto(built, page, layout, ctx.keyBindFirstIndex);
 
     // 每个可交互控件都要拿到一个非退化的矩形。
     for (const auto& widget : built) {
@@ -95,7 +95,7 @@ void testEveryPageButtonBudget() {
             ui::MenuCallbacks cb;
             ui::Page built;
             ui::buildPageInto(built, page, ctx, cb);
-            ui::layoutPageInto(built, page, layout, fbW, ctx.keyBindFirstIndex);
+            ui::layoutPageInto(built, page, layout, ctx.keyBindFirstIndex);
 
             // 按钮 + 绑定行控件 = 全部控件，一个都不多一个都不少。
             std::size_t keyWidgets = 0;
@@ -118,7 +118,7 @@ void testEveryPageButtonBudget() {
                                    ui::MenuBuildContext& ctx, const ui::MenuCallbacks& cb) {
     ui::Page built;
     ui::buildPageInto(built, page, ctx, cb);
-    ui::layoutPageInto(built, page, layout, fbW, ctx.keyBindFirstIndex);
+    ui::layoutPageInto(built, page, layout, ctx.keyBindFirstIndex);
     return built;
 }
 
@@ -253,13 +253,13 @@ void testControlsRowsInMiddleBandAndScroll() {
     const std::size_t total = input::keyBindRows().size();
     assert(window < total);  // this canvas genuinely scrolls
 
-    const ui::UiRect box = ui::keyBindsListBox(layout, fbW);
+    const ui::UiRect box = ui::keyBindsListBox(layout);
     // 页脚两个按钮，横排——绑定列表就摆在它上方。
     const ui::UiRect band = layout.bottomMenuButton(0U, 2U, 2U);
     // Every visible row sits inside the middle band: below the box top, and its
     // bottom stays above the bottom button band.
     for (std::size_t i = 0; i < window; ++i) {
-        const ui::UiRect row = ui::keyBindsRow(i, layout, fbW);
+        const ui::UiRect row = ui::keyBindsRow(i, layout);
         assert(row.y >= box.y - 0.01F);
         assert(row.y + row.height <= band.y + 0.01F);
         assert(row.width > 0.0F && row.height > 0.0F);
@@ -268,7 +268,7 @@ void testControlsRowsInMiddleBandAndScroll() {
     // Scrolling by one advances the first visible action, and the row at visible
     // index 0 keeps the SAME screen rect (the window slides over the data, the
     // slots stay put) — while the ACTION shown there is the next one.
-    const ui::UiRect firstSlot = ui::keyBindsRow(0U, layout, fbW);
+    const ui::UiRect firstSlot = ui::keyBindsRow(0U, layout);
     // The rect for visible slot 0 is offset-independent (it is the top slot).
     // What changes is which action maps to it, which the page builder handles via
     // keyBindFirstIndex: build at offset 0 and offset 1 and compare row 0's action.
@@ -306,9 +306,9 @@ void testControlsRowsInMiddleBandAndScroll() {
     const std::size_t firstBindingRow =
         ui::keyBindWidgetVisibleRow(0U, 0U, ui::kKeyBindWidgetsPerRow);
     assert(firstBindingRow == 1U);
-    const ui::UiRect nameSlot = ui::keyBindsNameCell(firstBindingRow, layout, fbW);
-    const ui::UiRect changeSlot = ui::keyBindsChangeCell(firstBindingRow, layout, fbW);
-    const ui::UiRect bindingRowRect = ui::keyBindsRow(firstBindingRow, layout, fbW);
+    const ui::UiRect nameSlot = ui::keyBindsNameCell(firstBindingRow, layout);
+    const ui::UiRect changeSlot = ui::keyBindsChangeCell(firstBindingRow, layout);
+    const ui::UiRect bindingRowRect = ui::keyBindsRow(firstBindingRow, layout);
     assert(p0[0].rect.y == nameSlot.y);
     assert(p0[1].rect.y == changeSlot.y);
     // 两个格子都落在它们那一行之内：漂出去仍然像个列表，只是对不齐，别处没人会发现。
@@ -324,7 +324,7 @@ void testControlsRowsInMiddleBandAndScroll() {
     assert(p0[0].label == std::string{input::actionDisplayName(rows[0])});
     assert(p1[0].label == std::string{input::actionDisplayName(rows[0])});
     assert(ui::keyBindWidgetVisibleRow(1U, 0U, ui::kKeyBindWidgetsPerRow) == 0U);
-    assert(p1[0].rect.y == ui::keyBindsNameCell(0U, layout, fbW).y);
+    assert(p1[0].rect.y == ui::keyBindsNameCell(0U, layout).y);
     static_cast<void>(firstSlot);
 }
 

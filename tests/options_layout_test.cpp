@@ -18,6 +18,7 @@
 #include "ui/PageBuilder.hpp"
 #include "ui/PageLayoutKind.hpp"
 #include "ui/PageTitles.hpp"
+#include "ui/TextMetrics.hpp"
 #include "ui/ListRow.hpp"
 #include "ui/CreateWorldLayout.hpp"
 #include "ui/DualColumnList.hpp"
@@ -277,7 +278,7 @@ void testControlsHubLayout() {
     const mc::ui::MenuCallbacks cb;
     mc::ui::Page page;
     mc::ui::buildPageInto(page, mc::ui::PageId::Controls, ctx, cb);
-    mc::ui::layoutPageInto(page, mc::ui::PageId::Controls, layout, 1280.0F);
+    mc::ui::layoutPageInto(page, mc::ui::PageId::Controls, layout);
     // 两个跳转 + 七个设置项 + Done。★ 这个 10 是数出来的，不是另一张表说的。
     const std::size_t count = mc::ui::countPageButtons(page);
     CHECK(count == 10U);
@@ -549,7 +550,7 @@ void testVideoSettingsWindowedLayout() {
         const mc::ui::MenuCallbacks cb;
         mc::ui::Page built;
         mc::ui::buildPageInto(built, page, ctx, cb);
-        mc::ui::layoutPageInto(built, page, layout, 1280.0F, 0U, ctx.optionsWindow.firstRow);
+        mc::ui::layoutPageInto(built, page, layout, 0U, ctx.optionsWindow.firstRow);
         return built;
     };
 
@@ -678,7 +679,12 @@ void testWhichPagesActuallyScroll() {
     CHECK(mc::ui::optionsRowCountOf(mc::ui::PageId::VideoSettings) > rows);
     CHECK(mc::ui::optionsMaximumFirstRow(smallest, mc::ui::PageId::VideoSettings) > 0U);
     // 非三段式的页面没有窗口：rowCount == 0 就是"不滚，全装配"。
-    CHECK(mc::ui::optionsWindowFor(smallest, mc::ui::PageId::Options, 5U).rowCount == 0U);
+    // ★ 举例的页面要挑**真的不是三段式**的。UI-6e ④ 把 Options 主页也改成了
+    //   三段式双列（26.1 的 2 列 GridLayout），所以它不再是这条的例子——
+    //   拿它举例会让这条断言变成"检查一个已经不成立的前提"。
+    CHECK(mc::ui::pageLayoutKind(mc::ui::PageId::Accessibility) !=
+          mc::ui::PageLayoutKind::HeaderFooterList);
+    CHECK(mc::ui::optionsWindowFor(smallest, mc::ui::PageId::Accessibility, 5U).rowCount == 0U);
     CHECK(mc::ui::optionsWindowFor(smallest, mc::ui::PageId::Title, 5U).rowCount == 0U);
 }
 
@@ -1092,9 +1098,26 @@ void testDualColumnLists() {
         mc::ui::headerAndFooterLayout(layout.logicalWidth(), layout.logicalHeight());
     const auto lists = mc::ui::dualColumnLists(frame.contentBox(), layout.logicalWidth());
 
-    // 两栏等宽，且都是 26.1 的 200
-    CHECK(lists.available.width == mc::ui::kTransferListWidth);
-    CHECK(lists.selected.width == mc::ui::kTransferListWidth);
+    // ★ 两栏等宽，但**宽度随画布收缩**。26.1 把 200 写死，而两栏加中缝要 430 逻辑像素，
+    //   GUI 缩放只保证画布不小于 320 —— 1280x720 @ scale 3 的画布是 427，已经不够：
+    //   照 200 算左栏 x 会是 `427/2 - 15 - 200` = **-2**，右栏右缘 428 也出界。
+    //   实测就是这么画到屏幕外的。
+    CHECK(lists.available.width == lists.selected.width);
+    CHECK(lists.available.width <= mc::ui::kTransferListWidth);
+    CHECK(mc::ui::transferColumnWidth(427) < mc::ui::kTransferListWidth);   // 427 装不下 200
+    CHECK(mc::ui::transferColumnWidth(640) == mc::ui::kTransferListWidth);  // 够宽就用 200
+
+    // ★★ 任何合法画布上两栏都不许出界。这一条是上面那个缺陷的护栏。
+    for (int width : {320, 427, 480, 640, 854, 1280}) {
+        const mc::ui::UiRect box{0.0F, 33.0F, static_cast<float>(width), 174.0F};
+        const auto solved = mc::ui::dualColumnLists(box, width);
+        check(solved.available.x >= 0, "the left column escaped the canvas", __LINE__);
+        check(solved.selected.right() <= width, "the right column escaped the canvas", __LINE__);
+        check(solved.available.right() < solved.selected.x,
+              "the two columns must not overlap", __LINE__);
+        check(solved.available.width == solved.selected.width,
+              "the two columns stay equal width", __LINE__);
+    }
     // ★ 相对画布中线对称：左栏右缘与右栏左缘到中线的距离相等，都是 15
     const int centre = layout.logicalWidth() / 2;
     CHECK(centre - lists.available.right() == mc::ui::kTransferCentreGap);
@@ -1108,7 +1131,7 @@ void testDualColumnLists() {
     CHECK(lists.available.rowHeight == 36);
     CHECK(lists.available.rowHeight != mc::ui::kOptionsRowHeight);
     // 行宽 = 列宽 - 4
-    CHECK(lists.available.rowWidth == mc::ui::kTransferListWidth - mc::ui::kTransferRowInset);
+    CHECK(lists.available.rowWidth == lists.available.width - mc::ui::kTransferRowInset);
 
     // 两栏共用内容区的 y 与高度
     CHECK(lists.available.y == lists.selected.y);
@@ -1166,7 +1189,7 @@ void testNoWidgetEscapesTheCanvas() {
             const mc::ui::MenuCallbacks cb;
             mc::ui::Page built;
             mc::ui::buildPageInto(built, page, ctx, cb);
-            mc::ui::layoutPageInto(built, page, layout, canvas.width, 0U,
+            mc::ui::layoutPageInto(built, page, layout, 0U,
                                    ctx.optionsWindow.firstRow);
             // 夹具自证：这些页面必须真的装配出了控件，否则上面那个循环是空的，
             // 整条测试就成了摆设。
@@ -1241,7 +1264,7 @@ void testCreateWorldForm() {
         const mc::ui::MenuCallbacks cb;
         mc::ui::Page page;
         mc::ui::buildPageInto(page, mc::ui::PageId::CreateWorld, ctx, cb);
-        mc::ui::layoutPageInto(page, mc::ui::PageId::CreateWorld, layout, 1280.0F);
+        mc::ui::layoutPageInto(page, mc::ui::PageId::CreateWorld, layout);
         const std::size_t count = mc::ui::countPageButtons(page);
         CHECK(count >= 5U);
 
@@ -1327,7 +1350,7 @@ void testSoundSettingsPage() {
     const mc::ui::MenuCallbacks cb;
     mc::ui::Page built;
     mc::ui::buildPageInto(built, page, ctx, cb);
-    mc::ui::layoutPageInto(built, page, layout, 1280.0F, 0U, ctx.optionsWindow.firstRow);
+    mc::ui::layoutPageInto(built, page, layout, 0U, ctx.optionsWindow.firstRow);
 
     const auto find = [&](mc::ui::WidgetId id) -> const mc::ui::Widget* {
         for (const auto& widget : built) {
@@ -1360,7 +1383,7 @@ void testSoundSettingsPage() {
         layout, page, mc::ui::optionsMaximumFirstRow(layout, page));
     mc::ui::Page bottom;
     mc::ui::buildPageInto(bottom, page, bottomCtx, cb);
-    mc::ui::layoutPageInto(bottom, page, layout, 1280.0F, 0U, bottomCtx.optionsWindow.firstRow);
+    mc::ui::layoutPageInto(bottom, page, layout, 0U, bottomCtx.optionsWindow.firstRow);
     const auto findBottom = [&](mc::ui::WidgetId id) -> const mc::ui::Widget* {
         for (const auto& widget : bottom) {
             if (static_cast<mc::ui::WidgetId>(widget.debugId) == id) {
@@ -1494,6 +1517,151 @@ void testPageDispatchHasNoDefault() {
     check(found >= 2U, "expected at least two PageId dispatch switches", __LINE__);
 }
 
+// --- 25. 文字截断（UI-6e ③，D17 的下界）------------------------------------
+//
+// 26.1 对超宽标签是 scissor 剪裁 + 来回滚动；在那之前，截断至少保证文字不画出格子。
+// 资源包描述曾经一路画到画布右边缘之外。
+void testTruncateToWidth() {
+    // 每个 ASCII 字符宽 6，省略号 "..." 宽 18
+    const auto measure = [](std::string_view text) {
+        return static_cast<float>(text.size()) * 6.0F;
+    };
+    using mc::ui::truncateToWidth;
+
+    // 放得下就原样返回，一个字符都不动
+    CHECK(truncateToWidth("abc", 100.0F, measure) == "abc");
+    CHECK(truncateToWidth("", 100.0F, measure).empty());
+    // 放不下就截断加省略号，且**结果必须真的放得下**
+    const std::string cut = truncateToWidth("abcdefghij", 48.0F, measure);
+    CHECK(cut != "abcdefghij");
+    CHECK(cut.size() >= 3U);
+    CHECK(cut.substr(cut.size() - 3U) == "...");
+    check(measure(cut) <= 48.0F, "the truncated text must actually fit", __LINE__);
+    // 宽度为 0 / 负：给空串，不能返回一个比格子宽的 "..."
+    CHECK(truncateToWidth("abc", 0.0F, measure).empty());
+    CHECK(truncateToWidth("abc", -5.0F, measure).empty());
+    // 连省略号都放不下
+    CHECK(truncateToWidth("abcdef", 10.0F, measure).empty());
+
+    // ★ 按**字节**退是不对的：UTF-8 多字节码点会被切成半个字符，画出来是乱码方块。
+    //   "中文测试" 每字 3 字节；截断结果的字节数必须落在码点边界上。
+    const std::string cjk = truncateToWidth("中文测试内容", 30.0F, measure);
+    if (cjk.size() > 3U) {
+        const std::string body = cjk.substr(0, cjk.size() - 3U);   // 去掉 "..."
+        // 每个 UTF-8 首字节不能是续字节（10xxxxxx）
+        check((static_cast<unsigned char>(body.back()) & 0xC0U) != 0x80U ||
+                  body.empty(),
+              "truncation must land on a UTF-8 boundary", __LINE__);
+        // 更强：整段必须是合法 UTF-8（每个多字节序列完整）
+        std::size_t i = 0;
+        bool valid = true;
+        while (i < body.size()) {
+            const auto lead = static_cast<unsigned char>(body[i]);
+            const std::size_t len = lead < 0x80U ? 1U : (lead < 0xE0U ? 2U : (lead < 0xF0U ? 3U : 4U));
+            if (i + len > body.size()) {
+                valid = false;
+                break;
+            }
+            i += len;
+        }
+        check(valid, "truncation must not cut a code point in half", __LINE__);
+    }
+}
+
+// --- 26. 三段式的判定只有一处（UI-6e ③）--------------------------------------
+//
+// ★ 绘制侧要据此决定标题画在页眉里还是"第一个按钮上方 30px"，而这份判断
+//   **已经说过两次假话**：先是手写 `page == KeyBinds || page == Controls`
+//   （UI-6d 加三段式视频设置后标题压在列表第一行上），收口成
+//   `pageLayoutKind(page) == HeaderFooterList` 之后，UI-6e ③ 加了第三种三段式版式
+//   （双栏），标题又掉到画面正中。两次都是"枚举了当时的取值"。
+//
+//   ★ 第一轮 sabotage（把 DualColumn 从 usesHeaderAndFooter 里挪走）**没被抓住**：
+//     标题位置住在渲染器里，无头测试够不着。补的就是下面这些。
+void testHeaderAndFooterClassification() {
+    using K = mc::ui::PageLayoutKind;
+    // 三种三段式全都要认
+    CHECK(mc::ui::usesHeaderAndFooter(K::HeaderFooterList));
+    CHECK(mc::ui::usesHeaderAndFooter(K::HeaderFooterForm));
+    CHECK(mc::ui::usesHeaderAndFooter(K::HeaderFooterDualColumn));
+    // 其余都不是
+    CHECK(!mc::ui::usesHeaderAndFooter(K::CentredColumn));
+    CHECK(!mc::ui::usesHeaderAndFooter(K::BottomBand));
+    CHECK(!mc::ui::usesHeaderAndFooter(K::BottomBandTwoColumn));
+    CHECK(!mc::ui::usesHeaderAndFooter(K::VideoGrid));
+    CHECK(!mc::ui::usesHeaderAndFooter(K::TitleScreen));
+
+    // ★ 逐页核对：凡是走三段式版式的页面，它的**页脚按钮**必须落在页脚带里。
+    //   这一条把"版式分类"与"实际几何"绑在一起——分类说是三段式而几何不是，
+    //   或者反过来，都会红。
+    const mc::ui::HudLayout layout{1280.0F, 720.0F, 3};
+    const auto frame =
+        mc::ui::headerAndFooterLayout(layout.logicalWidth(), layout.logicalHeight());
+    const float footerTop = static_cast<float>(frame.footerBox().y) * 3.0F;
+    std::size_t threeBandPages = 0;
+    for (std::size_t raw = 0; raw < static_cast<std::size_t>(mc::ui::PageId::Count); ++raw) {
+        const auto page = static_cast<mc::ui::PageId>(raw);
+        if (!mc::ui::usesHeaderAndFooter(mc::ui::pageLayoutKind(page))) {
+            continue;
+        }
+        ++threeBandPages;
+        mc::ui::MenuBuildContext ctx;
+        ctx.optionsWindow = mc::ui::optionsWindowFor(layout, page, 0U);
+        const mc::ui::MenuCallbacks cb;
+        mc::ui::Page built;
+        mc::ui::buildPageInto(built, page, ctx, cb);
+        mc::ui::layoutPageInto(built, page, layout, 0U, ctx.optionsWindow.firstRow);
+        const std::size_t count = mc::ui::countPageButtons(built);
+        if (count == 0U) {
+            continue;
+        }
+        // 最后一个按钮（Done）必须在页脚带里
+        const auto done = built.back().rect;
+        check(done.y >= footerTop - 0.5F,
+              "a three-band page must put its last button in the footer", __LINE__);
+    }
+    // 至少覆盖到几页，否则上面那个循环是空转的
+    check(threeBandPages >= 5U, "expected several three-band pages", __LINE__);
+}
+
+// --- 27. 设置列表的滚动条拖拽（UI-6e ⑤ / D18）--------------------------------
+//
+// ★ 分母必须是**总行数**，不是可见行数。用可见行数的症状是"拖到底只滚了一小截"，
+//   而滑块画在哪儿用的是另一个函数——两者不一致时滑块会跑到光标之外。
+//   D18 之前设置列表根本没有拖拽（只有滚轮），所以这条路第一次有断言。
+void testOptionsScrollbarDrag() {
+    const mc::ui::HudLayout layout{1280.0F, 720.0F, 3};
+    const auto page = mc::ui::PageId::VideoSettings;
+    const std::size_t maximum = mc::ui::optionsMaximumFirstRow(layout, page);
+    CHECK(maximum > 0U);   // 这一屏确实滚得动，否则下面是空转
+
+    const auto track = mc::ui::optionsScrollbarTrack(layout);
+    // 光标在轨道顶端 → 第 0 行
+    CHECK(mc::ui::optionsScrollIndexFromCursor(layout, page, track.y) == 0U);
+    // 光标在轨道底端 → **最后一屏**，不是别的数
+    check(mc::ui::optionsScrollIndexFromCursor(layout, page, track.y + track.height) == maximum,
+          "dragging to the bottom must land on the last screenful", __LINE__);
+    // 越过两端要夹住
+    CHECK(mc::ui::optionsScrollIndexFromCursor(layout, page, track.y - 500.0F) == 0U);
+    CHECK(mc::ui::optionsScrollIndexFromCursor(layout, page, track.y + 5000.0F) == maximum);
+    // 单调不减：光标越往下，首行不会往回退
+    std::size_t previous = 0;
+    for (float y = track.y; y <= track.y + track.height; y += 4.0F) {
+        const std::size_t row = mc::ui::optionsScrollIndexFromCursor(layout, page, y);
+        check(row >= previous, "dragging down must not scroll back up", __LINE__);
+        check(row <= maximum, "dragging must not scroll past the end", __LINE__);
+        previous = row;
+    }
+
+    // 滑块位置与拖拽换算互为逆：把滑块拖到第 k 行，再从滑块中心读回来还是第 k 行。
+    for (std::size_t k = 0; k <= maximum; ++k) {
+        const auto thumb = mc::ui::optionsScrollbarThumb(layout, page, k);
+        const float centre = thumb.y + thumb.height * 0.5F;
+        check(mc::ui::optionsScrollIndexFromCursor(layout, page, centre) == k,
+              "the thumb position and the drag mapping must be inverses", __LINE__);
+    }
+}
+
 } // namespace
 
 int main() {
@@ -1522,6 +1690,9 @@ int main() {
     testSoundSettingsPage();
     testRuntimeLabelsAreActuallyComputed();
     testPageDispatchHasNoDefault();
+    testTruncateToWidth();
+    testHeaderAndFooterClassification();
+    testOptionsScrollbarDrag();
     if (failures != 0) {
         std::printf("options_layout_test: %d checks failed\n", failures);
         return 1;
