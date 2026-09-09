@@ -17,6 +17,7 @@
 #include "render/BlockPreviewCamera.hpp"
 #include "render/UiCaptureFixture.hpp"
 #include "gameplay/SnapshotSlots.hpp"
+#include "ui/ContainerInteraction.hpp"
 #include "ui/ContainerPage.hpp"
 #include "net/LoopbackTransport.hpp"
 
@@ -4673,136 +4674,84 @@ struct VulkanRenderer::Impl final : public gameplay::SimulationHost {
     // 按下与"结束拖拽的那次松开"共用的槽位与创造页命中测试
     // 先解析光标位置，再对它下面的东西动作
     // 那可能是容器槽、玩家背包槽、创造页签，或者是空白处——那就把光标上的物品堆丢出去
+    // A2：一次点击 → 一条命令。
+    //
+    // ★ 从前这里是一百来行：自己抄一遍 glfwGetCursorPos、自己造一个 HudLayout、
+    //   按屏分支逐个 contains 测三条附魔选项条、十一个页签、滚动条、删除框、
+    //   45 个目录格，最后才落到槽位表。那一百行**一条无头断言都没有**——它住在一个
+    //   链接 Vulkan 与 GLFW 的翻译单元里，测试进不去，而它决定的是"点一下会发生什么"。
+    //
+    //   现在决策是 `ui::containerClickAction` 那个纯函数（有 container_interaction
+    //   的断言钉着），这里只剩"把意图翻译成命令"——不带 `default` 的 switch，
+    //   加一种意图时编译器点名。
+    //
+    // ★ vanilla 里背包与容器的槽位是**静音**的，只有真正的按钮控件才播
+    //   ui.button.click；拿起或移动物品因此没有点击声。这条仍然成立：这里一声不响。
     void dispatchInventoryClick(gameplay::InventoryMouseButton button, bool shiftHeld) {
-        double cursorX = 0.0;
-        double cursorY = 0.0;
-        int windowWidth = 0;
-        int windowHeight = 0;
         int framebufferWidth = 0;
         int framebufferHeight = 0;
-        glfwGetCursorPos(window, &cursorX, &cursorY);
-        glfwGetWindowSize(window, &windowWidth, &windowHeight);
         glfwGetFramebufferSize(window, &framebufferWidth, &framebufferHeight);
-        if (windowWidth <= 0 || windowHeight <= 0) {
+        if (framebufferWidth <= 0 || framebufferHeight <= 0) {
             return;
         }
-        const auto framebufferCursor = ui::windowToFramebuffer(
-            cursorX, cursorY, windowWidth, windowHeight, framebufferWidth, framebufferHeight);
-        const ui::HudLayout layout{static_cast<float>(framebufferWidth),
-                                   static_cast<float>(framebufferHeight),
-                                   menuSystem.guiScaleSetting, menuSystem.forceUnicodeFont};
-        // vanilla 里背包与容器的槽位是静音的，只有真正的按钮控件才播 ui.button.click
-        // 拿起或移动物品因此没有点击声，这一族界面里只有上面那些菜单按钮出声
-        //
-        // ENCH-2：附魔台的三条选项条是真按钮而不是槽位，所以先于槽位表命中测试
-        // 客户端只报"按了第几条"，能不能买、扣多少级和青金石、上什么附魔全在服务端判
-        if (clientMirror_.world().openContainerScreen == ContainerScreen::EnchantingTable) {
-            for (std::size_t option = 0; option < 3U; ++option) {
-                if (!layout.enchantingOption(option).contains(framebufferCursor.x,
-                                                              framebufferCursor.y)) {
-                    continue;
-                }
-                gameplay::ClickEnchantOption click;
-                click.optionIndex = static_cast<int>(option);
-                runtime.enqueueClientCommand(std::move(click));
-                return;
-            }
-        }
-        // 只有一张槽位表，按槽位自身的类型路由
-        const auto slots = gameplay::ScreenHandler::buildSlotLayout(screenContext(), layout);
-        if (const auto* slot = gameplay::ScreenHandler::slotAt(slots, framebufferCursor);
-            slot != nullptr) {
-            // 点击被命令化，在服务端 tick 上经交互执行
-            // 由交互解析出实际存储并按槽位类型路由
+        const auto layout = currentHudLayout();
+        const auto action = ui::containerClickAction(containerPage(layout),
+                                                     currentFramebufferCursor(), button,
+                                                     containerViewState());
+        switch (action.kind) {
+        case ui::ContainerActionKind::None:
+            return;
+        case ui::ContainerActionKind::ClickSlot: {
+            // 点击被命令化，在服务端 tick 上经交互执行；由交互解析出实际存储并按槽位
+            // 类型路由。服务端看不到客户端当前选的创造页签，因此由点击自己带上：
+            // 在物品分类页签上 Shift 点击等于丢进无限目录里销毁，在背包页签上则是
+            // 普通的移动——与 screenContext() 里的 creativeInventoryTab 同一个值。
             gameplay::ClickSlot click;
-            click.kind = slot->kind;
-            click.slotIndex = slot->index;
+            click.kind = action.slotKind;
+            click.slotIndex = action.slotIndex;
             click.button = static_cast<int>(button);
             click.shiftHeld = shiftHeld;
-            // 服务端看不到客户端当前选的创造页签，因此由点击自己带上
-            // 在物品分类页签上 Shift 点击等于丢进无限目录里销毁
-            // 在背包页签上则是普通的移动，行为与 screenContext() 里的 creativeInventoryTab 一致
             click.creativeInventoryTab = menuSystem.creativeTab == ui::CreativeTab::Inventory;
             runtime.enqueueClientCommand(std::move(click));
             return;
         }
-        if (clientMirror_.world().openContainerScreen !=
-            ContainerScreen::PlayerInventory) {
-            // 容器打开时点在所有槽位之外会把手上的物品堆扔到地上
-            // 但必须点在面板本身之外才算
-            if (!layout.inventoryPanel().contains(framebufferCursor.x, framebufferCursor.y)) {
-                gameplay::DropCursor drop;
-                drop.lookDirection = camera.direction();
-                runtime.enqueueClientCommand(std::move(drop));
-            }
-            return;
-        }
-        if (uiFrameData_.gameMode == gameplay::GameMode::Creative) {
-            if (button == gameplay::InventoryMouseButton::Left) {
-                for (std::size_t tabIndex = 0; tabIndex < kCreativeTabCount; ++tabIndex) {
-                    if (layout.creativeTab(tabIndex).contains(framebufferCursor.x,
-                                                              framebufferCursor.y)) {
-                        setCreativeTab(static_cast<ui::CreativeTab>(tabIndex));
-                        return;
-                    }
-                }
-                if (layout.creativeScrollbarTrack().contains(framebufferCursor.x,
-                                                             framebufferCursor.y) &&
-                    creativeMaximumScrollRow() > 0U) {
-                    creativeScrollbarDragging = true;
-                    updateCreativeScrollFromCursor();
-                    return;
-                }
-            }
-            if (menuSystem.creativeTab == ui::CreativeTab::Inventory) {
-                // 36 个背包格与快捷栏都是真实的玩家背包槽，由上面的槽位命中测试路由
-                // 留到这里的只剩删除框和面板之外的空白
-                if (layout.creativeDeleteSlot().contains(framebufferCursor.x,
-                                                         framebufferCursor.y)) {
-                    runtime.enqueueClientCommand(gameplay::ClearCursor{});
-                    return;
-                }
-                if (!layout.creativePanel().contains(framebufferCursor.x, framebufferCursor.y)) {
-                    gameplay::DropCursor drop;
-                    drop.lookDirection = camera.direction();
-                    runtime.enqueueClientCommand(std::move(drop));
-                }
-                return;
-            }
+        case ui::ContainerActionKind::ClickCreativeItem: {
             const auto catalog = activeCreativeCatalog();
-            const std::size_t firstCatalogIndex = menuSystem.creativeScrollRow * 9U;
-            for (std::size_t visibleIndex = 0; visibleIndex < ui::HudLayout::kCreativeVisibleSlots;
-                 ++visibleIndex) {
-                const std::size_t catalogIndex = firstCatalogIndex + visibleIndex;
-                if (layout.creativeSlot(visibleIndex)
-                        .contains(framebufferCursor.x, framebufferCursor.y)) {
-                    if (catalogIndex >= catalog.size()) {
-                        // 创造目录里的空格子是删除目标
-                        // 只有点在面板之外才会生成掉落物实体，与 vanilla 的容器一致
-                        runtime.enqueueClientCommand(gameplay::ClearCursor{});
-                        return;
-                    }
-                    gameplay::ClickCreativeItem click;
-                    click.catalogStack = catalog[catalogIndex];
-                    click.button = button;
-                    click.shiftHeld = shiftHeld;
-                    runtime.enqueueClientCommand(std::move(click));
-                    return;
-                }
+            const std::size_t catalogIndex = menuSystem.creativeScrollRow * 9U + action.index;
+            if (catalogIndex >= catalog.size()) {
+                return;   // 决策已经把空格判成 ClearCursor；这里只是不越界读
             }
-            // 快捷栏由上面的槽位命中测试路由，只有面板之外的空白才会把光标物品堆扔出去
-            if (!layout.creativePanel().contains(framebufferCursor.x, framebufferCursor.y)) {
-                gameplay::DropCursor drop;
-                drop.lookDirection = camera.direction();
-                runtime.enqueueClientCommand(std::move(drop));
-            }
+            gameplay::ClickCreativeItem click;
+            click.catalogStack = catalog[catalogIndex];
+            click.button = button;
+            click.shiftHeld = shiftHeld;
+            runtime.enqueueClientCommand(std::move(click));
             return;
         }
-        // 生存模式下 36 个背包格由槽位命中测试路由，点在面板之外则扔出光标物品堆
-        if (!layout.inventoryPanel().contains(framebufferCursor.x, framebufferCursor.y)) {
+        case ui::ContainerActionKind::ClearCursor:
+            runtime.enqueueClientCommand(gameplay::ClearCursor{});
+            return;
+        case ui::ContainerActionKind::DropCursor: {
             gameplay::DropCursor drop;
             drop.lookDirection = camera.direction();
             runtime.enqueueClientCommand(std::move(drop));
+            return;
+        }
+        case ui::ContainerActionKind::ClickEnchantOption: {
+            // ENCH-2：客户端只报"按了第几条"，能不能买、扣多少级和青金石、上什么附魔
+            // 全在服务端判。
+            gameplay::ClickEnchantOption click;
+            click.optionIndex = static_cast<int>(action.index);
+            runtime.enqueueClientCommand(std::move(click));
+            return;
+        }
+        case ui::ContainerActionKind::SetCreativeTab:
+            setCreativeTab(static_cast<ui::CreativeTab>(action.index));
+            return;
+        case ui::ContainerActionKind::BeginScrollbarDrag:
+            creativeScrollbarDragging = true;
+            updateCreativeScrollFromCursor();
+            return;
         }
     }
 
@@ -4838,38 +4787,18 @@ struct VulkanRenderer::Impl final : public gameplay::SimulationHost {
     // 真实物品槽被有意排除在外
     // 这样快速合成拖拽与双击收拢在两种游戏模式下、以及创造模式打开的容器里都走同一套状态机
     [[nodiscard]] bool immediateCreativeControlUnderCursor() const {
-        if (uiFrameData_.gameMode != gameplay::GameMode::Creative ||
-            clientMirror_.world().openContainerScreen !=
-                ContainerScreen::PlayerInventory) {
-            return false;
-        }
         int framebufferWidth = 0;
         int framebufferHeight = 0;
         glfwGetFramebufferSize(window, &framebufferWidth, &framebufferHeight);
         if (framebufferWidth <= 0 || framebufferHeight <= 0) {
             return false;
         }
-        const ui::HudLayout layout{static_cast<float>(framebufferWidth),
-                                   static_cast<float>(framebufferHeight),
-                                   menuSystem.guiScaleSetting, menuSystem.forceUnicodeFont};
-        const auto cursor = currentFramebufferCursor();
-        for (std::size_t tabIndex = 0; tabIndex < kCreativeTabCount; ++tabIndex) {
-            if (layout.creativeTab(tabIndex).contains(cursor.x, cursor.y)) {
-                return true;
-            }
-        }
-        if (menuSystem.creativeTab == ui::CreativeTab::Inventory) {
-            return layout.creativeDeleteSlot().contains(cursor.x, cursor.y);
-        }
-        if (layout.creativeScrollbarTrack().contains(cursor.x, cursor.y)) {
-            return true;
-        }
-        for (std::size_t index = 0; index < ui::HudLayout::kCreativeVisibleSlots; ++index) {
-            if (layout.creativeSlot(index).contains(cursor.x, cursor.y)) {
-                return true;
-            }
-        }
-        return false;
+        // A2：判据从"逐个 contains 测页签/删除框/滚动条/45 个目录格"换成问页面。
+        // ★ 那条 `gameMode == Creative && openContainerScreen == PlayerInventory` 的
+        //   前置也随之消失了：它是"这些控件只在创造背包上存在"的另一种说法，而页面
+        //   本来就只在那两屏装配它们——同一事实的第二份表述，删掉。
+        return ui::containerImmediateControlAt(containerPage(currentHudLayout()),
+                                               currentFramebufferCursor());
     }
 
     // 当前帧缓冲对应的 HUD 排版
@@ -4885,24 +4814,20 @@ struct VulkanRenderer::Impl final : public gameplay::SimulationHost {
     // 鼠标下的槽位，表示为"类型加下标"的值，用于双击判定
     // 它绝不是指向玩法侧存储的指针
     [[nodiscard]] std::optional<gameplay::SlotRef> slotUnderCursor() {
-        double cursorX = 0.0;
-        double cursorY = 0.0;
-        int windowWidth = 0;
-        int windowHeight = 0;
+        // A2：走容器页与 `ui::hitTest`。★ 光标换算也收口到 `currentFramebufferCursor`
+        //   ——绘制侧与输入侧读同一个钉子，而这里原本自抄了第三份 glfwGetCursorPos。
         int framebufferWidth = 0;
         int framebufferHeight = 0;
-        glfwGetCursorPos(window, &cursorX, &cursorY);
-        glfwGetWindowSize(window, &windowWidth, &windowHeight);
         glfwGetFramebufferSize(window, &framebufferWidth, &framebufferHeight);
-        if (windowWidth <= 0 || windowHeight <= 0) {
+        if (framebufferWidth <= 0 || framebufferHeight <= 0) {
             return std::nullopt;
         }
-        const auto cursor = ui::windowToFramebuffer(cursorX, cursorY, windowWidth, windowHeight,
-                                                    framebufferWidth, framebufferHeight);
-        const ui::HudLayout layout{static_cast<float>(framebufferWidth),
-                                   static_cast<float>(framebufferHeight),
-                                   menuSystem.guiScaleSetting, menuSystem.forceUnicodeFont};
-        return dragSlotAt(layout, cursor);
+        const auto hit = ui::containerSlotUnderCursor(containerPage(currentHudLayout()),
+                                                      currentFramebufferCursor());
+        if (!hit.hit) {
+            return std::nullopt;
+        }
+        return gameplay::SlotRef{hit.slotKind, hit.slotIndex};
     }
 
     // 当前界面下玩家能够到的全部槽位，供双击收拢使用
@@ -4911,10 +4836,10 @@ struct VulkanRenderer::Impl final : public gameplay::SimulationHost {
     [[nodiscard]] std::vector<gameplay::SlotRef> allScreenSlots() const {
         const auto layout = currentHudLayout();
         std::vector<gameplay::SlotRef> refs;
-        for (const auto& slot : gameplay::ScreenHandler::buildSlotLayout(screenContext(),
-                                                                         layout)) {
-            if (slot.acceptsItems()) {
-                refs.push_back({slot.kind, slot.index});
+        for (const ui::Widget& widget : containerPage(layout)) {
+            if (widget.kind == ui::WidgetKind::Slot &&
+                gameplay::slotAcceptsItems(widget.slotKind)) {
+                refs.push_back({widget.slotKind, widget.slotIndex});
             }
         }
         return refs;
@@ -4925,17 +4850,35 @@ struct VulkanRenderer::Impl final : public gameplay::SimulationHost {
     // 快速合成拖拽收集的就是这些值
     [[nodiscard]] std::optional<gameplay::SlotRef> dragSlotAt(const ui::HudLayout& layout,
                                                               const ui::UiPoint& cursor) const {
-        const auto slots = gameplay::ScreenHandler::buildSlotLayout(screenContext(), layout);
-        const auto* slot = gameplay::ScreenHandler::slotAt(slots, cursor);
-        if (slot == nullptr || !slot->acceptsItems()) {
+        // A2：命中走 `ui::hitTest`（与菜单屏同一套），不再是容器专用的 slotAt。
+        // ★ 两者只在"可交互控件互不重叠"时等价——那条性质由 container_page 的断言钉住，
+        //   正是为这一步准备的。
+        const auto hit = ui::containerSlotUnderCursor(containerPage(layout), cursor);
+        if (!hit.hit || !gameplay::slotAcceptsItems(hit.slotKind)) {
             return std::nullopt;
         }
-        return gameplay::SlotRef{slot->kind, slot->index};
+        return gameplay::SlotRef{hit.slotKind, hit.slotIndex};
     }
 
     // 快速合成拖拽期间光标划过的某个槽位在屏幕上的矩形
     // 若该指针已不属于当前界面，比如容器已关闭，则返回 nullopt
     // 拖拽记下的"类型加下标"会被解析回几何，预览因此总是落在拖拽真正会写入的那个槽上
+    // A2：当前这一屏的容器页与它的视图状态。命中、拖拽、点击路由全从这一处取，
+    // 而不是各自再造一份几何。
+    [[nodiscard]] ui::Page containerPage(const ui::HudLayout& layout) const {
+        ui::Page page;
+        ui::buildContainerPageInto(page, screenContext(), layout);
+        return page;
+    }
+
+    [[nodiscard]] ui::ContainerViewState containerViewState() const {
+        ui::ContainerViewState view;
+        view.catalogFirstIndex = menuSystem.creativeScrollRow * 9U;
+        view.catalogSize = activeCreativeCatalog().size();
+        view.catalogScrollable = creativeMaximumScrollRow() > 0U;
+        return view;
+    }
+
     [[nodiscard]] std::optional<ui::UiRect> dragSlotRectangle(const ui::HudLayout& layout,
                                                               const gameplay::SlotRef& ref) const {
         // A0：容器界面的**页面**是这一屏几何的来源，拖拽预览是它的第一个生产消费者。
@@ -4943,8 +4886,7 @@ struct VulkanRenderer::Impl final : public gameplay::SimulationHost {
         // ★ "抽了一个装配器"和"生产路径真的调了它"是两件事（README 护栏 29）。
         //   这里改成走页面，不是为了少写两行——是为了让容器页在 A1/A2 之前就已经在
         //   生产路径上跑着，而不是一段只有测试看得见的死代码。
-        ui::Page page;
-        ui::buildContainerPageInto(page, screenContext(), layout);
+        const ui::Page page = containerPage(layout);
         const ui::Widget* widget = ui::findSlotWidget(page, ref.kind, ref.index);
         return widget != nullptr ? std::optional{widget->rect} : std::nullopt;
     }

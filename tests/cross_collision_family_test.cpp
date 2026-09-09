@@ -313,20 +313,51 @@ int main() {
         assert(boxCount(fenceShape) == 2U);
         assert(near(fenceShape.boxes[1].maxY, 1.0F));
 
-        // A connected pane's post draws up/down only.
+        // A pane's post draws up/down PLUS one face per OPEN side — vanilla's
+        // `{"north":"false"} -> noside` rule, one part per side that is not
+        // connected. This is the geometry that covers the middle 2/16 of a
+        // sheet: the side boxes stop at z 7 and resume at z 9, so a straight
+        // north/south run has a hole exactly where the post is unless its east
+        // and west faces are drawn. (Reported from a real client, not caught by
+        // any headless assertion — hence this one.)
+        constexpr auto bit = [](mc::world::Face face) {
+            return static_cast<std::uint8_t>(1U << static_cast<unsigned>(face));
+        };
         const BlockState paneNorth =
             BlockState{Block::GlassPane}.withWallConnected(BlockOrientation::North, true);
         const auto paneBoxes = mc::world::crossCollisionMeshBoxes(paneNorth);
         assert(paneBoxes.size() == 2U); // post + one side
-        assert(paneBoxes[0].faces == upDown);
-        // An unconnected pane's post gains the north and east faces
-        // (vanilla's noside + noside_alt), so it is a sheet rather than nothing.
+        assert(paneBoxes[0].faces ==
+               static_cast<std::uint8_t>(upDown | bit(mc::world::Face::PositiveX) |
+                                         bit(mc::world::Face::PositiveZ) |
+                                         bit(mc::world::Face::NegativeX)));
+
+        // The straight run: connected north+south, so exactly the east and west
+        // faces close the middle, and the north/south ones must NOT be drawn
+        // (they would sit inside the two side boxes).
+        const BlockState paneRun =
+            BlockState{Block::GlassPane}
+                .withWallConnected(BlockOrientation::North, true)
+                .withWallConnected(BlockOrientation::South, true);
+        const auto runBoxes = mc::world::crossCollisionMeshBoxes(paneRun);
+        assert(runBoxes.size() == 3U); // post + two sides
+        assert(runBoxes[0].faces ==
+               static_cast<std::uint8_t>(upDown | bit(mc::world::Face::PositiveX) |
+                                         bit(mc::world::Face::NegativeX)));
+
+        // Fully connected: nothing of the post shows but its top and bottom.
+        BlockState paneAll{Block::GlassPane};
+        for (const auto side : {BlockOrientation::North, BlockOrientation::East,
+                                BlockOrientation::South, BlockOrientation::West}) {
+            paneAll = paneAll.withWallConnected(side, true);
+        }
+        assert(mc::world::crossCollisionMeshBoxes(paneAll)[0].faces == upDown);
+
+        // An unconnected pane draws all four, so it is a stub of a sheet rather
+        // than an invisible pair of caps.
         const auto lonePane = mc::world::crossCollisionMeshBoxes(BlockState{Block::GlassPane});
         assert(lonePane.size() == 1U);
-        assert(lonePane[0].faces ==
-               static_cast<std::uint8_t>(
-                   upDown | (1U << static_cast<unsigned>(mc::world::Face::NegativeZ)) |
-                   (1U << static_cast<unsigned>(mc::world::Face::PositiveX))));
+        assert(lonePane[0].faces == 0x3FU);
 
         // The face mask rotates with the box: the north side omits +Z (the face
         // buried in the post), so the EAST side must omit -X, not +Z.
