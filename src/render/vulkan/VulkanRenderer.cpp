@@ -3246,6 +3246,9 @@ struct VulkanRenderer::Impl final : public gameplay::SimulationHost {
         //   两个页面无法 Esc 返回"，而实际漏的比报的多（创建世界、编辑世界也在里面）。
         case ui::PageId::Controls:
         case ui::PageId::SoundSettings:
+        // UI-11 / A2：★ 漏了这个 case 的症状是「字体设置屏按 Esc 没反应」——
+        //   与 UI-6e 那次现场报告的「音乐与声音、按键控制无法 Esc 返回」是同一种伤。
+        case ui::PageId::FontSettings:
         case ui::PageId::ResourcePacks:
         case ui::PageId::CreateWorld:
         case ui::PageId::EditWorld:
@@ -3267,6 +3270,13 @@ struct VulkanRenderer::Impl final : public gameplay::SimulationHost {
 
     // 菜单页上的滚轮：滚该页自己的那个列表
     void scrollMenuList(int direction) {
+        // UI-11 / A1：**Ctrl + 滚轮改 GUI 缩放**（26.1 `VideoSettingsScreen.mouseScrolled`）。
+        // ★ 它在分派**之前**拦下：按住 Ctrl 时滚轮不再滚列表，这与 26.1 一致
+        //   （那边是 `if (hasControlDown()) { … return true; }`，走不到 super）。
+        if (menuSystem.pageStack.current() == ui::PageId::VideoSettings && controlKeyHeld()) {
+            adjustGuiScaleByScroll(direction);
+            return;
+        }
         switch (menuSystem.pageStack.current()) {
         case ui::PageId::WorldList:
             scrollWorldList(direction);
@@ -3287,6 +3297,9 @@ struct VulkanRenderer::Impl final : public gameplay::SimulationHost {
         //   非滚不可，而滚轮没反应。它掉进了下面那个 `default: break;`——
         //   与 handleBackKey 漏掉 Esc 是同一个 default 造的同一种伤。
         case ui::PageId::SoundSettings:
+        // UI-11 / A2：字体屏两项装得下（滚不动，上界会被钳成 0），但它与别的设置
+        //   子屏是同一种版面——少写一个 case 的后果是「换个窗口尺寸就滚不了」。
+        case ui::PageId::FontSettings:
             scrollOptionsList(direction);
             break;
         // 其余页面没有可滚的列表。**逐个列出而不是 default**：加一页带列表的屏幕时，
@@ -3398,6 +3411,7 @@ struct VulkanRenderer::Impl final : public gameplay::SimulationHost {
         case ui::PageId::Controls:
         case ui::PageId::AdvancedGraphics:
         case ui::PageId::SoundSettings:
+        case ui::PageId::FontSettings:
         case ui::PageId::Options:
             if (ui::optionsMaximumFirstRow(layout, menuSystem.pageStack.current()) > 0U) {
                 return ui::optionsScrollbarTrack(layout, menuSystem.pageStack.current());
@@ -3439,6 +3453,7 @@ struct VulkanRenderer::Impl final : public gameplay::SimulationHost {
         case ui::PageId::Controls:
         case ui::PageId::AdvancedGraphics:
         case ui::PageId::SoundSettings:
+        case ui::PageId::FontSettings:
         case ui::PageId::Options:
             menuSystem.optionsListFirstIndex = ui::optionsScrollIndexFromCursor(
                 layout, menuSystem.pageStack.current(), cursor.y);
@@ -4251,6 +4266,8 @@ struct VulkanRenderer::Impl final : public gameplay::SimulationHost {
         cb.resetKeyBind = [this](input::InputAction action) { keyBindScreen_.resetOne(action); };
         cb.openKeyBinds = [this] { menuSystem.optionsListFirstIndex = 0U; menuSystem.pageStack.push(ui::PageId::KeyBinds); };
         cb.openAccessibility = [this] { menuSystem.optionsListFirstIndex = 0U; menuSystem.pageStack.push(ui::PageId::Accessibility); };
+        // UI-11 / A2：语言屏 → 字体设置（26.1 `LanguageSelectScreen:79`）。
+        cb.openFontSettings = [this] { menuSystem.optionsListFirstIndex = 0U; menuSystem.pageStack.push(ui::PageId::FontSettings); };
         cb.doneOptions = [this] {
             // UI-6e ③：资源包那一屏的 Done 才提交草稿（26.1 同样是 onClose 时 apply）。
             if (menuSystem.pageStack.current() == ui::PageId::ResourcePacks) {
@@ -4717,6 +4734,33 @@ struct VulkanRenderer::Impl final : public gameplay::SimulationHost {
         options.windowHeight = resolution.height;
         glfwSetWindowSize(window, resolution.width, resolution.height);
         persistOptions();
+    }
+
+    // UI-11 / A1：Ctrl+滚轮那一档。规则全在 `ui::guiScaleAfterCtrlScroll`（纯函数、
+    // 有断言），这里只负责取上界、落盘、以及 26.1 那句 `list.setScrollAmount(0)`。
+    void adjustGuiScaleByScroll(int direction) {
+        int framebufferWidth = 0;
+        int framebufferHeight = 0;
+        glfwGetFramebufferSize(window, &framebufferWidth, &framebufferHeight);
+        const int maximumScale =
+            ui::HudLayout::calculateGuiScale(framebufferWidth, framebufferHeight, 0);
+        const auto next =
+            ui::guiScaleAfterCtrlScroll(menuSystem.guiScaleSetting, direction, maximumScale);
+        if (!next.has_value()) {
+            return;
+        }
+        menuSystem.guiScaleSetting = *next;
+        // ★ 26.1 改完缩放会把设置列表滚回顶部（`this.list.setScrollAmount(0.0)`）：
+        //   换了缩放档就是换了一套版面，留在原来的行号上会落在别的项目上。
+        menuSystem.optionsListFirstIndex = 0U;
+        persistOptions();
+    }
+
+    // 左右任一 Ctrl 按下（26.1 `Minecraft.hasControlDown()`；macOS 上那边还认 Cmd，
+    // 本作的输入层没有那条平台分支，登记为已知差异而不是在这里自造一条）。
+    [[nodiscard]] bool controlKeyHeld() const {
+        return glfwGetKey(window, GLFW_KEY_LEFT_CONTROL) == GLFW_PRESS ||
+               glfwGetKey(window, GLFW_KEY_RIGHT_CONTROL) == GLFW_PRESS;
     }
 
     void cycleGuiScale() {

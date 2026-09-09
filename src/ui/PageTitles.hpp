@@ -33,6 +33,9 @@ struct PageTitle final {
         return {"options.videoTitle", "Video Settings"};
     case PageId::Controls:
         return {"controls.title", "Controls"};
+    // UI-11 / A2：26.1 `FontOptionsScreen` 的标题（`options.font.title`）。
+    case PageId::FontSettings:
+        return {"options.font.title", "Font Settings"};
     // ★ 绑定列表页的标题是 `controls.keybinds.title`（"按键绑定"），
     //   **不是** `controls.keybinds`（"按键绑定…"，那是跳过来的**按钮**上的字）。
     //   两个键只差一个后缀，而带省略号的标题看起来"也差不多对"。

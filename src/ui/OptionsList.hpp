@@ -26,6 +26,7 @@
 #include "ui/ScrollList.hpp"
 
 #include <cstdint>
+#include <optional>
 #include <span>
 #include <string_view>
 
@@ -377,6 +378,12 @@ inline constexpr std::array<OptionsGroup, 1> kOptionsHubGroups{{{10U, OptionsGro
 inline constexpr std::array<OptionsGroup, 1> kAdvancedGraphicsGroups{
     {{4U, OptionsGroupKind::Small}}};
 
+// UI-11 / A2：26.1 `FontOptionsScreen.addOptions` 就一句
+// `list.addSmall({forceUnicodeFont, japaneseGlyphVariants})`——两项、双列、无分节行。
+inline constexpr std::array<OptionsGroup, 1> kFontSettingsGroups{{
+    {2U, OptionsGroupKind::Small, {}, {}},
+}};
+
 // ★ 分节行**不产生控件**，所以它的 `count` 必须是 0。写成非 0 会让它吞掉一个设置项
 //   序号，而那一项之后的每一个控件都会错位——症状是"少了一个控件，其余全部串行"。
 //   `optionsGroupedSlot` 里那个 `group.count > 0U` 只是防御，真正的护栏是这条编译期检查。
@@ -403,6 +410,8 @@ static_assert(optionsHeadersProduceNoWidgets(kSoundSettingsGroups),
               "a header row must not consume an option index");
 static_assert(optionsHeadersProduceNoWidgets(kOptionsHubGroups),
               "a header row must not consume an option index");
+static_assert(optionsHeadersProduceNoWidgets(kFontSettingsGroups),
+              "a header row must not consume an option index");
 
 // 这一屏的 addSmall 分组。三段式版面的页脚按钮不在其中（它由 buttonCount 单独认出来）。
 [[nodiscard]] constexpr std::span<const OptionsGroup> optionsGroupsOf(PageId page) {
@@ -415,7 +424,29 @@ static_assert(optionsHeadersProduceNoWidgets(kOptionsHubGroups),
         return kSoundSettingsGroups;
     case PageId::Options:
         return kOptionsHubGroups;
-    default:
+    case PageId::FontSettings:
+        return kFontSettingsGroups;
+    // ★ UI-11 顺手修掉的一处漏洞：这里原本带着 `default: break;`。
+    //   本线的规矩是「按 PageId 分派的 switch 一律不带 default」（README 护栏 19），
+    //   而这一处漏了——加一页时它**不会**被 -Wswitch 点名，新页会静默拿到
+    //   `kControlsHubGroups`，症状是"新设置屏里显示的是 Controls 那几项"。
+    //   逐个列出之后，加一页编译器会指名道姓（实测：加 FontSettings 时它没吭声，
+    //   而别的八处 switch 全都点名了）。
+    case PageId::Controls:
+    case PageId::Title:
+    case PageId::WorldList:
+    case PageId::CreateWorld:
+    case PageId::EditWorld:
+    case PageId::ConfirmDelete:
+    case PageId::Loading:
+    case PageId::Game:
+    case PageId::Pause:
+    case PageId::Death:
+    case PageId::Language:
+    case PageId::KeyBinds:
+    case PageId::Accessibility:
+    case PageId::ResourcePacks:
+    case PageId::Count:
         break;
     }
     return kControlsHubGroups;
@@ -482,6 +513,43 @@ struct OptionsWindow final {
         ++assembled;
     }
     return OptionsSlot{assembled, 0, false};
+}
+
+
+// UI-11 / A1：**Ctrl + 滚轮改 GUI 缩放**（spec §1.1，26.1
+// `VideoSettingsScreen.mouseScrolled:219-240`）。它是视频设置那一屏自己的交互，
+// UI-3 就登记了这一笔，一直没做。
+//
+// 26.1 那几行照抄，一条都不化简：
+//
+//     adjustedOld = (old == 0) ? maxInclusive + 1 : old      // ★ Auto 当成 max+1
+//     newValue    = adjustedOld + signum(scrollY)
+//     接受条件： newValue != 0 && newValue <= maxInclusive && newValue >= minInclusive
+//
+// ★ 那个 `Auto 当成 max + 1` 是这段的灵魂：Auto 解出来的档**就是** max，把它当成
+//   "比 max 还大一档"，于是从 Auto 往下滚正好落到 max（看得见的档位不跳），
+//   而往上滚会越界被拒——Auto 已经是最上面那一档了。
+// ★ `newValue != 0` 同样不能省：从 1 往下滚得到 0，26.1 **拒绝**它，也就是
+//   **滚轮切不回 Auto**（只能用按钮循环回去）。少了这条，用户会在 1 和 Auto 之间
+//   反复横跳而不知道自己切到了哪一档。
+//
+// `scrollDirection` 用的是**本作滚轮回调的方向**（上推 = -1，见 glfwSetScrollCallback），
+// 与 26.1 的 `signum(scrollY)` 正好相反，所以这里取负——上推滚轮 = 放大。
+// 返回 nullopt 表示这一次滚动**不改变**缩放（越界），调用方应当保持原值。
+[[nodiscard]] constexpr std::optional<int> guiScaleAfterCtrlScroll(int current,
+                                                                   int scrollDirection,
+                                                                   int maxInclusive) {
+    constexpr int kMinInclusive = 1;
+    if (maxInclusive < kMinInclusive) {
+        return std::nullopt;
+    }
+    const int adjusted = current == 0 ? maxInclusive + 1 : current;
+    const int step = scrollDirection < 0 ? 1 : scrollDirection > 0 ? -1 : 0;
+    const int next = adjusted + step;
+    if (next == 0 || next > maxInclusive || next < kMinInclusive) {
+        return std::nullopt;
+    }
+    return next;
 }
 
 } // namespace mc::ui

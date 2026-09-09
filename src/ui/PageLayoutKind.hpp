@@ -90,6 +90,8 @@ enum class PageLayoutKind : std::uint8_t {
     case PageId::Controls:
     case PageId::AdvancedGraphics:
     case PageId::SoundSettings:
+    // UI-11 / A2：字体屏与别的设置子屏同一种版式（三段式 + 双列设置项）。
+    case PageId::FontSettings:
     // UI-6e ④：Options 主页也是三段式双列（26.1 是 2 列 GridLayout），
     // 不再是屏幕正中一列。
     case PageId::Options:
@@ -138,6 +140,7 @@ enum class PageDrawKind : std::uint8_t {
     case PageId::Accessibility:
     case PageId::AdvancedGraphics:
     case PageId::SoundSettings:
+    case PageId::FontSettings:
     case PageId::ResourcePacks:
         return PageDrawKind::Settings;
     case PageId::Language:

@@ -1675,6 +1675,45 @@ void testPackColumnWindow() {
     }
 }
 
+// --- 21e. UI-11 / A1：Ctrl + 滚轮改 GUI 缩放 ---------------------------------
+//
+// ★ 断言钉的是 26.1 `VideoSettingsScreen.mouseScrolled:219-240` 那几行算出来的数。
+void testGuiScaleCtrlScroll() {
+    constexpr int kMax = 4;   // 这块画布 Auto 解出来是 4
+    // 上推滚轮（本作方向 -1）= 放大一档。
+    CHECK(mc::ui::guiScaleAfterCtrlScroll(2, -1, kMax) == 3);
+    CHECK(mc::ui::guiScaleAfterCtrlScroll(1, -1, kMax) == 2);
+    // 下推 = 缩小一档。
+    CHECK(mc::ui::guiScaleAfterCtrlScroll(3, 1, kMax) == 2);
+
+    // ★ **Auto（0）当成 max + 1**：从 Auto 往下滚正好落到 max，看得见的档位不跳。
+    CHECK(mc::ui::guiScaleAfterCtrlScroll(0, 1, kMax) == kMax);
+    // 而往上滚会越界——Auto 已经是最上面那一档。
+    CHECK(mc::ui::guiScaleAfterCtrlScroll(0, -1, kMax) == std::nullopt);
+
+    // ★ **滚轮切不回 Auto**（26.1 的 `newValue != 0`）：从 1 往下滚被拒，而不是变成 0。
+    //   少了这条，用户会在 1 与 Auto 之间反复横跳却看不出自己在哪一档。
+    CHECK(mc::ui::guiScaleAfterCtrlScroll(1, 1, kMax) == std::nullopt);
+    // 顶到 max 之后再往上也被拒。
+    CHECK(mc::ui::guiScaleAfterCtrlScroll(kMax, -1, kMax) == std::nullopt);
+    // 没有滚动就不动。
+    CHECK(mc::ui::guiScaleAfterCtrlScroll(2, 0, kMax) == 2);
+    // 退化画布（max < 1）什么都不做，而不是给出一个非法档位。
+    CHECK(mc::ui::guiScaleAfterCtrlScroll(1, -1, 0) == std::nullopt);
+
+    // 性质：给出的档位永远落在 [1, max] 内——0（Auto）永远不会由滚轮产生。
+    for (int max = 1; max <= 8; ++max) {
+        for (int current = 0; current <= max; ++current) {
+            for (const int dir : {-1, 0, 1}) {
+                const auto next = mc::ui::guiScaleAfterCtrlScroll(current, dir, max);
+                if (!next.has_value()) continue;
+                check(*next >= 1 && *next <= max,
+                      "a scrolled GUI scale must stay inside [1, max]", __LINE__);
+            }
+        }
+    }
+}
+
 // --- 22. 音乐与声音（UI-6e ②，26.1 §7.4）------------------------------------
 void testSoundSettingsPage() {
     const mc::ui::HudLayout layout{1280.0F, 720.0F, 3};
@@ -2111,6 +2150,7 @@ int main() {
     testTransferIconZones();
     testPackColumnScrolling();
     testPackColumnWindow();
+    testGuiScaleCtrlScroll();
     testSoundSettingsPage();
     testRuntimeLabelsAreActuallyComputed();
     testPageDispatchHasNoDefault();

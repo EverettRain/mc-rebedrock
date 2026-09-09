@@ -90,6 +90,8 @@ enum class WidgetId : std::uint16_t {
     // UI-10 / D24：调序与取消选择现在都在**行内**（26.1 的做法）。
     // 三个共用同一个 32x32 图标位的三块热区，第几行由装配时的次序决定。
     PackMoveUp, PackMoveDown, PackUnselect,
+    // UI-11 / A2：语言屏底部那个跳转，以及字体屏里本作没有后端的那一项。
+    FontSettings, JapaneseGlyphVariants,
     // 打开 resourcepacks/ 目录。本作没有"用默认程序打开路径"这条能力，置灰。
     PackOpenFolder,
 

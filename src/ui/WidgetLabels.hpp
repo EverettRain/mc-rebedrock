@@ -47,7 +47,7 @@ struct StaticWidgetLabel final {
 //   "Resource Packs..."），再加一个 suffix 会显示成 "Online......" —— 实测如此。
 //   本项目自有的 `options.rebedrock.advancedGraphics` 才需要它：那个键的按钮与标题
 //   是同一个词，省略号是唯一的区别。下面有一条断言钉住这条规则。
-inline constexpr std::array<StaticWidgetLabel, 46> kStaticWidgetLabels{{
+inline constexpr std::array<StaticWidgetLabel, 48> kStaticWidgetLabels{{
     // 标题界面与世界列表
     {WidgetId::Singleplayer, "menu.singleplayer", "Singleplayer"},
     {WidgetId::Multiplayer, "menu.multiplayer", "Multiplayer"},
@@ -116,6 +116,10 @@ inline constexpr std::array<StaticWidgetLabel, 46> kStaticWidgetLabels{{
     {WidgetId::PackOpenFolder, "pack.openFolder", "Open Pack Folder"},
     // UI-9：创建世界 World / More 两页的六个按钮。键全部取自 26.1
     // `CreateWorldScreen.WorldTab` / `.MoreTab` 里用它们的那几行。
+    // UI-11 / A2：26.1 `LanguageSelectScreen:79` 的跳转按钮，文案自带省略号。
+    {WidgetId::FontSettings, "options.font", "Font Settings..."},
+    {WidgetId::JapaneseGlyphVariants, "options.japaneseGlyphVariants",
+     "Japanese Glyph Variants"},
     {WidgetId::CreateWorldType, "selectWorld.mapType", "World Type"},
     {WidgetId::CreateBonusChest, "selectWorld.bonusItems", "Bonus Chest"},
     {WidgetId::CreateGenerateStructures, "selectWorld.mapFeatures", "Generate Structures"},

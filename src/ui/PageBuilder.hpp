@@ -149,6 +149,8 @@ struct MenuCallbacks final {
     std::function<void(input::InputAction)> resetKeyBind{};
     std::function<void()> openKeyBinds{};
     std::function<void()> openAccessibility{};
+    // UI-11 / A2：语言屏 → 字体设置。
+    std::function<void()> openFontSettings{};
     std::function<void()> openAdvancedGraphics{};
     std::function<void()> doneOptions{};   // pop the current options sub-page
     std::function<void()> back{};          // generic page pop
@@ -789,9 +791,33 @@ inline void buildPageInto(Page& page, PageId id, const MenuBuildContext& ctx,
                 addListRow(page, WidgetId::LanguageRow, row,
                            [cb, row]() { if (cb.selectLanguageRow) cb.selectLanguageRow(row); });
             }
-            addOptionButton(page, ctx, WidgetId::ForceUnicodeFont, cb);
+            // UI-11 / A2：26.1 `LanguageSelectScreen:76-80` 的页脚是**两个**按钮：
+            // 左边 `Font Settings...` 跳转，右边 Done。Force Unicode 搬进了那一屏
+            // ——它在 26.1 里本来就属于字体设置，不属于语言列表。
+            addButton(page, ctx, WidgetId::FontSettings, cb.openFontSettings);
             addButton(page, ctx, WidgetId::Done, cb.doneOptions);
             break;
+
+        // UI-11 / A2：26.1 §7.9.1 `FontOptionsScreen`——两项、双列、无分节行
+        // （那边就一句 `list.addSmall({forceUnicodeFont, japaneseGlyphVariants})`）。
+        //
+        // ★ 用 `OptionCursor` 装配，与别的三段式设置页一样——**即使这一页只有两项、
+        //   一屏装得下**。`optionsWindowFor` 给所有 HeaderFooterList 页面同一种窗口，
+        //   哪一页绕过窗口装配，那一页就整体错行；`options_layout` 有一条源码守
+        //   数着"三段式页面数 == 用 OptionCursor 的页面数"（实测：我第一版直接
+        //   addOptionButton，它当场红了）。
+        case PageId::FontSettings: {
+            detail::OptionCursor add{ctx, id};
+            add([&] { addOptionButton(page, ctx, WidgetId::ForceUnicodeFont, cb); });
+            // ★ 本作没有日文字形变体的后端（`GameOptions` 里没有那个字段），
+            //   按既定裁定**置灰在位**：版面与 26.1 对上，而"这个功能还没有"看得出来。
+            add([&] {
+                addButton(page, ctx, WidgetId::JapaneseGlyphVariants, nullptr,
+                          /*enabled=*/false);
+            });
+            addButton(page, ctx, WidgetId::Done, cb.doneOptions);
+            break;
+        }
 
         case PageId::Loading:
         case PageId::Game:
