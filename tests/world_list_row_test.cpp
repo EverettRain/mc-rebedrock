@@ -64,8 +64,14 @@ void testListBand() {
         const auto band = mc::ui::worldListBox(layout);
         const std::size_t rows = mc::ui::worldListVisibleRows(layout);
         CHECK(rows >= 1U);
-        // 带的高**正好**是"放得下几行 x 行距"，不多不少。
-        CHECK(band.height == static_cast<float>(rows) * 36.0F * layout.scale());
+        // ★ UI-13b：带**撑满**标题与底部按钮之间，不是"行数 x 行距"。
+        //   缩到整数倍的后果是列表下缘与按钮之间吊着一段 `available % 36` 的死空间
+        //   （427x240 那一档是 38 逻辑像素）。26.1 同样是 `height(getContentHeight())`。
+        CHECK(band.height ==
+              static_cast<float>(mc::ui::worldListViewportHeight(layout)) * layout.scale());
+        // 装得下几行就是几行；带至少有那么高，多出来的是空视口。
+        CHECK(band.height >= static_cast<float>(rows) * 36.0F * layout.scale());
+        CHECK(band.height < static_cast<float>(rows + 1U) * 36.0F * layout.scale());
         // 带的上缘就是第一行的上缘（此前绘制侧还往上多留了 4 像素）。
         CHECK(band.y == mc::ui::worldListRow(0U, layout).y);
         // ★ 最后一行**整行**都在带里。带按 22 一行算高时这一条会红。

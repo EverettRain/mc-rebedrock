@@ -73,10 +73,16 @@ ScrollList keyBindsScrollList(const HudLayout& layout) {
 
 ScrollList worldScrollList(const HudLayout& layout) {
     // 世界列表没有一个显式的"框"：它就是标题与底部按钮带之间那条带。
+    //
+    // ★ UI-13b：视口高是**那条带的全高**，不是"放得下几行 × 行距"。
+    //   26.1 `SelectWorldScreen:63-67` 把列表建成 `height(layout.getContentHeight())`
+    //   ——三段式版面里内容区**撑满**页眉与页脚之间，装不满就空着，而不是缩到
+    //   行数的整数倍。本作从前取整数倍，于是列表下缘与底部按钮之间永远吊着一段
+    //   `available % 36` 的死空间（427x240 那一档是 38 逻辑像素，肉眼很明显）。
     return ScrollList{0,
                       kWorldListTop,
                       layout.logicalWidth(),
-                      static_cast<int>(worldListVisibleRows(layout)) * kWorldListRowStep,
+                      worldListViewportHeight(layout),
                       kWorldSelectionRowWidth,
                       kWorldListRowStep};
 }
@@ -110,7 +116,12 @@ UiRect worldListRow(std::size_t index, const HudLayout& layout) {
     return fbRect(layout, logicalWorldListRow(index, layout));
 }
 
-std::size_t worldListVisibleRows(const HudLayout& layout) {
+// UI-13b：列表视口的高——从标题带下缘一路撑到底部按钮块上方。
+//
+// ★ 它是"这条带有多高"的**唯一**来源：视口、可见行数、底衬与两条分隔线全从它派生。
+//   此前"可见行数"自己算一遍带高、视口再乘回行距，于是带高是行距的整数倍，
+//   底下吊着一段死空间。
+int worldListViewportHeight(const HudLayout& layout) {
     // 世界列表那四个功能按钮排成两列各两个，整块因此在底部带上正好占两行
     constexpr int kButtonRows = 2;
     constexpr int kButtonHeight = 20;
@@ -120,7 +131,11 @@ std::size_t worldListVisibleRows(const HudLayout& layout) {
     // ceil 后的逻辑画布（spec §1.1），不是精确的 fb/scale
     const int buttonBlockTop =
         layout.logicalHeight() - kBottomMargin - kButtonHeight - (kButtonRows - 1) * kButtonStep;
-    const int available = buttonBlockTop - kListToButtonGap - kWorldListTop;
+    return std::max(buttonBlockTop - kListToButtonGap - kWorldListTop, kWorldListRowStep);
+}
+
+std::size_t worldListVisibleRows(const HudLayout& layout) {
+    const int available = worldListViewportHeight(layout);
     return static_cast<std::size_t>(std::max(available / kWorldListRowStep, 1));
 }
 
