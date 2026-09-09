@@ -126,12 +126,15 @@ void main() {
                                                // 下落的方块是实心盒，没有薄片
                                                camera.weatherSettings.xy, 0.0);
             }
-            // RN-38：下落方块这里本来就是「环境 + 直射」的雏形（0.72 + 0.28），只是
-            // 那两个数与地形那一套各写各的。现在共用 kSkyAmbientFraction，
-            // 「天光里有多少是散射」在整个仓库里只有一个答案
-            float diffuse = max(dot(normal, normalize(camera.sunDirection.xyz)), 0.0);
-            terrainSunFactor = kSkyAmbientFraction +
-                               diffuse * shadowFactor * (1.0 - kSkyAmbientFraction);
+            // RN-38 把这里的 0.72/0.28 换成了共用的 kSkyAmbientFraction，但仍是
+            // 手抄的一份「环境 + 直射」。RN-42 直接调用**同一个函数**：入射角权重、
+            // 太阳落山后的份额转移、云量转移，三件事从此只有一份实现。
+            //
+            // 前两个参数是 1：时段与天气的总量在下面的 tintWeight 里，这里只要分配比例
+            terrainSunFactor = sunSkyFactor(1.0, 1.0, shadowFactor, camera.weatherSettings.x,
+                                            camera.weatherSettings.y,
+                                            dot(normal, normalize(camera.sunDirection.xyz)),
+                                            normalize(camera.sunDirection.xyz).y);
         } else {
             vec3 fixedLightDirection = normalize(vec3(-0.45, 0.85, 0.30));
             float diffuse = max(dot(normal, fixedLightDirection), 0.0);

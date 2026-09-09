@@ -114,7 +114,11 @@ void main() {
     // RN-38：天光是直射 + 环境两项，阴影只挡直射。`shadowFactor` 现在是**可见度**
     // （1 = 太阳完全照到），份额的分配在 sunSkyFactor 里，三个采样者共用那一份
     float skyFactor = sunSkyFactor(camera.sunDirection.w, camera.weatherSettings.z, shadowFactor,
-                                   camera.weatherSettings.x, camera.weatherSettings.y);
+                                   camera.weatherSettings.x, camera.weatherSettings.y,
+                                   // RN-42：直射项的两个几何量。正午的竖直面因此掉到
+                                   // 散射那一份，而清晨朝阳的那一面仍旧吃满
+                                   dot(normal, normalize(camera.sunDirection.xyz)),
+                                   normalize(camera.sunDirection.xyz).y);
     vec3 lightmap = sampleLightmap(skyLevel, blockLevel, skyFactor);
     // The sky half carries the time-of-day tint: cool blue moonlight, warm
     // sunlight. Block light brings its own tint inside the lightmap.

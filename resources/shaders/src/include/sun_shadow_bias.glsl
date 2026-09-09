@@ -92,8 +92,9 @@ float sunShadowOvercast(float rainGradient, float thunderGradient) {
 //   * 影子把环境天光也压暗了，所以它偏灰而不是偏蓝；
 //   * RN-36 的雨天只能在那个系数上再叠一层近似。
 //
-// 0.2 = 晴天正午天空散射占地面照度的比例（直射约八成）。影子里剩下的正是它。
-const float kSkyAmbientFraction = 0.2F;
+// 晴天正午天空散射占地面照度的比例。RN-42 从 0.2 收到 0.15：实机反馈「影子偏亮」，
+// 而晴空正午的散射份额实测在 10%~15% 之间，0.15 取的是这一档的上沿。
+const float kSkyAmbientFraction = 0.15F;
 
 // 云厚到这个程度，直射已经不剩什么，整套遮挡搜索加 PCF 都可以省掉——
 // 逐屏幕像素的开销，换一个看不见的差别。
@@ -106,13 +107,59 @@ const float kSunShadowInvisibleOvercast = 0.98F;
 //
 // 总量的下降由 `weatherDimming` 单独表达（vanilla 的 5/16），这里只分配比例——
 // 所以全阴天的总亮度与从前一样，变的只是「影子还起不起作用」。
-float sunSkyFactor(float skyLightFactor, float weatherDimming, float visibility, float rain,
-                   float thunder) {
-    float directShare = (1.0F - kSkyAmbientFraction) * (1.0F - sunShadowOvercast(rain, thunder));
-    float ambientShare = 1.0F - directShare;
-    return skyLightFactor * weatherDimming * (directShare * clamp(visibility, 0.0F, 1.0F) +
-                                              ambientShare);
+// RN-42：直射项终于带上了入射角。
+//
+// 现场（用户实机）：树影盖在地上，可旁边那面墙照旧是满亮的——墙根一道 4 倍的台阶。
+// 成因是接收端那句 `if (incidence <= 0.0) return 1.0;`：正午每一个竖直面的入射角余弦
+// 都约等于 0，可见度恒为 1，**永远进不了阴影**。而 cardinalShade 是方向无关的 0.6/0.8，
+// 没有任何东西会因为太阳在头顶而让侧面暗下来。
+//
+// 没有「又亮又能接受阴影」的写法：正午的竖直面在几何上就位于**它自己那一格的影子里**，
+// 诚实的遮挡查询给出的答案就是暗；而 cos → 0 时接收端偏置在任何有界代价下都不可靠
+// （见 RN-41 那条发散）。唯一稳定的写法就是让直射权重在那里归零——权重为 0 的地方，
+// 偏置失不失效都看不见。
+//
+// ★ 但不能直接乘 N·L：**时段的明暗 vanilla 已经用 skyLightFactor 表达过一遍了**
+// （`sunDirection.w`）。再乘一次 sin(太阳仰角) 就是把一天的曲线算两遍，清晨傍晚会平白
+// 暗一倍。所以权重是**相对于水平面**的：
+//
+//     directWeight = clamp(max(N·L, 0) / max(太阳的仰角余弦, eps), 0, 1)
+//
+// 于是水平地面在任何时刻都恰好是 1——今天的地面亮度一个字不动；正午的竖直面是 0；
+// 而清晨朝向太阳的那一面仍旧吃满直射（比值远大于 1，被 clamp 收到 1），
+// 与 vanilla 那种「早上东面亮」的观感一致。
+//
+// eps 只在太阳压到地平线（仰角约 1 度以内）时起作用，那时 skyLightFactor 本来就快到 0。
+const float kSunUpEpsilon = 0.02F;
+
+float sunDirectWeight(float incidenceCosine, float sunUpCosine) {
+    return clamp(max(incidenceCosine, 0.0F) / max(sunUpCosine, kSunUpEpsilon), 0.0F, 1.0F);
 }
+
+// 太阳在不在地平线以上。落下之后**它那一份直射整份转给散射**——与云做的是同一件事
+// （RN-36/38 的模型），所以夜里天光通道的总量与从前逐位相同：月光本来就是没有方向的，
+// 给它乘一个入射角权重会让整个夜晚平白暗掉六倍。
+//
+// 0.05 ≈ 太阳高出地平线 2.9 度。在那之上直射是满的，日出日落的戏剧性一分不减。
+const float kSunPresenceCosine = 0.05F;
+
+float sunPresence(float sunUpCosine) {
+    return clamp(sunUpCosine / kSunPresenceCosine, 0.0F, 1.0F);
+}
+
+// 收的是**几何量**（面的入射角余弦、太阳的仰角余弦），不是已经算好的权重：
+// 三个采样者各自去算那个比值，就有三个地方可以算错。
+float sunSkyFactor(float skyLightFactor, float weatherDimming, float visibility, float rain,
+                   float thunder, float incidenceCosine, float sunUpCosine) {
+    float directShare = (1.0F - kSkyAmbientFraction) *
+                        (1.0F - sunShadowOvercast(rain, thunder)) * sunPresence(sunUpCosine);
+    float ambientShare = 1.0F - directShare;
+    return skyLightFactor * weatherDimming *
+           (directShare * sunDirectWeight(incidenceCosine, sunUpCosine) *
+                clamp(visibility, 0.0F, 1.0F) +
+            ambientShare);
+}
+
 
 // RN-41：竖直薄片（十字植物、作物）自己遮自己。
 //

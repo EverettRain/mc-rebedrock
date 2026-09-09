@@ -115,6 +115,11 @@ const glm::vec2 kClearWeather{0.0F, 0.0F};
 const float kSolidFace = 0.0F;
 const float kThinPlane = 1.0F;
 
+// RN-42：directWeight。水平地面在任何时刻都是 1，既有的每一条断言都在这一档上——
+// 竖直面那一档由 checkDirectWeight 单独钉
+const float kGroundFacing = 1.0F;
+const float kSunOverhead = 1.0F;
+
 void require(bool condition, const std::string& message, int line) {
     if (!condition) {
         throw std::runtime_error{"sun_shadow_map_test line " + std::to_string(line) + ": " +
@@ -1146,8 +1151,8 @@ void checkWeatherResponse() {
     // 「影子里该有多亮」由 sunSkyFactor 从散射的份额算出来，不再是一个烘在
     // 接收端里的 0.35。
     {
-        const float lit = shaderBias::sunSkyFactor(1.0F, 1.0F, 1.0F, 0.0F, 0.0F);
-        const float shadowed = shaderBias::sunSkyFactor(1.0F, 1.0F, 0.0F, 0.0F, 0.0F);
+        const float lit = shaderBias::sunSkyFactor(1.0F, 1.0F, 1.0F, 0.0F, 0.0F, kGroundFacing, kSunOverhead);
+        const float shadowed = shaderBias::sunSkyFactor(1.0F, 1.0F, 0.0F, 0.0F, 0.0F, kGroundFacing, kSunOverhead);
         REQUIRE(std::abs(lit - 1.0F) < 1e-6F,
                 "晴天全亮必须是 1.0——受光面的亮度一个字都不该动");
         REQUIRE(std::abs(shadowed - shaderBias::kSkyAmbientFraction) < 1e-6F,
@@ -1156,20 +1161,20 @@ void checkWeatherResponse() {
         REQUIRE(shadowed < 0.35F, "拆开之后影子必须比那个 0.35 的系数更暗");
 
         // 云把直射**转给**散射：全阴时阴影完全不起作用，而总亮度不变
-        const float overcastLit = shaderBias::sunSkyFactor(1.0F, 1.0F, 1.0F, 1.0F, 1.0F);
-        const float overcastShadowed = shaderBias::sunSkyFactor(1.0F, 1.0F, 0.0F, 1.0F, 1.0F);
+        const float overcastLit = shaderBias::sunSkyFactor(1.0F, 1.0F, 1.0F, 1.0F, 1.0F, kGroundFacing, kSunOverhead);
+        const float overcastShadowed = shaderBias::sunSkyFactor(1.0F, 1.0F, 0.0F, 1.0F, 1.0F, kGroundFacing, kSunOverhead);
         REQUIRE(std::abs(overcastLit - overcastShadowed) < 1e-6F,
                 "全阴时受光与全影必须一样亮——没有直射就没有影子");
         REQUIRE(std::abs(overcastLit - 1.0F) < 1e-6F,
                 "云只是把直射散开，不吸收：总量的下降归 weatherDimming 单独表达");
         // 纯下雨：直射还剩一成，影子的对比度因此也只剩一成
-        const float rainLit = shaderBias::sunSkyFactor(1.0F, 1.0F, 1.0F, 1.0F, 0.0F);
-        const float rainShadowed = shaderBias::sunSkyFactor(1.0F, 1.0F, 0.0F, 1.0F, 0.0F);
+        const float rainLit = shaderBias::sunSkyFactor(1.0F, 1.0F, 1.0F, 1.0F, 0.0F, kGroundFacing, kSunOverhead);
+        const float rainShadowed = shaderBias::sunSkyFactor(1.0F, 1.0F, 0.0F, 1.0F, 0.0F, kGroundFacing, kSunOverhead);
         const float clearContrast = lit - shadowed;
         REQUIRE(std::abs((rainLit - rainShadowed) - clearContrast * 0.1F) < 1e-6F,
                 "纯下雨的影子对比度应当是晴天的十分之一");
         // 天气的总量下降是**另一件事**，它对两项一视同仁
-        REQUIRE(std::abs(shaderBias::sunSkyFactor(1.0F, 0.5F, 0.0F, 0.0F, 0.0F) -
+        REQUIRE(std::abs(shaderBias::sunSkyFactor(1.0F, 0.5F, 0.0F, 0.0F, 0.0F, kGroundFacing, kSunOverhead) -
                          shadowed * 0.5F) < 1e-6F,
                 "weatherDimming 只缩放总量，不改变直射与散射的比例");
     }
@@ -1217,11 +1222,13 @@ void checkWeatherResponse() {
     }
     {
         // RN-38：下落方块那条本来就是「环境 + 直射」的雏形（0.72 + 0.28），只是那两个
-        // 数与地形那一套各写各的。「天光里有多少是散射」在整个仓库里只能有一个答案
+        // 数与地形那一套各写各的。「天光里有多少是散射」在整个仓库里只能有一个答案。
+        // RN-42 更进一步：连**分配**都不再手抄，直接调用 sunSkyFactor，所以这里钉的
+        // 不再是「用了那个常数」，而是「用了那个函数」
         const std::string source =
             stripLineComments(readFile(shaderDir / "item_entity.frag"));
-        REQUIRE(source.find("kSkyAmbientFraction") != std::string::npos,
-                "the falling block's ambient share must come from the shared constant");
+        REQUIRE(source.find("sunSkyFactor(") != std::string::npos,
+                "the falling block's sky split must come from the shared function");
         REQUIRE(source.find("0.72") == std::string::npos,
                 "item_entity.frag still carries its own copy of the ambient share");
     }
@@ -1379,6 +1386,99 @@ void checkThinPlaneBias() {
         const bool terrain = std::string{name} != "item_entity.frag";
         REQUIRE(args.find(terrain ? "fragmentThinPlane" : "0.0") != std::string::npos,
                 std::string{name} + " must pass the thin-plane flag to sunShadowFactor");
+    }
+}
+
+// RN-42：直射项相对水平面的权重。
+void checkDirectWeight() {
+    // 太阳仰角的余弦（= 朝上法线的入射角余弦）。正午接近 1，清晨接近 0。
+    const float noonSun = 0.95F;
+    const float morningSun = 0.20F;
+
+    // ---- 1. 水平地面在任何时刻都是 1 -------------------------------------
+    // ★ 这一条是整个公式的锚：时段的明暗 vanilla 已经用 skyLightFactor 表达过一遍，
+    //   这里再乘一次 sin(仰角) 就是把一天的曲线算两遍，清晨傍晚会平白暗一倍
+    for (const float sunUp : {0.05F, 0.20F, 0.50F, 0.95F, 1.0F}) {
+        REQUIRE(std::abs(shaderBias::sunDirectWeight(sunUp, sunUp) - 1.0F) < 1e-6F,
+                "a horizontal surface must keep full direct weight at every hour");
+    }
+
+    // ---- 2. 正午的竖直面归零 ---------------------------------------------
+    // 竖直面的入射角余弦 = cos(方位差) x sin(太阳的天顶角)，正午那个因子约等于 0
+    const float noonWallIncidence = std::sqrt(std::max(1.0F - noonSun * noonSun, 0.0F));
+    REQUIRE(shaderBias::sunDirectWeight(noonWallIncidence, noonSun) < 0.35F,
+            "a wall at noon must lose most of its direct light; that is what closes the step "
+            "at the wall's foot");
+    REQUIRE(shaderBias::sunDirectWeight(0.0F, noonSun) == 0.0F,
+            "a face exactly edge-on to the sun takes no direct light");
+
+    // ---- 3. 清晨朝向太阳的墙仍旧吃满 -------------------------------------
+    // 低太阳时竖直面的入射角余弦远大于仰角余弦 ⇒ 比值 > 1 ⇒ 被 clamp 收到 1。
+    // vanilla 那种「早上东面亮」的观感靠这一条保住
+    const float morningWallIncidence = std::sqrt(std::max(1.0F - morningSun * morningSun, 0.0F));
+    REQUIRE(std::abs(shaderBias::sunDirectWeight(morningWallIncidence, morningSun) - 1.0F) < 1e-6F,
+            "a wall facing a low sun must still take full direct light");
+
+    // ---- 4. 背对太阳的面是 0，而且有界 -----------------------------------
+    REQUIRE(shaderBias::sunDirectWeight(-1.0F, noonSun) == 0.0F,
+            "a back-facing surface takes no direct light");
+    for (const float sunUp : {-1.0F, 0.0F, 1e-9F, 1.0F}) {
+        for (const float incidence : {-1.0F, 0.0F, 0.5F, 1.0F, 2.0F}) {
+            const float weight = shaderBias::sunDirectWeight(incidence, sunUp);
+            REQUIRE(std::isfinite(weight) && weight >= 0.0F && weight <= 1.0F,
+                    "direct weight must stay finite and inside [0,1] even at the horizon");
+        }
+    }
+
+    // ---- 5. 接进了 sunSkyFactor，而受光地面一个字没动 --------------------
+    const float ground = shaderBias::sunSkyFactor(1.0F, 1.0F, 1.0F, 0.0F, 0.0F, 1.0F, 1.0F);
+    REQUIRE(std::abs(ground - 1.0F) < 1e-6F, "受光的水平地面必须仍旧是 1.0");
+    const float noonWall =
+        shaderBias::sunSkyFactor(1.0F, 1.0F, 1.0F, 0.0F, 0.0F, noonWallIncidence, noonSun);
+    REQUIRE(noonWall < 0.5F * ground,
+            "正午的竖直面必须明显暗于地面——那正是这个节点买到的东西");
+    // ★ 而且它不能低于散射那一份：竖直面丢的是直射，不是全部
+    REQUIRE(noonWall >= shaderBias::kSkyAmbientFraction - 1e-6F,
+            "a wall must never fall below the ambient share");
+
+    // ---- 6. 散射份额收窄了，影子因此更暗 ---------------------------------
+    REQUIRE(shaderBias::kSkyAmbientFraction < 0.2F,
+            "RN-42 收窄了散射份额（实机反馈影子偏亮）");
+    REQUIRE(shaderBias::kSkyAmbientFraction >= 0.10F,
+            "低于晴空散射的实测下沿就不是物理量了，只是把影子涂黑");
+
+    // ---- 7. 太阳落山后，直射那一份整份转给散射 ---------------------------
+    // ★ 这一条是 RN-42 第一版漏掉的：夜里 sunUp < 0 ⇒ 直射权重是 0，而散射份额如果
+    //   仍旧只有 0.15，整个夜晚的天光通道就会掉到从前的 15%。实测（离屏，tick 23000）
+    //   平均亮度 12.1 → 7.0，是这条断言要钉死的东西。月光本来就没有方向。
+    REQUIRE(shaderBias::sunPresence(-1.0F) == 0.0F && shaderBias::sunPresence(0.0F) == 0.0F,
+            "the sun below the horizon must contribute no direct share");
+    REQUIRE(std::abs(shaderBias::sunPresence(1.0F) - 1.0F) < 1e-6F &&
+                std::abs(shaderBias::sunPresence(0.5F) - 1.0F) < 1e-6F,
+            "a sun well above the horizon must give the full direct share");
+    for (const float sunUp : {-1.0F, -0.5F, -0.01F, 0.0F}) {
+        // 夜里：不管朝哪一面，天光通道必须是**满的**——与 RN-42 之前逐位相同
+        for (const float incidence : {-1.0F, 0.0F, 0.5F, 1.0F}) {
+            const float night =
+                shaderBias::sunSkyFactor(1.0F, 1.0F, 0.0F, 0.0F, 0.0F, incidence, sunUp);
+            REQUIRE(std::abs(night - 1.0F) < 1e-6F,
+                    "night must keep the whole sky channel: the direct share transfers to "
+                    "ambient exactly the way an overcast sky does");
+        }
+    }
+
+    // ---- 8. 三个采样者都得算这个权重 -------------------------------------
+    const std::filesystem::path shaderDir{MC_REBEDROCK_SHADER_SRC_DIR};
+    for (const char* name : {"grass_block.frag", "block_cutout.frag", "item_entity.frag"}) {
+        const std::string source = stripLineComments(readFile(shaderDir / name));
+        // 三条路现在都走 sunSkyFactor，入射角与太阳高度是它的参数——手抄一份
+        // 「环境 + 直射」正是 RN-38 到 RN-42 之间那条路上反复出问题的地方
+        REQUIRE(source.find("sunSkyFactor(") != std::string::npos,
+                std::string{name} + " must take its sky split from the shared function");
+        REQUIRE(source.find("normalize(camera.sunDirection.xyz).y") != std::string::npos,
+                std::string{name} + " must feed the sun elevation into the sky split");
+        REQUIRE(source.find("kSkyAmbientFraction +") == std::string::npos,
+                std::string{name} + " must not hand-copy the ambient/direct split");
     }
 }
 
@@ -1599,6 +1699,7 @@ int main() {
         checkBias();
         checkContactHardening();
         checkThinPlaneBias();
+        checkDirectWeight();
         checkEntityWiring();
         checkDepthConvention();
         checkTexelSnapping();
