@@ -35,7 +35,11 @@ namespace mc::render {
 
 // 这个目标要拍的那份世界快照。非容器目标返回默认值（一份空快照），与 A0-0 之前
 // 的行为逐字节一致——这是既有十八屏基线不受影响的原因。
-[[nodiscard]] gameplay::WorldSnapshot uiCaptureWorldSnapshot(const UiCaptureTarget& target);
+// `carryStack` = 光标上拿着一堆东西（26.1 的 `getCarried()`）。
+// ★ 它是一个参数而不是夹具的固定内容：手上拿着东西会**抑制提示框**（vanilla 的规则），
+//   把它写死就再也拍不到"悬停且手上是空的"那一档——而那是二十张常规基线的那一档。
+[[nodiscard]] gameplay::WorldSnapshot uiCaptureWorldSnapshot(const UiCaptureTarget& target,
+                                                             bool carryStack = false);
 
 // 配套的玩家快照：游戏模式、选中的快捷栏格、以及生存状态条读的那几个量。
 // ★ 游戏模式在这里，不在世界快照里——创造背包这一档是 `PlayerInventory + Creative`

@@ -1442,7 +1442,11 @@ struct VulkanRenderer::Impl final : public gameplay::SimulationHost {
         uiTimeSeconds = kUiCaptureClockSeconds;
         // 2. 鼠标。按钮的悬停高亮读光标位置，而隐藏窗口下指针停在哪儿不由我们决定。
         //    钉到画布外的一个点，于是没有任何控件处于悬停态（ui_capture_test 断言这条性质）。
-        pinnedCursor = ui::UiPoint{kUiCaptureCursorX, kUiCaptureCursorY};
+        // 光标：按钮的悬停高亮与槽位提示框都读它。默认钉在画布外（没有任何东西悬停），
+        // `--ui-cursor` 可以把它钉到画布内的某一点——那是拍"悬停态"的唯一办法。
+        pinnedCursor = uiCapture.has_value()
+                           ? ui::UiPoint{uiCapture->cursorX, uiCapture->cursorY}
+                           : ui::UiPoint{kUiCaptureCursorX, kUiCaptureCursorY};
         // 3. 按下态。上一次输入留下的 pressedMenuButton 会让某个按钮画成按下的样子。
         pressedMenuButton = ui::WidgetId::None;
         // 4. 世界。前端页面本来就没有世界，但显式设而不是靠"碰巧"——天气、雨幕与
@@ -1603,7 +1607,8 @@ struct VulkanRenderer::Impl final : public gameplay::SimulationHost {
     void publishUiCaptureSnapshots(const UiCaptureTarget& target) {
         auto channel = net::makeLoopbackPair();
         net::sendMessage(*channel.server,
-                         gameplay::PublishedSnapshot{uiCaptureWorldSnapshot(target)});
+                         gameplay::PublishedSnapshot{
+                             uiCaptureWorldSnapshot(target, uiCapture->carryStack)});
         net::sendMessage(*channel.server,
                          gameplay::PublishedSnapshot{uiCapturePlayerSnapshot(target)});
         static_cast<void>(clientMirror_.pump(*channel.client, *this));

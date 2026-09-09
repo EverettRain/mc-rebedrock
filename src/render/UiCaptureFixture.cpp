@@ -79,7 +79,8 @@ void fillPlayerInventory(gameplay::WorldSnapshot& snapshot) {
 
 } // namespace
 
-gameplay::WorldSnapshot uiCaptureWorldSnapshot(const UiCaptureTarget& target) {
+gameplay::WorldSnapshot uiCaptureWorldSnapshot(const UiCaptureTarget& target,
+                                              bool carryStack) {
     gameplay::WorldSnapshot snapshot;
     if (!target.container.has_value()) {
         // 非容器目标：一份默认快照，与 A0-0 之前逐字节一致。既有十八屏的基线
@@ -88,6 +89,13 @@ gameplay::WorldSnapshot uiCaptureWorldSnapshot(const UiCaptureTarget& target) {
     }
     snapshot.openContainerScreen = *target.container;
     fillPlayerInventory(snapshot);
+    if (carryStack) {
+        // 光标上那一堆。画在**光标位置**，所以光标钉在画布外时它一个像素都不占——
+        // 这是常规基线不受影响的原因。带 `--ui-cursor` 把光标钉进画布，它才现身，
+        // 同时按 vanilla 的规则把提示框压住。
+        snapshot.cursorStack = enchanted(items(gameplay::items::DiamondSword, 1U),
+                                         gameplay::EnchantmentId::Sharpness, 5U);
+    }
 
     switch (*target.container) {
     case gameplay::ContainerScreen::PlayerInventory:
