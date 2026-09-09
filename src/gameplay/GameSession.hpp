@@ -513,6 +513,11 @@ class GameSession final {
     [[nodiscard]] const EquipmentSlots& equipment() const { return primaryPlayer().equipment; }
     [[nodiscard]] RecipeBook& recipeBook() { return primaryPlayer().recipeBook; }
     [[nodiscard]] const RecipeBook& recipeBook() const { return primaryPlayer().recipeBook; }
+    // ADV-1：成就进度（配方解锁链的另一半，落盘走 ADVP 块）。
+    [[nodiscard]] PlayerAdvancements& advancements() { return primaryPlayer().advancements; }
+    [[nodiscard]] const PlayerAdvancements& advancements() const {
+        return primaryPlayer().advancements;
+    }
     [[nodiscard]] CraftingSystem& craftingSystem() { return primaryPlayer().crafting; }
     [[nodiscard]] const CraftingSystem& craftingSystem() const { return primaryPlayer().crafting; }
     [[nodiscard]] GameMode& gameMode() { return primaryPlayer().gameMode; }

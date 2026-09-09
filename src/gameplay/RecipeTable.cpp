@@ -12,6 +12,35 @@
 // that used to be hardcoded in CraftingSystem. Included once, here.
 #include "gameplay/RecipeBakedData.inc"
 
+namespace mc::data::recipe {
+namespace {
+
+// ADV-1 ★★ `unlockedBy` 是必填，漏填在**编译期**停下。
+//
+// vanilla 的 1492 个 `advancement/recipes/**.json` 是数据生成期从配方构建器上的
+// `unlockedBy(...)` 派生出来的；本作把那一列写回配方自己那一行，成就底座在加载
+// 期生成。这条 static_assert 就是「两份表述会不同步」这个风险的类型层面死因：
+// 新增一条配方而不写解锁材料，聚合初始化会把这一格值初始化成
+// `IngredientDefKind::Empty`（一格空材料对「解锁条件」没有意义，所以这里把它当
+// 「没填」的哨兵），于是整个构建停下——不会等到运行期才发现那条配方永远解锁不了。
+[[nodiscard]] constexpr bool everyRecipeNamesAnUnlockMaterial() {
+    for (const auto& recipe : kBakedCraftingRecipes) {
+        if (recipe.unlockedBy.kind == IngredientDefKind::Empty) return false;
+    }
+    for (const auto& recipe : kBakedFurnaceRecipes) {
+        if (recipe.unlockedBy.kind == IngredientDefKind::Empty) return false;
+    }
+    return true;
+}
+
+static_assert(everyRecipeNamesAnUnlockMaterial(),
+              "RecipeBakedData.inc: 每条配方都必须填 unlockedBy（触发它解锁的那个"
+              "材料，逐条抄 vanilla `advancement/recipes/**.json` 里那个 "
+              "inventory_changed 的 items）。漏填的那条在这里停下。");
+
+} // namespace
+} // namespace mc::data::recipe
+
 #include <string>
 #include <string_view>
 #include <utility>
@@ -65,8 +94,24 @@ namespace {
     return false;
 }
 
+// ADV-1：把 def 里的解锁材料填进 RecipeUnlock 的两个形态。`identifier` 由调用方
+// 给出一段**稳定**的存储（内置的是静态烘焙数据，数据包来的是 ownedNames_ 里的
+// 那一份），这里只负责搬。解析不出来（本作没有这个 id）时留成 Empty：配方本身
+// 照常可做，只是没有解锁成就——为了一条成就把整条配方丢掉是本末倒置。
+void resolveUnlock(const data::IngredientDef& def, std::string_view identifier,
+                   RecipeUnlock& out) {
+    out = RecipeUnlock{};
+    RecipeIngredient resolved;
+    if (def.kind == data::IngredientDefKind::Empty || !resolveIngredient(def, resolved)) {
+        return;
+    }
+    out.kind = resolved.kind;
+    out.resolved = resolved;
+    out.identifier = def.kind == data::IngredientDefKind::Planks ? std::string_view{} : identifier;
+}
+
 [[nodiscard]] bool resolveCrafting(const data::CraftingRecipeDef& def, std::string_view identifier,
-                                   CraftingRecipe& out) {
+                                   std::string_view unlockedById, CraftingRecipe& out) {
     CraftingRecipe recipe;
     recipe.identifier = identifier;
     recipe.width = def.width;
@@ -84,12 +129,13 @@ namespace {
     if (!resolveOutput(def.output, def.count, recipe.output)) {
         return false;
     }
+    resolveUnlock(def.unlockedBy, unlockedById, recipe.unlockedBy);
     out = std::move(recipe);
     return true;
 }
 
 [[nodiscard]] bool resolveFurnace(const data::FurnaceRecipeDef& def, std::string_view identifier,
-                                  FurnaceRecipe& out) {
+                                  std::string_view unlockedById, FurnaceRecipe& out) {
     FurnaceRecipe recipe;
     recipe.identifier = identifier;
     if (!resolveIngredient(def.input, recipe.input)) {
@@ -100,6 +146,7 @@ namespace {
     }
     recipe.cookTicks = def.cookTicks;
     recipe.experience = def.experience;
+    resolveUnlock(def.unlockedBy, unlockedById, recipe.unlockedBy);
     out = std::move(recipe);
     return true;
 }
@@ -131,13 +178,15 @@ void RecipeTable::loadBuiltinDefaults() {
     for (const auto& baked : data::recipe::kBakedCraftingRecipes) {
         CraftingRecipe recipe;
         // The baked identifier is a static string_view; view it directly.
-        if (resolveCrafting(data::recipe::toDef(baked), baked.identifier, recipe)) {
+        if (resolveCrafting(data::recipe::toDef(baked), baked.identifier, baked.unlockedBy.id,
+                            recipe)) {
             crafting_.push_back(std::move(recipe));
         }
     }
     for (const auto& baked : data::recipe::kBakedFurnaceRecipes) {
         FurnaceRecipe recipe;
-        if (resolveFurnace(data::recipe::toDef(baked), baked.identifier, recipe)) {
+        if (resolveFurnace(data::recipe::toDef(baked), baked.identifier, baked.unlockedBy.id,
+                           recipe)) {
             furnace_.push_back(std::move(recipe));
         }
     }
@@ -182,16 +231,20 @@ void RecipeTable::applyOverlay(const assets::ResourceProvider& resources) {
             if (!data::Codec<data::FurnaceRecipeDef>::read(root, def)) {
                 continue;
             }
+            // ADV-1：解锁材料的 id 也要一段稳定存储（RecipeUnlock::identifier
+            // 是 view）。ownedNames_ 是 deque，元素不搬家，与配方 id 同一条路。
+            ownedNames_.push_back(def.unlockedBy.id);
+            const std::string_view unlockId = ownedNames_.back();
             for (auto& existing : furnace_) {
                 if (existing.identifier == name) {
-                    if (resolveFurnace(def, existing.identifier, resolved)) {
+                    if (resolveFurnace(def, existing.identifier, unlockId, resolved)) {
                         existing = std::move(resolved);
                     }
                     goto nextFile;
                 }
             }
             ownedNames_.push_back(name);
-            if (resolveFurnace(def, ownedNames_.back(), resolved)) {
+            if (resolveFurnace(def, ownedNames_.back(), unlockId, resolved)) {
                 furnace_.push_back(std::move(resolved));
             } else {
                 ownedNames_.pop_back();
@@ -202,16 +255,18 @@ void RecipeTable::applyOverlay(const assets::ResourceProvider& resources) {
             if (!data::Codec<data::CraftingRecipeDef>::read(root, def)) {
                 continue;
             }
+            ownedNames_.push_back(def.unlockedBy.id); // 见上：解锁材料 id 的稳定存储
+            const std::string_view unlockId = ownedNames_.back();
             for (auto& existing : crafting_) {
                 if (existing.identifier == name) {
-                    if (resolveCrafting(def, existing.identifier, resolved)) {
+                    if (resolveCrafting(def, existing.identifier, unlockId, resolved)) {
                         existing = std::move(resolved);
                     }
                     goto nextFile;
                 }
             }
             ownedNames_.push_back(name);
-            if (resolveCrafting(def, ownedNames_.back(), resolved)) {
+            if (resolveCrafting(def, ownedNames_.back(), unlockId, resolved)) {
                 crafting_.push_back(std::move(resolved));
             } else {
                 ownedNames_.pop_back();

@@ -21,6 +21,7 @@
 #include "gameplay/PlayerController.hpp"
 #include "gameplay/PlayerExperience.hpp"
 #include "gameplay/PlayerVitals.hpp"
+#include "gameplay/PlayerAdvancements.hpp"
 #include "gameplay/RecipeBook.hpp"
 
 #include <glm/vec3.hpp>
@@ -56,6 +57,13 @@ struct ServerPlayer final {
     // ServerPlayer 上的（ServerPlayer.java:1485-1488 的 `this.recipeBook`），
     // 因为它是**每个玩家一份**的进度，不是世界状态。
     RecipeBook recipeBook;
+    // ADV-1：成就进度，与配方书同一个理由挂在玩家身上（26.1 的
+    // `ServerPlayer.advancements` 也是每个玩家一份）。配方解锁链就是「成就完成
+    // -> rewards.recipes -> recipeBook」这条路，所以两者必然同层。
+    PlayerAdvancements advancements;
+    // 上一 tick 的背包槽指纹，inventory_changed 靠它分辨「哪一槽变了」。
+    // 纯运行期缓存，不落盘（落盘的是 advancements 里的已完成 criterion）。
+    std::vector<InventorySlotFingerprint> inventoryFingerprints;
     // ENCH-2: the open enchanting screen's two input slots and derived offers.
     // A sibling of `crafting` for the same reason: vanilla's EnchantmentMenu,
     // like the crafting grid, is menu-scoped state the PLAYER carries and hands

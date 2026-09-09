@@ -298,6 +298,8 @@ set(MC_REBEDROCK_RUNTIME_SOURCES
     src/gameplay/CustomNames.cpp
     src/gameplay/CraftingSystem.cpp
     src/gameplay/RecipeTable.cpp
+    src/gameplay/AdvancementTable.cpp
+    src/gameplay/PlayerAdvancements.cpp
     src/gameplay/RecipeBook.cpp
     src/gameplay/RecipeBookCategory.cpp
     src/gameplay/StackedItemContents.cpp
@@ -3471,6 +3473,14 @@ if(BUILD_TESTING)
     target_link_libraries(mc_rebedrock_data_codec_test PRIVATE mc_rebedrock_runtime)
     target_include_directories(mc_rebedrock_data_codec_test PRIVATE src tests "${glm_SOURCE_DIR}")
     add_test(NAME data_codec COMMAND mc_rebedrock_data_codec_test)
+
+    # ADV-1: 最小成就链（配方解锁）。
+    add_executable(mc_rebedrock_advancement_test
+        tests/advancement_test.cpp
+    )
+    target_link_libraries(mc_rebedrock_advancement_test PRIVATE mc_rebedrock_runtime)
+    target_include_directories(mc_rebedrock_advancement_test PRIVATE src "${glm_SOURCE_DIR}")
+    add_test(NAME advancement COMMAND mc_rebedrock_advancement_test)
 
     # ADV-0a: 数据包目录名必须逐字对上真 26.1 的布局（单数 recipe/loot_table/
     # function/advancement）。用错名字时 list() 只是返回空表，静默失效。

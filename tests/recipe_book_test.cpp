@@ -293,50 +293,11 @@ void testLoadNormalizes() {
     assert(!book.highlighted("minecraft:torch"));
 }
 
-// --- 4. 解锁规则（本作的简化规则） ----------------------------------------
-
-void testAcquiringAnIngredientUnlocksItsRecipes() {
-    RecipeBook book;
-    assert(!book.contains("minecraft:oak_planks"));
-    // 橡木原木是 oak_planks 的唯一材料。
-    assert(awardRecipesForAcquiredStack(book, blockStack(Block::OakLog, 1U)) >= 1);
-    assert(book.contains("minecraft:oak_planks"));
-    assert(book.highlighted("minecraft:oak_planks"));
-    // 木板配方本身的材料是原木不是木板，所以拿到原木不会解锁「用木板做的」那些。
-    assert(!book.contains("minecraft:sticks"));
-    assert(!book.contains("minecraft:crafting_table"));
-
-    // 拿到木板才解锁用木板的那些。
-    assert(awardRecipesForAcquiredStack(book, blockStack(Block::OakPlanks, 1U)) >= 1);
-    assert(book.contains("minecraft:sticks"));
-    assert(book.contains("minecraft:crafting_table"));
-    assert(book.contains("minecraft:chest"));
-
-    // 熔炉配方同一条规则：拿到铁矿石解锁烧铁。
-    assert(!book.contains("minecraft:iron_ingot_from_smelting"));
-    static_cast<void>(awardRecipesForAcquiredStack(book, blockStack(Block::IronOre, 1U)));
-    assert(book.contains("minecraft:iron_ingot_from_smelting"));
-
-    // 第二次拿到同一种材料不再新增。
-    assert(awardRecipesForAcquiredStack(book, blockStack(Block::OakPlanks, 1U)) == 0);
-}
-
-void testEmptyStackUnlocksNothing() {
-    RecipeBook book;
-    assert(awardRecipesForAcquiredStack(book, ItemStack{}) == 0);
-    assert(book.known().empty());
-}
-
-void testInventoryScanUnlocksEverythingItHolds() {
-    Inventory inventory;
-    const std::array<ItemStack, 2U> held{blockStack(Block::OakPlanks, 4U),
-                                         itemStack(&items::Coal, 1U)};
-    putInInventory(inventory, held);
-    RecipeBook book;
-    static_cast<void>(awardRecipesForInventory(book, inventory));
-    assert(book.contains("minecraft:crafting_table"));
-    assert(book.contains("minecraft:torch"));  // 煤是火把的材料
-}
+// --- 4. 解锁规则 ----------------------------------------------------------
+//
+// ADV-1 起解锁走成就链，测试在 tests/advancement_test.cpp。这里原来那三条测的是
+// 已删的简化规则（awardRecipesForAcquiredStack / awardRecipesForInventory），
+// 与它们测的那两个函数一起删掉——留着就是留了第二个口径。
 
 // --- 5. 配方书列表 --------------------------------------------------------
 
@@ -836,9 +797,6 @@ int main() {
     testAddRecipesHighlightsOnlyTheNewOnes();
     testLoadNormalizes();
 
-    testAcquiringAnIngredientUnlocksItsRecipes();
-    testEmptyStackUnlocksNothing();
-    testInventoryScanUnlocksEverythingItHolds();
 
     testEntriesRespectTheGridSize();
     testEntriesAreGroupedByCategory();

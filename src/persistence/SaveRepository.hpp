@@ -6,6 +6,7 @@
 #include "gameplay/FurnaceSystem.hpp"
 #include "gameplay/GameRules.hpp"
 #include "gameplay/Inventory.hpp"
+#include "gameplay/PlayerAdvancements.hpp"
 #include "gameplay/PlayerVitals.hpp"
 #include "gameplay/WeatherSystem.hpp"
 #include "world/Dimension.hpp"
@@ -330,6 +331,13 @@ struct SaveGame final {
     // 可以追加/覆盖），下标是一次运行内的值，落进存档就会在下次加载时错位。
     std::vector<std::string> unlockedRecipes;
     std::vector<std::string> highlightedRecipes;
+
+    // ADV-1：玩家的成就进度 —— 每条成就上已完成的 criterion 名字。自描述块
+    // ADVP，跟 RCPB/XPOB/PJTL/DPKS 同一条「加一个 owner 块、不动格式号」的路。
+    // 缺块 = 空进度（成就层还不存在时写的存档），不是错误。
+    // 存的是**名字**不是下标：成就表是数据驱动的（数据包可增可替），下标是每次
+    // 运行才有意义的值，下一次装载会静默指到另一条成就上。
+    std::vector<gameplay::AdvancementProgressEntry> advancementProgress;
 };
 
 // How a stored world's save format relates to this build's (META-2b), decided by

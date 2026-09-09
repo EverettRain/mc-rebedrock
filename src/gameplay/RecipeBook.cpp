@@ -359,38 +359,6 @@ void RecipeBook::clear() {
     highlight_.clear();
 }
 
-int awardRecipesForAcquiredStack(RecipeBook& book, const ItemStack& acquired) {
-    if (acquired.empty()) return 0;
-    int added = 0;
-    for (const auto& recipe : recipeTable().crafting()) {
-        if (book.contains(recipe.identifier)) continue;
-        const bool isIngredient = std::ranges::any_of(
-            recipe.ingredients, [&acquired](const RecipeIngredient& ingredient) {
-                return ingredient.kind != IngredientKind::Empty &&
-                    ingredientMatches(ingredient, acquired);
-            });
-        if (isIngredient) {
-            added += book.addRecipe(recipe.identifier);
-        }
-    }
-    for (const auto& recipe : recipeTable().furnace()) {
-        if (book.contains(recipe.identifier)) continue;
-        if (recipe.input.kind != IngredientKind::Empty &&
-            ingredientMatches(recipe.input, acquired)) {
-            added += book.addRecipe(recipe.identifier);
-        }
-    }
-    return added;
-}
-
-int awardRecipesForInventory(RecipeBook& book, const Inventory& inventory) {
-    int added = 0;
-    for (const auto& stack : inventory.slots()) {
-        added += awardRecipesForAcquiredStack(book, stack);
-    }
-    return added;
-}
-
 std::vector<RecipeBookEntry> recipeBookEntries(ContainerScreen screen,
                                                const Inventory& inventory,
                                                const RecipeBook& book) {

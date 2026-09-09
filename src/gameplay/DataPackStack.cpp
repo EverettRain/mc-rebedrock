@@ -1,5 +1,6 @@
 #include "gameplay/DataPackStack.hpp"
 
+#include "gameplay/AdvancementTable.hpp"
 #include "gameplay/BlockTags.hpp"
 #include "gameplay/ChestLootTable.hpp"
 #include "gameplay/LootTable.hpp"
@@ -121,6 +122,9 @@ void PerSaveDataStack::rebuild(const assets::ResourceProvider& base) const {
     entities::entityAttributeTable().load(dataStack);
     blockTags().load(dataStack);
     recipeTable().load(dataStack);
+    // ADV-1: 成就表在配方表**之后**——解锁底座是按配方表逐条生成的，配方表还没
+    // 叠完覆盖就生成，数据包新增/替换的配方就拿不到解锁成就。
+    advancementTable().load(dataStack, recipeTable());
     lootTable().load(dataStack);
     biomeSpawnTables().load(dataStack);
     // STRUCT-1/2: chest loot tables + structure templates, then the built-in
@@ -138,6 +142,7 @@ void PerSaveDataStack::rebuildBuiltinOnly(const assets::ResourceProvider& base) 
     entities::entityAttributeTable().load(empty);
     blockTags().load(empty);
     recipeTable().load(empty);
+    advancementTable().load(empty, recipeTable()); // 见 rebuild()：必须在配方表之后
     lootTable().load(empty);
     biomeSpawnTables().load(empty);
     gameplay::chestLootTable().load(empty);

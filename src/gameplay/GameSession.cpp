@@ -2,6 +2,7 @@
 
 #include "gameplay/Composter.hpp"  // AR-M5: the villager composts through the player's own rule
 
+#include "gameplay/AdvancementTable.hpp"
 #include "gameplay/ArmorEnchantment.hpp"
 #include "gameplay/BlockEntityTicker.hpp"
 #include "gameplay/Enchantment.hpp"
@@ -368,13 +369,20 @@ void GameSession::tick(world::World& world, SimulationHost& host) {
     refreshEnchantingOffers(world);
     if (primaryLevel().items.tick(world, primaryPlayer().controller.position(), primaryPlayer().inventory) > 0U) {
         events_.publish(SoundEvent{SoundEventKind::ItemPickup, primaryPlayer().controller.position()});
-        // 配方书的解锁触发点。26.1 挂在 `recipes/` 成就的 `inventory_changed` 上，
-        // 本作没有成就系统，简化规则是「背包里出现某条配方的任一材料就解锁它」
-        // （见 gameplay/RecipeBook.hpp 的偏差登记）。**只在背包真的变了的那一帧
-        // 扫**——`items.tick` 返回的是这一 tick 收进背包的堆数，为零就不扫。
-        static_cast<void>(awardRecipesForInventory(primaryPlayer().recipeBook,
-                                                   primaryPlayer().inventory));
     }
+    // ADV-1：配方解锁走成就链，与 26.1 同形（`recipes/` 成就的 inventory_changed
+    // + recipe_unlocked，奖励是 rewards.recipes -> 配方书）。上一轮那条「背包里
+    // 出现某条配方的任一材料就解锁它」的简化规则连同它的两个函数一起删了——两条
+    // 路并存就是两个口径。
+    //
+    // 触发点在这里而不是拾取那个 if 里面：vanilla 打 inventory_changed 的是
+    // 「背包某一槽变了」（ServerPlayer.java:317-327 的 containerListener），拾取
+    // 只是其中一条来路，合成/给予/丢弃同样会变。tickPlayerAdvancements 与上一
+    // tick 的槽位指纹比一遍，没变就是 36 次整数比较，不分配也不遍历成就表。
+    static_cast<void>(tickPlayerAdvancements(advancementTable(), primaryPlayer().inventory,
+                                             primaryPlayer().inventoryFingerprints,
+                                             primaryPlayer().advancements,
+                                             primaryPlayer().recipeBook));
     // XP-1: the experience orb pool — physics/magnet/merge/despawn, then
     // contact pickup credits primaryPlayer().experience directly (no loot/
     // inventory indirection, unlike item drops). Reuses ItemPickup for the

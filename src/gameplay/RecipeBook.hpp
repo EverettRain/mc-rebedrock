@@ -83,33 +83,21 @@ class RecipeBook final {
     std::vector<std::string> highlight_;
 };
 
-// ★★ 解锁规则。
+// ★★ 解锁规则：**成就链**，见 gameplay/PlayerAdvancements.hpp。
 //
-// 26.1 里配方**主要**不是靠代码解锁的，是靠成就（advancement）：vanilla 数据包
-// 给每一条配方生成一个 `recipes/<分组>/<名字>.json` 成就，条件是
-// `minecraft:inventory_changed`「背包里出现了某个材料」，奖励是
-// `{"rewards": {"recipes": [...]}}`；发奖走
+// 26.1 里配方主要不是靠代码解锁的，是靠成就：vanilla 数据包给每一条配方生成一个
+// `recipes/<分组>/<名字>.json`，条件是 `inventory_changed`「背包里出现了某个
+// 材料」或 `recipe_unlocked`，奖励是 `{"rewards": {"recipes": [...]}}`；发奖走
 // `advancements/AdvancementRewards.java` -> `ServerPlayer.awardRecipes`
-// （ServerPlayer.java:1485-1488）-> `ServerRecipeBook.addRecipes`。
-// 代码里直接解锁的只有三条小路：合成/烧炼**用过**这条配方
-// （`world/inventory/RecipeCraftingHolder.java:17-26` 的 `awardUsedRecipes`）、
-// 知识之书（`KnowledgeBookItem`）、`/recipe give`（`RecipeCommand`）。
+// （ServerPlayer.java:1485-1488）-> `ServerRecipeBook.addRecipes`。本作 ADV-1
+// 把这条链整条做了出来，底座在加载期从配方表生成（AdvancementTable.hpp）。
 //
-// 本作**没有成就系统**（`grep -rn "Advancement" src/` 零命中），所以那条主路没有
-// 落脚点。这里选的简化规则是：
+// ADV-1 之前这里有一条简化规则（`awardRecipesForAcquiredStack` /
+// `awardRecipesForInventory`：背包里出现某条配方的**任一**材料就解锁它）。它连同
+// GameSession 的调用点一起删了——成就链取代它，两条路并存就是两个口径。
 //
-//   **玩家背包里出现某条配方的任一材料时，解锁这条配方。**
-//
-// 它对着 vanilla 那个成就的触发器（`inventory_changed` + `has_<材料>`）来，只是
-// 把「配方作者挑的那一个材料」放宽成「任意一个材料」——vanilla 的 requirements 是
-// 一个 OR 数组，本来就是「任一条满足即可」，只是数组里通常只列了一个材料。
-// 登记为偏差：本作解锁得比 vanilla **早**（例：木镐在 vanilla 只由 `has_stick`
-// 触发，本作拿到木板也会解锁），且 vanilla 里少数「一进游戏就给」的配方
-// （`recipes/decorations/crafting_table.json` 的 `unlock_right_away` 用的是
-// `minecraft:tick` 触发器）在本作要等到拿到木板才解锁。
-[[nodiscard]] int awardRecipesForAcquiredStack(RecipeBook& book, const ItemStack& acquired);
-// 整个背包扫一遍（拾取/合成/给予之后调一次就够）。返回新解锁了几条。
-[[nodiscard]] int awardRecipesForInventory(RecipeBook& book, const Inventory& inventory);
+// 代码里直接解锁的三条小路（合成/烧炼用过这条配方、知识之书、`/recipe give`）
+// 与 vanilla 一样仍然绕过成就，走 addRecipes。
 
 // 配方书里的一条。
 struct RecipeBookEntry final {

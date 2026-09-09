@@ -1405,6 +1405,92 @@ void readRecipeBookBlock(std::span<const std::uint8_t> payload, std::size_t& cur
     }
 }
 
+// ADV-1 的 ADVP 块：玩家的成就进度——每条成就上**已完成的 criterion 名字**。
+// 框架与 RCPB 一样：
+//
+//   u32 blockTag          // 'A','D','V','P'
+//   u32 blockSizeBytes    // whole block length incl. this field
+//   u16 blockVersion      // 1
+//   u16 advancementCount
+//   per advancement:
+//     string advancementId   // u16 length-prefixed
+//     u16 criterionCount
+//     criteria[]: string
+//
+// 存名字不存下标，理由与 RCPB 同：成就表是数据驱动的（底座按配方表生成、数据包
+// 还能再叠），下标是每次运行才有意义的值。
+//
+// 一份成就层还不存在时写的存档没有 ADVP 块，读的时候找不到这个 tag，进度就是空
+// 的——「什么都还没完成」，正是新世界的起点。追加一个 owner 块不需要动格式号
+// （XPOB/PJTL/DPKS/RCPB 用的是同一条路）。
+constexpr std::uint32_t kAdvancementBlockTag =
+    'A' | ('D' << 8) | ('V' << 16) | ('P' << 24);
+constexpr std::uint16_t kAdvancementBlockVersion = 1U;
+
+void appendAdvancementBlock(std::vector<std::uint8_t>& bytes, const SaveGame& game) {
+    const std::size_t blockStart = bytes.size();
+    appendInteger(bytes, kAdvancementBlockTag);
+    appendInteger(bytes, 0U);  // blockSizeBytes, patched below
+    appendInteger(bytes, kAdvancementBlockVersion);
+    appendInteger(bytes, static_cast<std::uint16_t>(game.advancementProgress.size()));
+    for (const auto& entry : game.advancementProgress) {
+        appendString(bytes, entry.advancement);
+        appendInteger(bytes, static_cast<std::uint16_t>(entry.criteria.size()));
+        for (const auto& criterion : entry.criteria) {
+            appendString(bytes, criterion);
+        }
+    }
+    const auto blockSize = static_cast<std::uint32_t>(bytes.size() - blockStart);
+    for (std::size_t offset = 0; offset < sizeof(std::uint32_t); ++offset) {
+        bytes[blockStart + 4U + offset] =
+            static_cast<std::uint8_t>(blockSize >> (offset * 8U));
+    }
+}
+
+void readAdvancementBlock(std::span<const std::uint8_t> payload, std::size_t& cursor,
+                          SaveGame& game) {
+    const std::size_t blockStart = cursor;
+    if (blockStart + 12U > payload.size()) {
+        throw std::runtime_error("world.dat advancement block is truncated");
+    }
+    const auto tag = readInteger<std::uint32_t>(payload, cursor);
+    if (tag != kAdvancementBlockTag) {
+        throw std::runtime_error("world.dat has an invalid advancement block");
+    }
+    const auto blockSize = readInteger<std::uint32_t>(payload, cursor);
+    if (blockSize < 12U || static_cast<std::size_t>(blockSize) > payload.size() - blockStart) {
+        throw std::runtime_error("world.dat advancement block is malformed");
+    }
+    const auto blockVersion = readInteger<std::uint16_t>(payload, cursor);
+    if (blockVersion > kAdvancementBlockVersion) {
+        cursor = blockStart + blockSize;
+        return;
+    }
+    const std::size_t blockEnd = blockStart + blockSize;
+    const auto count = readInteger<std::uint16_t>(payload, cursor);
+    game.advancementProgress.clear();
+    game.advancementProgress.reserve(static_cast<std::size_t>(count));
+    for (std::uint16_t index = 0; index < count; ++index) {
+        if (cursor >= blockEnd) {
+            throw std::runtime_error("world.dat advancement block is truncated");
+        }
+        gameplay::AdvancementProgressEntry entry;
+        entry.advancement = readString(payload, cursor);
+        const auto criteria = readInteger<std::uint16_t>(payload, cursor);
+        entry.criteria.reserve(static_cast<std::size_t>(criteria));
+        for (std::uint16_t criterion = 0; criterion < criteria; ++criterion) {
+            if (cursor >= blockEnd) {
+                throw std::runtime_error("world.dat advancement block is truncated");
+            }
+            entry.criteria.push_back(readString(payload, cursor));
+        }
+        game.advancementProgress.push_back(std::move(entry));
+    }
+    if (cursor != blockEnd) {
+        throw std::runtime_error("world.dat advancement block has trailing data");
+    }
+}
+
 // The CLOCK block is the self-describing region format 13 appends after the
 // entity block, mirroring the GameRules framing:
 //
@@ -3000,7 +3086,16 @@ void readRecipeBookOwner(std::span<const std::uint8_t> payload, std::size_t& cur
     readRecipeBookBlock(payload, cursor, context.game);
 }
 
-constexpr std::array<SaveBlockOwner, 15> kSaveBlockOwners{{
+void writeAdvancementOwner(std::vector<std::uint8_t>& bytes, const SaveWriteContext& context) {
+    appendAdvancementBlock(bytes, context.game);
+}
+void readAdvancementOwner(std::span<const std::uint8_t> payload, std::size_t& cursor,
+                          const SaveBlockHeader& header, SaveReadContext& context) {
+    cursor = header.bodyStart - kBlockHeaderBytes;
+    readAdvancementBlock(payload, cursor, context.game);
+}
+
+constexpr std::array<SaveBlockOwner, 16> kSaveBlockOwners{{
     {kVersionBlockTag, kVersionBlockVersion, &appendVersionBlock, &readVersionBlock},
     {kWorldBlockTag, kWorldBlockVersion, &appendWorldBlock, &readWorldBlock},
     {kPlayerBlockTag, kPlayerBlockVersion, &appendPlayerBlock, &readPlayerBlock},
@@ -3021,6 +3116,8 @@ constexpr std::array<SaveBlockOwner, 15> kSaveBlockOwners{{
     {kDataPackBlockTag, kDataPackBlockVersion, &writeDataPackOwner, &readDataPackOwner},
     {kRecipeBookBlockTag, kRecipeBookBlockVersion, &writeRecipeBookOwner,
      &readRecipeBookOwner},
+    {kAdvancementBlockTag, kAdvancementBlockVersion, &writeAdvancementOwner,
+     &readAdvancementOwner},
 }};
 
 // Everything a *listing* needs out of a save's world.dat: which build wrote it

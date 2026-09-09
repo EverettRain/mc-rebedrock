@@ -24,6 +24,22 @@ struct RecipeIngredient final {
     const Item* item = nullptr;
 };
 
+// ADV-1：解锁这条配方的那个材料。**两种形态各留一份**，因为两个消费者要的不是
+// 同一件东西：
+//   * `identifier` 给成就底座生成用 —— criterion 的名字（`has_<材料>`）要材料的
+//     短名，那是 id 才有的信息；
+//   * `resolved` 给谓词判定用 —— 「玩家手里这堆算不算这个材料」走
+//     `ingredientMatches`，配方匹配的单一真相源。
+// 两者由 RecipeTable 在同一处填，不是两条独立的数据。
+// `identifier` 的生命期与 CraftingRecipe::identifier 同规矩：内置的看静态烘焙
+// 数据，数据包来的看 RecipeTable::ownedNames_（deque，元素不搬家）。
+// kind == Empty 表示这条配方没有解锁材料（只可能来自数据包，见 RecipeFile.hpp）。
+struct RecipeUnlock final {
+    IngredientKind kind = IngredientKind::Empty;
+    std::string_view identifier; // Item/Block 时的标识符；AnyPlanks/Empty 时为空
+    RecipeIngredient resolved;
+};
+
 struct CraftingRecipe final {
     std::string_view identifier;
     std::uint8_t width = 0U;
@@ -32,6 +48,9 @@ struct CraftingRecipe final {
     bool allowMirror = false;
     std::vector<RecipeIngredient> ingredients;
     ItemStack output;
+    // ADV-1：解锁这条配方的那个材料（见上面的 RecipeUnlock）。成就底座在加载期
+    // 从配方表生成，读的就是这一列。
+    RecipeUnlock unlockedBy;
 };
 
 struct FurnaceRecipe final {
@@ -40,6 +59,7 @@ struct FurnaceRecipe final {
     ItemStack output;
     int cookTicks = 200;
     float experience = 0.0F;
+    RecipeUnlock unlockedBy; // ADV-1, see CraftingRecipe::unlockedBy
 };
 
 // 一格材料与一堆物品是否匹配（空格只匹配空堆）。**配方匹配的单一真相源**：
