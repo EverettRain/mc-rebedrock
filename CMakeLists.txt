@@ -2341,6 +2341,11 @@ if(BUILD_TESTING)
         tests/frame_graph_test.cpp
     )
     target_link_libraries(mc_rebedrock_frame_graph_test PRIVATE mc_rebedrock_runtime)
+    # RN-53: testMenuBackgroundWiring reads buildFrameGraphTables' own text. The
+    # derivation assertions above it run against this file's own model of the graph,
+    # and nothing links the two — so the wiring gets its own source-reading guard.
+    target_compile_definitions(mc_rebedrock_frame_graph_test PRIVATE
+        "MC_REBEDROCK_SOURCE_DIR=\"${CMAKE_CURRENT_SOURCE_DIR}\"")
     add_test(NAME frame_graph COMMAND mc_rebedrock_frame_graph_test)
 
     # 一个 GpuMesh 拥有几条缓冲，只有一张表。释放路径有两条（运行期归还池、退出期销毁），

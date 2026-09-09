@@ -12,10 +12,18 @@
 #include "render/graph/FrameGraph.hpp"
 
 #include <cstdlib>
+#include <filesystem>
+#include <fstream>
 #include <iostream>
 #include <new>
+#include <sstream>
 #include <string>
+#include <string_view>
 #include <vector>
+
+#ifndef MC_REBEDROCK_SOURCE_DIR
+#error "MC_REBEDROCK_SOURCE_DIR must point at the repository root"
+#endif
 
 namespace {
 
@@ -195,12 +203,19 @@ void recordNamed(const char* name) {
 void bodyUpload(VkCommandBuffer, const PassContext&) { recordNamed("body:upload"); }
 void bodyShadow(VkCommandBuffer, const PassContext&) { recordNamed("body:shadow"); }
 void bodyWorld(VkCommandBuffer, const PassContext&) { recordNamed("body:world"); }
+void bodyMenuBackground(VkCommandBuffer, const PassContext&) { recordNamed("body:menu"); }
 void bodyGui(VkCommandBuffer, const PassContext&) { recordNamed("body:gui"); }
 void bodyPresent(VkCommandBuffer, const PassContext&) { recordNamed("body:present"); }
 
 // ---- 生产拓扑的复刻 ---------------------------------------------------------
-// 句柄与尺寸是假的，**结构**是真的：五步、剪枝规则、两套 framebuffer、
+// 句柄与尺寸是假的，**结构**是真的：六步、剪枝规则、两套 framebuffer、
 // 单份阴影目标、locked 的界面步、以及阴影那条边界屏障。
+//
+// ★ RN-53：`menu_background` 那一步从前**不在这张模型里**，而它在生产图里存在
+// （`buildFrameGraphTables`）。少了它，`scene_color` 的 usage 断言就落在一个
+// 生产上不存在的形态上（没有 SAMPLED 位），而「那条 Access::Sample 会不会改动
+// 布局推导」这个问题在模型里根本不可问——RN-53 的诊断正是卡在这里。
+// 模型与生产不同形，断言守住的就不是生产。
 
 constexpr std::uint32_t kSwapchainImages = 3;
 
@@ -209,6 +224,7 @@ struct Production final {
     std::vector<ViewDesc> views;
     std::vector<PassAttachment> shadowAttachments;
     std::vector<PassAttachment> worldAttachments;
+    std::vector<PassAttachment> menuBackgroundAttachments;
     std::vector<PassAttachment> guiAttachments;
     std::vector<PassAttachment> presentAttachments;
     std::vector<VkClearValue> worldClears;
@@ -237,7 +253,11 @@ VkImage shadowImage() { return handle<VkImage>(0x7000); }
 constexpr VkExtent2D kSwapchainExtent{1280, 720};
 constexpr VkExtent2D kShadowExtent{2048, 2048};
 
-Production makeProduction(bool shadowEnabled, bool multisampled) {
+// `menuSamplesScene` 是 RN-53 的对照开关，**不**对应任何生产档位：生产图里那条
+// Access::Sample 是无条件声明的。它存在只为让「去掉它会变什么」成为一个可断言的
+// 差分，而不是一句注释里的推断。
+Production makeProduction(bool shadowEnabled, bool multisampled,
+                          bool menuSamplesScene = true) {
     Production p;
     p.resources = {
         {.name = "scene_color",
@@ -296,6 +316,12 @@ Production makeProduction(bool shadowEnabled, bool multisampled) {
         p.worldAttachments.push_back({0, Access::ColorResolve});
     }
     p.worldAttachments.push_back({3, Access::Sample});
+    // UI-5：模糊那一步只声明读者——它写 scene_color 是靠步身自己 begin 的 renderpass，
+    // 不是图的附件。推导对这条声明的**唯一**产物是 scene_color 的 SAMPLED 用途位
+    // （RN-53 的 testMenuBackgroundSampleOnlyAddsUsage 把这句话钉成断言）。
+    if (menuSamplesScene) {
+        p.menuBackgroundAttachments = {{0, Access::Sample}};
+    }
     p.guiAttachments = {{0, Access::ColorWrite}, {2, Access::DepthWrite}};
     p.presentAttachments = {{0, Access::TransferRead}};
 
@@ -349,6 +375,11 @@ Production makeProduction(bool shadowEnabled, bool multisampled) {
          .barriers = p.worldBarriers,
          .barrierSrcStage = VK_PIPELINE_STAGE_LATE_FRAGMENT_TESTS_BIT,
          .barrierDstStage = VK_PIPELINE_STAGE_FRAGMENT_SHADER_BIT},
+        // UI-5 / RN-53：非渲染步，**不带屏障**。生产图里它同样只有三个字段
+        // （name / attachments / record），那是 testMenuBackgroundWiring 读源码盯着的。
+        {.name = "menu_background",
+         .attachments = p.menuBackgroundAttachments,
+         .record = &bodyMenuBackground},
         {.name = "gui",
          .attachments = p.guiAttachments,
          .record = &bodyGui,
@@ -394,7 +425,7 @@ void testProductionTopology() {
     BakedGraph graph;
     planAndCompile(graph, describe(p));
 
-    check(graph.steps().size() == 5, "启用阴影时应当烘出五步");
+    check(graph.steps().size() == 6, "启用阴影时应当烘出六步");
     const auto steps = graph.steps();
     check(steps[0].renderPass == VK_NULL_HANDLE, "upload 必须是非渲染步");
     check(steps[0].barrierCount == 0, "upload 不带 image barrier（它那条是 memory barrier）");
@@ -405,15 +436,20 @@ void testProductionTopology() {
     check(steps[2].renderPass == worldRenderPass(), "world 绑世界 renderpass");
     check(steps[2].framebufferStride == 1, "世界靶逐交换链图像一份");
     check(steps[2].clearCount == 2, "世界清 color + depth");
-    check(steps[3].renderPass == guiRenderPass(), "gui 绑界面 renderpass");
-    check(steps[3].clearCount == 2, "界面清 color（LOAD 时忽略）+ depth");
-    check(steps[4].renderPass == VK_NULL_HANDLE, "present_blit 必须是非渲染步");
+    // RN-53：菜单背景是**非渲染步**且不带任何屏障。这两条是那 1 ms 诊断的落点——
+    // 帧图为这一步下的 Vulkan 命令数量是 0，布局转换全在 MenuBlur::record 自己手里。
+    check(steps[3].renderPass == VK_NULL_HANDLE, "menu_background 必须是非渲染步");
+    check(steps[3].barrierCount == 0, "menu_background 不带任何 image barrier");
+    check(steps[3].clearCount == 0, "非渲染步不得带清空值");
+    check(steps[4].renderPass == guiRenderPass(), "gui 绑界面 renderpass");
+    check(steps[4].clearCount == 2, "界面清 color（LOAD 时忽略）+ depth");
+    check(steps[5].renderPass == VK_NULL_HANDLE, "present_blit 必须是非渲染步");
 
     // 护栏 1 在现有代码里唯一还踩得到的形态：两套 framebuffer 不能张冠李戴
     const auto framebuffers = graph.framebuffers();
     check(framebuffers[steps[2].framebufferFirst] == worldFramebuffer(0),
           "world 必须绑 framebuffers[]");
-    check(framebuffers[steps[3].framebufferFirst] == guiFramebuffer(0),
+    check(framebuffers[steps[4].framebufferFirst] == guiFramebuffer(0),
           "gui 必须绑 guiFramebuffers[]");
     check(framebuffers[steps[1].framebufferFirst] == shadowFramebuffer(),
           "shadow 必须绑离屏目标的那一份");
@@ -421,7 +457,7 @@ void testProductionTopology() {
     const auto clears = graph.clears();
     check(clears[steps[2].clearFirst].color.float32[0] == 0.055F, "世界的天空清空色照抄现状");
     check(clears[steps[2].clearFirst + 1].depthStencil.depth == 1.0F, "世界深度清成 1.0");
-    check(clears[steps[3].clearFirst + 1].depthStencil.depth == 1.0F, "界面深度每帧清成 1.0");
+    check(clears[steps[4].clearFirst + 1].depthStencil.depth == 1.0F, "界面深度每帧清成 1.0");
     check(clears[steps[1].clearFirst].depthStencil.depth == 1.0F, "阴影深度清成 1.0");
 }
 
@@ -450,7 +486,7 @@ void testShadowBoundaryBarrier() {
     const Production pruned = makeProduction(false, false);
     BakedGraph prunedGraph;
     planAndCompile(prunedGraph, describe(pruned));
-    check(prunedGraph.steps().size() == 4, "关掉阴影时整步被剪，只剩四步");
+    check(prunedGraph.steps().size() == 5, "关掉阴影时整步被剪，只剩五步");
     check(prunedGraph.barriers().empty(), "阴影被剪，那条边界屏障必须一起消失");
     check(prunedGraph.steps()[1].renderPass == worldRenderPass(),
           "剪掉之后世界那步顶上来，仍绑世界 renderpass");
@@ -468,10 +504,17 @@ void testExecuteOrder() {
     graph.execute(handle<VkCommandBuffer>(0xC0DE), 2, context);
 
     const std::vector<std::string> expected{
-        "body:upload", "begin",     "body:shadow", "end",         "barrier",
-        "begin",       "body:world", "end",        "begin",       "body:gui",
-        "end",         "body:present"};
-    check(trace().order == expected, "执行顺序：上传 → 阴影 → 屏障 → 世界 → 界面 → blit");
+        "body:upload", "begin",      "body:shadow", "end",        "barrier",
+        "begin",       "body:world", "end",         "body:menu",  "begin",
+        "body:gui",    "end",        "body:present"};
+    check(trace().order == expected,
+          "执行顺序：上传 → 阴影 → 屏障 → 世界 → 菜单背景 → 界面 → blit");
+    // RN-53：菜单背景夹在世界与界面**两个 renderpass 之间**，自己不 begin 也不 end。
+    // 它在 trace 里恰好落在 world 的 "end" 与 gui 的 "begin" 中间——这个位置就是那
+    // 1 ms 的现场，见 docs 的 RN-53。
+    check(trace().order[7] == "end" && trace().order[8] == "body:menu" &&
+              trace().order[9] == "begin",
+          "菜单背景落在世界那趟结束与界面那趟开始之间，中间没有别的命令");
     check(trace().begins.size() == 3, "三个渲染步，三次 begin");
     check(trace().endCount == 3, "begin 与 end 必须配对");
     check(trace().begins[1].framebuffer == worldFramebuffer(2),
@@ -610,7 +653,8 @@ void testStepNamesMatchStepOrder() {
     BakedGraph graph;
     planAndCompile(graph, describe(p));
     check(graph.stepNames().size() == graph.steps().size(), "每一步都有名字，一一对应");
-    const std::vector<std::string> expected{"upload", "shadow", "world", "gui", "present_blit"};
+    const std::vector<std::string> expected{"upload", "shadow", "world",
+                                            "menu_background", "gui", "present_blit"};
     bool same = graph.stepNames().size() == expected.size();
     for (std::size_t index = 0; same && index < expected.size(); ++index) {
         same = graph.stepNames()[index] == expected[index];
@@ -742,7 +786,7 @@ void testMultisampledAttachmentCount() {
           "关 MSAA 时 scene_color 就是那个 color 附件本身，没有 resolve 一说");
     BakedGraph graph;
     planAndCompile(graph, describe(on));
-    check(graph.steps().size() == 5, "开 MSAA 不改变步数");
+    check(graph.steps().size() == 6, "开 MSAA 不改变步数");
 }
 
 // ---- 5. 推导结果与手写现状逐位相同（RN-20c 的核心判据）----------------------
@@ -750,6 +794,7 @@ void testMultisampledAttachmentCount() {
 // 下面这张表是从五个创建函数里**逐个抄下来**的，不是从推导反推出来的：
 //
 //   createSceneTargets      scene_color        COLOR_ATTACHMENT | TRANSFER_SRC        1 采样
+//                                              | SAMPLED（RN-53：MenuBlur 采样它）
 //   createDepthTargets      scene_depth        DEPTH_STENCIL_ATTACHMENT | TRANSIENT   N 采样
 //   createGuiDepthTargets   gui_depth          DEPTH_STENCIL_ATTACHMENT | TRANSIENT   1 采样
 //   createColorTargets      scene_color_msaa   TRANSIENT | COLOR_ATTACHMENT           N 采样
@@ -786,10 +831,15 @@ void testDerivationMatchesHandWrittenSingleSampled() {
     const Production p = makeProduction(true, false);
     const ResourcePlan plan = planResources(describe(p));
 
-    // createSceneTargets：COLOR_ATTACHMENT | TRANSFER_SRC，单采样，**不是**瞬态。
+    // createSceneTargets 直接吃 plan.usage，所以这一行比的是**真机上那张图的创建参数**。
     // TRANSFER_SRC 来自 present_blit 那步的 TransferRead；漏掉那个读者，这里会变成
-    // TRANSIENT + DONT_CARE，真机上是整帧变黑
-    expectResource(plan, "scene_color", kColorAttachment | VK_IMAGE_USAGE_TRANSFER_SRC_BIT,
+    // TRANSIENT + DONT_CARE，真机上是整帧变黑。
+    // SAMPLED 来自 menu_background 那步的 Access::Sample——MenuBlur 的描述符采样
+    // scene_color，漏掉它就是「采样一张没有 SAMPLED 位的图」，那是未定义行为。
+    // ★ 这一位是那条声明的**唯一**产物，见 testMenuBackgroundSampleOnlyAddsUsage。
+    expectResource(plan, "scene_color",
+                   kColorAttachment | VK_IMAGE_USAGE_TRANSFER_SRC_BIT |
+                       VK_IMAGE_USAGE_SAMPLED_BIT,
                    VK_SAMPLE_COUNT_1_BIT, VK_IMAGE_ASPECT_COLOR_BIT,
                    "scene_color 的 usage 与 createSceneTargets 逐位相同");
     // createDepthTargets：今天没有消费者，所以是瞬态。RN-11 接上消费者时翻转的是它
@@ -833,9 +883,11 @@ void testDerivationMatchesHandWrittenMultisampled() {
     const Production p = makeProduction(true, true);
     const ResourcePlan plan = planResources(describe(p));
 
-    // 开 MSAA 时 scene_color 是 resolve 目标：仍然是 COLOR_ATTACHMENT | TRANSFER_SRC、
-    // 单采样、非瞬态——与关 MSAA 时**同一个答案**，因为读者集合没变
-    expectResource(plan, "scene_color", kColorAttachment | VK_IMAGE_USAGE_TRANSFER_SRC_BIT,
+    // 开 MSAA 时 scene_color 是 resolve 目标：仍然是 COLOR_ATTACHMENT | TRANSFER_SRC
+    // | SAMPLED、单采样、非瞬态——与关 MSAA 时**同一个答案**，因为读者集合没变
+    expectResource(plan, "scene_color",
+                   kColorAttachment | VK_IMAGE_USAGE_TRANSFER_SRC_BIT |
+                       VK_IMAGE_USAGE_SAMPLED_BIT,
                    VK_SAMPLE_COUNT_1_BIT, VK_IMAGE_ASPECT_COLOR_BIT,
                    "MSAA 档 scene_color 的 usage 仍与 createSceneTargets 逐位相同");
     // createColorTargets：TRANSIENT | COLOR_ATTACHMENT，多采样。画完 resolve 就丢
@@ -987,6 +1039,123 @@ void testUntouchedResourceIsNeverTransient() {
           "没有任何消费者时它只剩基础位，既不 SAMPLED 也不瞬态");
 }
 
+// ---- 7b. RN-53：menu_background 那条 Access::Sample 的**全部**后果 ----------
+//
+// 背景：实机 frametrace 里 `gpu[menu_background]` 稳定 0.96–1.27 ms，而那一步在没有
+// 界面打开时一条命令都不录（`recordMenuBackground` 第一行就 return）。RN-53 之前的
+// 诊断是「那条 Access::Sample 让帧图在 scene_color 上烘出 COLOR_ATTACHMENT →
+// SHADER_READ → COLOR_ATTACHMENT 两次整图布局转换」。
+//
+// 这个测试就是那句诊断的判据，而它**证伪**了它：去掉那条声明，world 与 gui 对
+// scene_color 的四个附件操作**一位都不变**，唯一的差别是 usage 里的 SAMPLED。
+// 帧图从来没有为这一步下过任何 Vulkan 命令——布局转换全在 MenuBlur::record 自己
+// 手里（它从 gui 那趟的 initialLayout 转去 SHADER_READ_ONLY，六趟之后原样转回）。
+//
+// 断言钉的是「会错的那个量」：不是「Sample 加了 SAMPLED 位」（那等于自己等于自己），
+// 而是「除了那一位，别的什么都没变」。加一档新的 Access 或改动布局推导，这里就红。
+
+void testMenuBackgroundSampleOnlyAddsUsage() {
+    const Production withSample = makeProduction(true, false, true);
+    const Production withoutSample = makeProduction(true, false, false);
+    const ResourcePlan on = planResources(describe(withSample));
+    const ResourcePlan off = planResources(describe(withoutSample));
+
+    // ① usage：恰好差 SAMPLED 一位，别的位一个不动
+    const VkImageUsageFlags onUsage = on.resource("scene_color").usage;
+    const VkImageUsageFlags offUsage = off.resource("scene_color").usage;
+    check((onUsage ^ offUsage) == VK_IMAGE_USAGE_SAMPLED_BIT,
+          "那条 Sample 在 usage 上的后果恰好是 SAMPLED 一位，不多不少");
+
+    // ② 附件操作：world 与 gui 的四个字段逐位相同。这是被证伪的那条诊断的落点——
+    //    要是那条声明真的改了布局推导，这里必须红。
+    for (const std::string_view pass : {std::string_view{"world"}, std::string_view{"gui"}}) {
+        const ResourceOps& a = on.ops(pass, "scene_color");
+        const ResourceOps& b = off.ops(pass, "scene_color");
+        check(a.loadOp == b.loadOp && a.storeOp == b.storeOp &&
+                  a.initialLayout == b.initialLayout && a.finalLayout == b.finalLayout,
+              "那条 Sample 不改动任何一趟对 scene_color 的 loadOp/storeOp/两个布局");
+    }
+    // ③ 具体取值也钉一遍：世界那趟停在 COLOR_ATTACHMENT_OPTIMAL，界面那趟从
+    //    COLOR_ATTACHMENT_OPTIMAL 载入。两者相同 = 中间没有布局转换可省，
+    //    也正是 MenuBlur::sceneColorPassLayout_ 要还原成的那一个。
+    const ResourceOps& world = on.ops("world", "scene_color");
+    const ResourceOps& gui = on.ops("gui", "scene_color");
+    check(world.finalLayout == VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL &&
+              gui.initialLayout == VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL &&
+              world.finalLayout == gui.initialLayout,
+          "世界那趟的 finalLayout 与界面那趟的 initialLayout 是同一个布局");
+    // ④ ops 条目数不变：Sample 不是附件，不产生条目
+    check(on.ops().size() == off.ops().size(), "读者不是附件，那条声明不产生附件操作条目");
+
+    // ⑤ 烘出来的步上：零屏障、非渲染步。帧图为这一步下的 vk 命令数是 0。
+    BakedGraph graph;
+    planAndCompile(graph, describe(withSample));
+    std::size_t menuIndex = graph.steps().size();
+    for (std::size_t index = 0; index < graph.stepNames().size(); ++index) {
+        if (graph.stepNames()[index] == "menu_background") {
+            menuIndex = index;
+        }
+    }
+    check(menuIndex < graph.steps().size(), "menu_background 必须在烘出来的步表里");
+    check(graph.steps()[menuIndex].barrierCount == 0 &&
+              graph.steps()[menuIndex].renderPass == VK_NULL_HANDLE,
+          "帧图不为 menu_background 下屏障、也不为它 begin renderpass");
+}
+
+// ---- 7c. RN-53：接线。上面证的是推导，这一条证「生产真的是这么接的」 ---------
+//
+// 教训（HANDOFF §5.3）：证明了函数是对的，没证明有人在用它。上面那个测试用的是
+// 本文件自己的模型；生产那张表在 `VulkanRenderer.cpp` 的 `buildFrameGraphTables`
+// 里，两者之间没有任何编译期联系。于是这一条读源码：
+//   * menu_background 那一步的 attachments 就是那条 Access::Sample；
+//   * 它的 PassDesc **不带** `.barriers` —— 一旦有人给它挂上边界屏障，
+//     「帧图为这一步下 0 条命令」这个结论就不再成立，而 RN-53 的整份诊断都建在它上面。
+
+[[nodiscard]] std::string readSourceFile(const std::filesystem::path& path) {
+    std::ifstream stream{path};
+    if (!stream) {
+        std::cerr << "FAIL: cannot read " << path.string() << '\n';
+        return {};
+    }
+    std::ostringstream text;
+    text << stream.rdbuf();
+    return text.str();
+}
+
+void testMenuBackgroundWiring() {
+    const std::filesystem::path root{MC_REBEDROCK_SOURCE_DIR};
+    const std::string source = readSourceFile(root / "src/render/vulkan/VulkanRenderer.cpp");
+    check(!source.empty(), "读得到 VulkanRenderer.cpp");
+
+    // 那条声明。写成一整行的字面量比对，因为「改成别的 Access」正是要抓的改动。
+    check(source.find("tables.menuBackgroundAttachments = {{kSceneColor, Access::Sample}};") !=
+              std::string::npos,
+          "生产图里 menu_background 声明的仍是 kSceneColor 上的 Access::Sample");
+
+    // 那个 PassDesc 的字段集合。从 `.name = kMenuBackgroundPassName` 起到它自己的
+    // 右花括号止，中间不得出现 `.barriers`——那一步的「零命令」是 RN-53 的前提。
+    const std::string anchor = ".name = kMenuBackgroundPassName,";
+    const auto begin = source.find(anchor);
+    check(begin != std::string::npos, "找得到 menu_background 那个 PassDesc");
+    if (begin != std::string::npos) {
+        const auto end = source.find("},", begin);
+        check(end != std::string::npos, "那个 PassDesc 有结尾");
+        const std::string body = source.substr(begin, end - begin);
+        check(body.find(".barriers") == std::string::npos,
+              "menu_background 那一步不得挂边界屏障：帧图为它下的命令数必须是 0");
+        check(body.find(".renderPass") == std::string::npos,
+              "menu_background 是非渲染步，不得绑 renderpass");
+        check(body.find(".attachments = tables.menuBackgroundAttachments") != std::string::npos,
+              "那一步用的就是上面那张附件表");
+    }
+
+    // MenuBlur 拿的是 gui 那趟的 initialLayout，不是一个写死的常量。上面 ③ 断言
+    // 「world.final == gui.initial」，而这一行是它在生产上的消费点。
+    check(source.find(".sceneColorPassLayout = resourcePlan_.ops(kGuiPassName, kSceneColorName)"
+                      ".initialLayout,") != std::string::npos,
+          "MenuBlur 的 sceneColorPassLayout 取自推导出的 gui/scene_color initialLayout");
+}
+
 // ---- 8. 计划与描述必须同源 --------------------------------------------------
 
 void testCompileRejectsForeignPlan() {
@@ -1042,6 +1211,8 @@ int main() {
     testUntouchedResourceIsNeverTransient();
     testCompileRejectsForeignPlan();
     testPlanRejectsSelfResolve();
+    testMenuBackgroundSampleOnlyAddsUsage();
+    testMenuBackgroundWiring();
     if (failures != 0) {
         std::cerr << failures << " check(s) failed\n";
         return 1;
