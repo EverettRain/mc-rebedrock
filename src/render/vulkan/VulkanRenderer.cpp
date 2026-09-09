@@ -1454,13 +1454,12 @@ struct VulkanRenderer::Impl final : public gameplay::SimulationHost {
         //    （与 runPreviewExport 同理：那条主循环里的 uiTimeSeconds += dt 不在这条路径上），
         //    这里把起点也钉死，于是"第几次运行"不会改变全景的角度。
         uiTimeSeconds = kUiCaptureClockSeconds;
-        // 1b. 时区。UI-11 / A6 起世界列表每一行画一个**本地时间**的日期串
-        //     （26.1 `Util.localizedDateFormatter` 用的是 `ZoneId.systemDefault()`）。
-        //     不钉它，同一份夹具在两台机器上会渲染成两串不同的字——这与
-        //     `options.properties` 那次是同一族：出图的结论取决于跑它的环境。
-        //     只在截图通道里钉，正常运行仍然跟随玩家的时区。
-        static_cast<void>(::setenv("TZ", "UTC", 1));
-        ::tzset();
+        // 1b. 时区**不在这里钉**。世界列表那一行的日期串是本地时区的函数，出图必须
+        //     确定性——但钉法是把"按 UTC 解释"当成**参数**传给格式化
+        //     （`HudRenderer::formatWorldLastPlayed` 读 `uiCaptureActive`），
+        //     而不是在这里改进程的 `TZ`。第一版真写成了 `setenv("TZ","UTC")`，
+        //     两个毛病：Windows 的 CRT 没有 `setenv`（交叉构建当场报错），
+        //     且 `getenv`/`setenv` 并发是未定义行为（core/EnvFlags.hpp 开篇）。
         // 2. 鼠标。按钮的悬停高亮读光标位置，而隐藏窗口下指针停在哪儿不由我们决定。
         //    钉到画布外的一个点，于是没有任何控件处于悬停态（ui_capture_test 断言这条性质）。
         // 光标：按钮的悬停高亮与槽位提示框都读它。默认钉在画布外（没有任何东西悬停），

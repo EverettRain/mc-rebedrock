@@ -21,6 +21,7 @@
 #include "gameplay/command/ArgumentType.hpp"
 #include "gameplay/command/CommandDispatcher.hpp"
 #include "gameplay/entities/SpeciesRenderData.hpp"
+#include "core/BrokenDownTime.hpp"
 #include "persistence/SaveRepository.hpp"
 #include "ui/WorldListRow.hpp"
 #include "render/SkyLight.hpp"
@@ -1976,14 +1977,18 @@ class HudRenderer final {
 
     // 第 2 行括号里的日期。26.1 用 `Util.localizedDateFormatter(FormatStyle.SHORT)`，
     // 也就是**跟随系统语言环境**的短日期；本作没有本地化的日期格式化，
-    // 固定用 ISO 的 `YYYY-MM-DD HH:MM`。已登记为偏差。
-    [[nodiscard]] static std::string formatWorldLastPlayed(std::int64_t unixSeconds) {
+    // 固定用 ISO 的 `YYYY-MM-DD HH:MM`。已登记为偏差 D35。
+    //
+    // ★ **出图时按 UTC 解释，而不是去改进程的 `TZ`**。这个日期串是本地时区的函数，
+    //   不钉住它，同一份夹具在两台机器上会渲染成两串不同的字（与 options.properties
+    //   那次"结论取决于跑它的环境"同族）。第一版用的是 `setenv("TZ","UTC")` ——
+    //   **两个毛病**：Windows 的 CRT 没有 `setenv`（交叉构建当场报错），而
+    //   `getenv`/`setenv` 并发是未定义行为。把时区做成参数，两个问题一起没了。
+    [[nodiscard]] std::string formatWorldLastPlayed(std::int64_t unixSeconds) const {
         if (unixSeconds <= 0) {
             return {};   // 26.1 的 `lastPlayed != -1L` 分支：没有记录就不加括号那一段
         }
-        const auto time = static_cast<std::time_t>(unixSeconds);
-        std::tm broken{};
-        localtime_r(&time, &broken);
+        const std::tm broken = core::brokenDownTime(unixSeconds, uiCaptureActive);
         std::array<char, 32> buffer{};
         const std::size_t written =
             std::strftime(buffer.data(), buffer.size(), "%Y-%m-%d %H:%M", &broken);

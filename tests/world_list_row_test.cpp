@@ -11,6 +11,7 @@
 //     AbstractSelectionList:471-481  content 四周各让 2
 //     AbstractSelectionList:429-434  第二行是 `<目录名> (<日期>)`，lastPlayed 无记录时只有目录名
 
+#include "core/BrokenDownTime.hpp"
 #include "render/vulkan/HudTypes.hpp"
 #include "ui/MenuGeometry.hpp"
 #include "ui/PageBuilder.hpp"
@@ -80,6 +81,22 @@ void testMetaLine() {
           "new-world (2024-01-02 03:04)");
     // 没有"最后游玩"记录时**只有目录名**，连括号都不画（26.1 的 lastPlayed != -1 分支）。
     CHECK(mc::ui::worldRowMetaLine("flat-testbed", "") == "flat-testbed");
+}
+
+// --- 4a. 日期的拆分：时区是**参数**，不是进程状态 ---------------------------
+void testBrokenDownTime() {
+    // 1704164645 = 2024-01-02T03:04:05Z。`tm_year` 从 1900 起、`tm_mon` 从 0 起。
+    const std::tm utc = mc::core::brokenDownTime(1704164645, /*utc=*/true);
+    CHECK(utc.tm_year == 124);
+    CHECK(utc.tm_mon == 0);
+    CHECK(utc.tm_mday == 2);
+    CHECK(utc.tm_hour == 3);
+    CHECK(utc.tm_min == 4);
+    CHECK(utc.tm_sec == 5);
+    // ★ 这一条无论跑它的机器在哪个时区都成立——这正是"时区做成参数"的意义。
+    //   第一版是在截图通道里 `setenv("TZ","UTC")`：Windows 的 CRT 没有 setenv
+    //   （交叉构建当场报错），而且它与 getenv 并发是未定义行为。
+    //   把 `utc` 那个实参忽略掉（两支都调 localtime）时，非 UTC 机器上这六条会红。
 }
 
 // --- 4b. 第三行的拼接（26.1 LevelSummary.createInfo:166-186）-----------------
@@ -229,6 +246,7 @@ int main() {
     testRowBox();
     testRowParts();
     testMaxTextWidth();
+    testBrokenDownTime();
     testMetaLine();
     testInfoLine();
     testIconSlots();
