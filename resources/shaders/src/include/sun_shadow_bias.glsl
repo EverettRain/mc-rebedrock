@@ -147,12 +147,33 @@ float sunPresence(float sunUpCosine) {
     return clamp(sunUpCosine / kSunPresenceCosine, 0.0F, 1.0F);
 }
 
-// 收的是**几何量**（面的入射角余弦、太阳的仰角余弦），不是已经算好的权重：
+// RN-46a：水下的直射。
+//
+// 现场（用户实机）：水下的影子和水面上一样浓。参照 Photon 的水体（`water_fog_vl.glsl`）：
+// 它的阴影查询是**一次硬 step，连 PCF 都没有**——水下影子的观感完全不来自阴影图的锐度，
+// 来自 `exp(-消光系数 x 光在水里走过的距离)`：水越深直射越少，影子与周围的对比自然消失。
+//
+// 所以这里做的是**淡**，不是**糊**。真要更糊得加 tap（半影上限是 0.5 纹素，加宽会在
+// 2x2 的布局里留洞），而那不是水下影子变浅的机制。
+//
+// 丢掉的那份**转给散射**——水把定向的光散成漫射，与云做的是同一件事（RN-36/38 的模型，
+// 这是它的第四个取值）。吸收那一半由既有的水色与水雾表达，不在这里重算一遍。
+//
+// 半深 4 格：1 格几乎不变（0.84），4 格剩一半，15 格（掩码能装下的上限）剩 0.074。
+const float kWaterDirectHalfDepthBlocks = 4.0F;
+
+float sunWaterTransmittance(float submergedBlocks) {
+    return exp2(-max(submergedBlocks, 0.0F) / kWaterDirectHalfDepthBlocks);
+}
+
+// 收的是**几何量**（面的入射角余弦、太阳的仰角余弦、头顶的水柱），不是已经算好的权重：
 // 三个采样者各自去算那个比值，就有三个地方可以算错。
 float sunSkyFactor(float skyLightFactor, float weatherDimming, float visibility, float rain,
-                   float thunder, float incidenceCosine, float sunUpCosine) {
+                   float thunder, float incidenceCosine, float sunUpCosine,
+                   float submergedBlocks) {
     float directShare = (1.0F - kSkyAmbientFraction) *
-                        (1.0F - sunShadowOvercast(rain, thunder)) * sunPresence(sunUpCosine);
+                        (1.0F - sunShadowOvercast(rain, thunder)) * sunPresence(sunUpCosine) *
+                        sunWaterTransmittance(submergedBlocks);
     float ambientShare = 1.0F - directShare;
     return skyLightFactor * weatherDimming *
            (directShare * sunDirectWeight(incidenceCosine, sunUpCosine) *

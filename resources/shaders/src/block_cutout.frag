@@ -118,7 +118,10 @@ void main() {
                                    // RN-42：直射项的两个几何量。正午的竖直面因此掉到
                                    // 散射那一份，而清晨朝阳的那一面仍旧吃满
                                    dot(normal, normalize(camera.sunDirection.xyz)),
-                                   normalize(camera.sunDirection.xyz).y);
+                                   normalize(camera.sunDirection.xyz).y,
+                                   // RN-46a：头顶的水柱（格）。水把直射散成漫射，
+                                   // 水下的影子因此是淡的，不是糊的
+                                   float((fragmentBiomeMask >> 4u) & 15u));
     vec3 lightmap = sampleLightmap(skyLevel, blockLevel, skyFactor);
     // The sky half carries the time-of-day tint: cool blue moonlight, warm
     // sunlight. Block light brings its own tint inside the lightmap.
@@ -145,7 +148,9 @@ void main() {
     // (RedStoneWireBlock.getColorForPower). Masks 1 and 2 used to sample a
     // biome lookup texture by world position; that texture is gone (BM-1), and
     // so are its descriptor bindings.
-    vec3 biomeTint = fragmentBiomeMask == 3u ? fragmentTint : vec3(1.0);
+    // RN-46a：低两位才是着色位——高四位现在装着头顶的水柱。写成整字节比较的症状是
+    // 水下的草地整片失去生物群系着色
+    vec3 biomeTint = (fragmentBiomeMask & 3u) == 3u ? fragmentTint : vec3(1.0);
     vec3 litColor = texel.rgb * biomeTint * illumination * ao;
     bool cameraUnderwater = camera.renderSettings.y > 0.5;
     float fog;

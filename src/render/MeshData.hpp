@@ -176,6 +176,33 @@ inline constexpr std::uint8_t kThinPlaneNormalIndex = 14U;
     return kVertexNormals[vertex.normalIndex];
 }
 // RN-41：竖直薄片（十字植物、作物）。着色法线朝上，几何不是。
+// RN-46a：biomeMask 那一字节的**布局**。
+//
+// 低两位是它一直以来的用途：3 = 「用逐顶点的字面 tint」，0 = 不着色。高四位是 RN-46a
+// 新加的**头顶的水柱有多深**（格，上限 15），给接收端拿去衰减直射——水把太阳光散成
+// 漫射，水下的影子因此该是**淡**的（Photon 的水体正是靠 exp(-消光 x 水中路程) 做到这
+// 一点，它的阴影查询本身连 PCF 都没有）。
+//
+// 挑这一字节而不是新开一个通道：顶点格式没有空位（`pad` 早就是这一字节本身），
+// 而这一字节只用了两个值。**代价是着色器里那句 `== 3u` 必须改成按位测**——
+// 漏改的症状是水下的草地整片失去生物群系着色，测试钉着这一条。
+inline constexpr std::uint8_t kBiomeMaskTintBits = 0x03U;
+inline constexpr int kBiomeMaskSubmergedShift = 4;
+inline constexpr int kBiomeMaskSubmergedMax = 15;
+
+[[nodiscard]] inline constexpr std::uint8_t packBiomeMask(std::uint8_t tintMask,
+                                                          int submergedBlocks) {
+    const int clamped = submergedBlocks < 0 ? 0
+                        : (submergedBlocks > kBiomeMaskSubmergedMax ? kBiomeMaskSubmergedMax
+                                                                    : submergedBlocks);
+    return static_cast<std::uint8_t>((tintMask & kBiomeMaskTintBits) |
+                                     (clamped << kBiomeMaskSubmergedShift));
+}
+
+[[nodiscard]] inline constexpr int submergedBlocksOf(std::uint8_t biomeMask) {
+    return (biomeMask >> kBiomeMaskSubmergedShift) & kBiomeMaskSubmergedMax;
+}
+
 [[nodiscard]] inline bool isThinPlaneVertex(const VoxelVertex& vertex) {
     return vertex.normalIndex == kThinPlaneNormalIndex;
 }

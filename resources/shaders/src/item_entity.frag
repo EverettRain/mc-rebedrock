@@ -134,7 +134,9 @@ void main() {
             terrainSunFactor = sunSkyFactor(1.0, 1.0, shadowFactor, camera.weatherSettings.x,
                                             camera.weatherSettings.y,
                                             dot(normal, normalize(camera.sunDirection.xyz)),
-                                            normalize(camera.sunDirection.xyz).y);
+                                            normalize(camera.sunDirection.xyz).y,
+                                            // 下落的方块不带水柱这一位
+                                            0.0);
         } else {
             vec3 fixedLightDirection = normalize(vec3(-0.45, 0.85, 0.30));
             float diffuse = max(dot(normal, fixedLightDirection), 0.0);

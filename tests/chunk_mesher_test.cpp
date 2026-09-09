@@ -531,6 +531,36 @@ int main() {
         // 而它解出来的法线仍然是朝上的那一个
         assert(mc::render::decodeNormal(plantVertices[i]) == glm::vec3(0.0F, 1.0F, 0.0F));
     }
+    // RN-46a：头顶的水柱进 biomeMask 的高四位。水把直射散成漫射，水下的影子因此是淡的。
+    {
+        mc::world::World pondWorld;
+        mc::world::Chunk pond;
+        // 一格石头，头顶压三格水；另一格石头露天
+        pond.setBlock(4, mc::world::kMinY + 0, 4, mc::world::Block::Stone);
+        for (int dy = 1; dy <= 3; ++dy) {
+            pond.setBlock(4, mc::world::kMinY + dy, 4, mc::world::Block::Water);
+        }
+        pond.setBlock(9, mc::world::kMinY + 0, 9, mc::world::Block::Stone);
+        pondWorld.setChunk({0, 0}, std::move(pond));
+        const auto pondMesh = mc::world::ChunkMesher::buildSection(pondWorld, {0, 0}, 0);
+        bool sawSubmerged = false;
+        bool sawDry = false;
+        for (const auto& vertex : pondMesh.mesh.vertices) {
+            const auto position = worldPos(vertex);
+            if (std::fabs(position.x - 4.5F) < 1.0F && std::fabs(position.z - 4.5F) < 1.0F) {
+                sawSubmerged = true;
+                assert(mc::render::submergedBlocksOf(vertex.pad) == 3 &&
+                       "the submerged block's faces must carry their three blocks of water");
+            }
+            if (std::fabs(position.x - 9.5F) < 1.0F && std::fabs(position.z - 9.5F) < 1.0F) {
+                sawDry = true;
+                assert(mc::render::submergedBlocksOf(vertex.pad) == 0 &&
+                       "a block in the open air must carry no water column");
+            }
+        }
+        assert(sawSubmerged && sawDry);
+    }
+
     // ★ 反面：实心方块的顶面**不能**是薄片。给方块顶面加那一格偏置会吃掉一格以内的
     // 全部接触阴影——一个方块压在另一个方块上，上面那个不再投影
     {

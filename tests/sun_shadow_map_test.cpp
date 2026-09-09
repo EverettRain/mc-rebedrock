@@ -120,6 +120,8 @@ const float kThinPlane = 1.0F;
 // 竖直面那一档由 checkDirectWeight 单独钉
 const float kGroundFacing = 1.0F;
 const float kSunOverhead = 1.0F;
+// RN-46a：头顶的水柱（格）。既有的每一条断言都在「不在水下」这一档上
+const float kDryLand = 0.0F;
 
 void require(bool condition, const std::string& message, int line) {
     if (!condition) {
@@ -1152,8 +1154,8 @@ void checkWeatherResponse() {
     // 「影子里该有多亮」由 sunSkyFactor 从散射的份额算出来，不再是一个烘在
     // 接收端里的 0.35。
     {
-        const float lit = shaderBias::sunSkyFactor(1.0F, 1.0F, 1.0F, 0.0F, 0.0F, kGroundFacing, kSunOverhead);
-        const float shadowed = shaderBias::sunSkyFactor(1.0F, 1.0F, 0.0F, 0.0F, 0.0F, kGroundFacing, kSunOverhead);
+        const float lit = shaderBias::sunSkyFactor(1.0F, 1.0F, 1.0F, 0.0F, 0.0F, kGroundFacing, kSunOverhead, kDryLand);
+        const float shadowed = shaderBias::sunSkyFactor(1.0F, 1.0F, 0.0F, 0.0F, 0.0F, kGroundFacing, kSunOverhead, kDryLand);
         REQUIRE(std::abs(lit - 1.0F) < 1e-6F,
                 "晴天全亮必须是 1.0——受光面的亮度一个字都不该动");
         REQUIRE(std::abs(shadowed - shaderBias::kSkyAmbientFraction) < 1e-6F,
@@ -1162,20 +1164,20 @@ void checkWeatherResponse() {
         REQUIRE(shadowed < 0.35F, "拆开之后影子必须比那个 0.35 的系数更暗");
 
         // 云把直射**转给**散射：全阴时阴影完全不起作用，而总亮度不变
-        const float overcastLit = shaderBias::sunSkyFactor(1.0F, 1.0F, 1.0F, 1.0F, 1.0F, kGroundFacing, kSunOverhead);
-        const float overcastShadowed = shaderBias::sunSkyFactor(1.0F, 1.0F, 0.0F, 1.0F, 1.0F, kGroundFacing, kSunOverhead);
+        const float overcastLit = shaderBias::sunSkyFactor(1.0F, 1.0F, 1.0F, 1.0F, 1.0F, kGroundFacing, kSunOverhead, kDryLand);
+        const float overcastShadowed = shaderBias::sunSkyFactor(1.0F, 1.0F, 0.0F, 1.0F, 1.0F, kGroundFacing, kSunOverhead, kDryLand);
         REQUIRE(std::abs(overcastLit - overcastShadowed) < 1e-6F,
                 "全阴时受光与全影必须一样亮——没有直射就没有影子");
         REQUIRE(std::abs(overcastLit - 1.0F) < 1e-6F,
                 "云只是把直射散开，不吸收：总量的下降归 weatherDimming 单独表达");
         // 纯下雨：直射还剩一成，影子的对比度因此也只剩一成
-        const float rainLit = shaderBias::sunSkyFactor(1.0F, 1.0F, 1.0F, 1.0F, 0.0F, kGroundFacing, kSunOverhead);
-        const float rainShadowed = shaderBias::sunSkyFactor(1.0F, 1.0F, 0.0F, 1.0F, 0.0F, kGroundFacing, kSunOverhead);
+        const float rainLit = shaderBias::sunSkyFactor(1.0F, 1.0F, 1.0F, 1.0F, 0.0F, kGroundFacing, kSunOverhead, kDryLand);
+        const float rainShadowed = shaderBias::sunSkyFactor(1.0F, 1.0F, 0.0F, 1.0F, 0.0F, kGroundFacing, kSunOverhead, kDryLand);
         const float clearContrast = lit - shadowed;
         REQUIRE(std::abs((rainLit - rainShadowed) - clearContrast * 0.1F) < 1e-6F,
                 "纯下雨的影子对比度应当是晴天的十分之一");
         // 天气的总量下降是**另一件事**，它对两项一视同仁
-        REQUIRE(std::abs(shaderBias::sunSkyFactor(1.0F, 0.5F, 0.0F, 0.0F, 0.0F, kGroundFacing, kSunOverhead) -
+        REQUIRE(std::abs(shaderBias::sunSkyFactor(1.0F, 0.5F, 0.0F, 0.0F, 0.0F, kGroundFacing, kSunOverhead, kDryLand) -
                          shadowed * 0.5F) < 1e-6F,
                 "weatherDimming 只缩放总量，不改变直射与散射的比例");
     }
@@ -1432,10 +1434,10 @@ void checkDirectWeight() {
     }
 
     // ---- 5. 接进了 sunSkyFactor，而受光地面一个字没动 --------------------
-    const float ground = shaderBias::sunSkyFactor(1.0F, 1.0F, 1.0F, 0.0F, 0.0F, 1.0F, 1.0F);
+    const float ground = shaderBias::sunSkyFactor(1.0F, 1.0F, 1.0F, 0.0F, 0.0F, 1.0F, 1.0F, kDryLand);
     REQUIRE(std::abs(ground - 1.0F) < 1e-6F, "受光的水平地面必须仍旧是 1.0");
     const float noonWall =
-        shaderBias::sunSkyFactor(1.0F, 1.0F, 1.0F, 0.0F, 0.0F, noonWallIncidence, noonSun);
+        shaderBias::sunSkyFactor(1.0F, 1.0F, 1.0F, 0.0F, 0.0F, noonWallIncidence, noonSun, kDryLand);
     REQUIRE(noonWall < 0.5F * ground,
             "正午的竖直面必须明显暗于地面——那正是这个节点买到的东西");
     // ★ 而且它不能低于散射那一份：竖直面丢的是直射，不是全部
@@ -1461,7 +1463,7 @@ void checkDirectWeight() {
         // 夜里：不管朝哪一面，天光通道必须是**满的**——与 RN-42 之前逐位相同
         for (const float incidence : {-1.0F, 0.0F, 0.5F, 1.0F}) {
             const float night =
-                shaderBias::sunSkyFactor(1.0F, 1.0F, 0.0F, 0.0F, 0.0F, incidence, sunUp);
+                shaderBias::sunSkyFactor(1.0F, 1.0F, 0.0F, 0.0F, 0.0F, incidence, sunUp, kDryLand);
             REQUIRE(std::abs(night - 1.0F) < 1e-6F,
                     "night must keep the whole sky channel: the direct share transfers to "
                     "ambient exactly the way an overcast sky does");
@@ -1484,6 +1486,89 @@ void checkDirectWeight() {
 }
 
 // RN-43：级联接缝的过渡带。
+// RN-46a：水下的直射被水散掉。
+void checkWaterTransmittance() {
+    // ---- 1. 透射率本身 ----------------------------------------------------
+    REQUIRE(shaderBias::sunWaterTransmittance(0.0F) == 1.0F,
+            "dry land must not lose any direct light");
+    REQUIRE(std::abs(shaderBias::sunWaterTransmittance(
+                         shaderBias::kWaterDirectHalfDepthBlocks) - 0.5F) < 1e-6F,
+            "the half depth must halve the direct share, by definition");
+    // 一格几乎不变——浅水里的影子该照旧看得见
+    REQUIRE(shaderBias::sunWaterTransmittance(1.0F) > 0.8F,
+            "one block of water must barely change anything");
+    float previous = 2.0F;
+    for (const float depth : {0.0F, 1.0F, 2.0F, 4.0F, 8.0F, 15.0F, 64.0F}) {
+        const float transmittance = shaderBias::sunWaterTransmittance(depth);
+        REQUIRE(transmittance < previous && transmittance > 0.0F && transmittance <= 1.0F,
+                "transmittance must fall monotonically and stay inside (0,1]");
+        previous = transmittance;
+    }
+    // 负深度（舍入、错误的解包）不得放大直射
+    REQUIRE(shaderBias::sunWaterTransmittance(-5.0F) == 1.0F,
+            "a negative depth must clamp, not amplify");
+
+    // ---- 2. 它做的是「淡」不是「暗」 --------------------------------------
+    // 受光处在任何水深下都**不变**：丢掉的直射整份转给散射，与云是同一件事。
+    // 这一条是整个模型的锚——水的吸收由既有的水色与水雾表达，不在这里重算一遍
+    for (const float depth : {0.0F, 2.0F, 6.0F, 15.0F}) {
+        const float lit =
+            shaderBias::sunSkyFactor(1.0F, 1.0F, 1.0F, 0.0F, 0.0F, kGroundFacing, kSunOverhead,
+                                     depth);
+        REQUIRE(std::abs(lit - 1.0F) < 1e-6F,
+                "the lit sea floor must keep its brightness: water scatters the beam, it does "
+                "not delete it here");
+    }
+    // 而影子随水深变淡——对比度单调收敛到 0
+    float previousContrast = 2.0F;
+    for (const float depth : {0.0F, 1.0F, 4.0F, 8.0F, 15.0F}) {
+        const float lit = shaderBias::sunSkyFactor(1.0F, 1.0F, 1.0F, 0.0F, 0.0F, kGroundFacing,
+                                                   kSunOverhead, depth);
+        const float shadowed = shaderBias::sunSkyFactor(1.0F, 1.0F, 0.0F, 0.0F, 0.0F,
+                                                        kGroundFacing, kSunOverhead, depth);
+        const float contrast = lit - shadowed;
+        REQUIRE(contrast < previousContrast + 1e-6F && contrast >= 0.0F,
+                "shadow contrast must fall with depth");
+        previousContrast = contrast;
+    }
+    const float deepContrast =
+        shaderBias::sunSkyFactor(1.0F, 1.0F, 1.0F, 0.0F, 0.0F, kGroundFacing, kSunOverhead, 15.0F) -
+        shaderBias::sunSkyFactor(1.0F, 1.0F, 0.0F, 0.0F, 0.0F, kGroundFacing, kSunOverhead, 15.0F);
+    const float dryContrast =
+        shaderBias::sunSkyFactor(1.0F, 1.0F, 1.0F, 0.0F, 0.0F, kGroundFacing, kSunOverhead, 0.0F) -
+        shaderBias::sunSkyFactor(1.0F, 1.0F, 0.0F, 0.0F, 0.0F, kGroundFacing, kSunOverhead, 0.0F);
+    REQUIRE(deepContrast < dryContrast * 0.15F,
+            "at the mask's deepest the shadow must be nearly gone");
+
+    // ---- 3. 那一位的布局 ---------------------------------------------------
+    // 低两位是着色位，高四位是水柱。混在一起读的症状是水下的草地整片失去生物群系着色
+    REQUIRE(mc::render::submergedBlocksOf(mc::render::packBiomeMask(3U, 7)) == 7,
+            "the submerged depth must survive the pack/unpack round trip");
+    REQUIRE((mc::render::packBiomeMask(3U, 7) & mc::render::kBiomeMaskTintBits) == 3U,
+            "and the tint bits must survive it too");
+    REQUIRE(mc::render::submergedBlocksOf(mc::render::packBiomeMask(0U, 0)) == 0,
+            "dry land packs to zero");
+    REQUIRE(mc::render::submergedBlocksOf(mc::render::packBiomeMask(3U, 99)) ==
+                mc::render::kBiomeMaskSubmergedMax,
+            "a deeper column than four bits can hold must clamp, not wrap into the tint bits");
+    REQUIRE((mc::render::packBiomeMask(3U, 99) & mc::render::kBiomeMaskTintBits) == 3U,
+            "clamping must not corrupt the tint bits");
+
+    // ---- 4. 着色器那一侧 ---------------------------------------------------
+    const std::filesystem::path shaderDir{MC_REBEDROCK_SHADER_SRC_DIR};
+    for (const char* name : {"grass_block.frag", "block_cutout.frag"}) {
+        const std::string source = stripLineComments(readFile(shaderDir / name));
+        // ★ 着色位必须**按位**测。整字节比较是这一轮唯一一处会静默毁掉既有画面的改动
+        REQUIRE(source.find("(fragmentBiomeMask & 3u) == 3u") != std::string::npos,
+                std::string{name} + " must test the tint bits, not the whole byte");
+        REQUIRE(source.find("fragmentBiomeMask == 3u") == std::string::npos,
+                std::string{name} + " still compares the whole biome mask byte");
+        // 而水柱必须真的被取出来喂进去
+        REQUIRE(source.find("(fragmentBiomeMask >> 4u) & 15u") != std::string::npos,
+                std::string{name} + " must unpack the submerged column from the high nibble");
+    }
+}
+
 void checkCascadeBlend() {
     // ---- 1. 混合系数本身 ---------------------------------------------------
     REQUIRE(shaderBias::sunShadowCascadeBlend(0.0F, 0.0F) == 0.0F,
@@ -1815,6 +1900,7 @@ int main() {
         checkThinPlaneBias();
         checkDirectWeight();
         checkCascadeBlend();
+        checkWaterTransmittance();
         checkEntityWiring();
         checkDepthConvention();
         checkTexelSnapping();

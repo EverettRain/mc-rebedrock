@@ -365,6 +365,21 @@ const CubeUvTable kCubeUv = makeCubeUvTable();
         : waterColumnDepth(world, x, y, z);
 }
 
+// RN-46a：这一格头顶压着多少格流体。0 = 不在水下。
+//
+// 一次查表就能否掉绝大多数格（上面不是流体就返回 0），而这条路径上每个面本来就要为
+// AO 采八个角——多这一次是噪声级的。上限与 biomeMask 高四位能装下的一样。
+[[nodiscard]] int fluidColumnAbove(const World& world, int x, int y, int z) {
+    int depth = 0;
+    for (int sampleY = y + 1;
+         sampleY < kMaxY && depth < render::kBiomeMaskSubmergedMax &&
+         isFluid(world.block(x, sampleY, z));
+         ++sampleY) {
+        ++depth;
+    }
+    return depth;
+}
+
 [[nodiscard]] float waterDepthBelowSurface(
     const World& world,
     int x,
@@ -1230,6 +1245,8 @@ void appendFace(
     // light samples keep the canonical corner (they only read the surrounding
     // cells, which a 1/16 drop does not change); only the mesh position drops.
     const float modelHeight = blockDefinition(block).modelHeight;
+    // RN-46a：这一格头顶压着多少格水。逐格算一次，四个角共用
+    const int submergedBlocks = fluidColumnAbove(world, x, y, z);
     std::array<float, 4> ambientOcclusion{};
     // The center sample (pos + face normal) doubles as the flat light and is
     // shared by all four corners, so it is read once per face.
@@ -1279,7 +1296,9 @@ void appendFace(
         // shader interpolates between them — the border is a gradient across the
         // face rather than a step at its edge.
         const auto tint = tints.tint(block, face.face, cornerX, cornerZ);
-        const std::uint8_t biomeMask = tintMask(tint);
+        // RN-46a：水柱按**格**算，四个角共用一个值——它表达的是「这一格头顶有多少水」，
+        // 不是逐角的量
+        const std::uint8_t biomeMask = render::packBiomeMask(tintMask(tint), submergedBlocks);
         mesh.vertices.push_back(packVertex(
             (origin + positionCorner) - sectionOrigin,
             face.normal,
@@ -1606,6 +1625,8 @@ void appendBox(
     // and -Z were mirrored in U, the top face in V).
     const glm::vec3 from16 = boxMin * 16.0F;
     const glm::vec3 to16 = boxMax * 16.0F;
+    // RN-46a：见 appendFace 的同名量。异形方块（台阶、栅栏）也在水下，也要衰减
+    const int submergedBlocks = fluidColumnAbove(world, x, y, z);
     for (const auto& face : kFaces) {
         const float faceCoordinate = boxFaceCoordinate(box, face);
         const bool positive = face.dx + face.dy + face.dz > 0;
@@ -1660,7 +1681,8 @@ void appendBox(
             const int cornerX = x + static_cast<int>(std::lround(positionCorner.x));
             const int cornerZ = z + static_cast<int>(std::lround(positionCorner.z));
             const auto tint = tints.tint(current.block, face.face, cornerX, cornerZ);
-            const std::uint8_t biomeMask = tintMask(tint);
+            const std::uint8_t biomeMask =
+                render::packBiomeMask(tintMask(tint), submergedBlocks);
             mesh.vertices.push_back(packVertex(
                 (origin + positionCorner) - sectionOrigin,
                 face.normal,
