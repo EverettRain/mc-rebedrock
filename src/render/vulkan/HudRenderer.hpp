@@ -2830,7 +2830,11 @@ class HudRenderer final {
             title("container.chest", "Chest");
             return std::nullopt;
         case ui::ContainerPageKind::CraftingTable:
-            // 26.1 的工作台屏两行标题都在，本作此前一行都没画（登记为偏差 D29）。
+            // UI-8 / D29：26.1 `AbstractContainerScreen.extractLabels`（:218-221）对
+            // **每一块**容器屏都画屏名与 "Inventory" 两行，`CraftingScreen` 与
+            // `AbstractFurnaceScreen` 都没有覆写它——本作此前这两屏一行都没画。
+            // 屏名来自 `CraftingTableBlock.CONTAINER_TITLE`（container.crafting）。
+            title("container.crafting", "Crafting");
             return std::nullopt;
         case ui::ContainerPageKind::EnchantingTable:
             return drawEnchantingScreen(commandBuffer, layout, panel);
@@ -2838,6 +2842,8 @@ class HudRenderer final {
             drawAnvilScreen(commandBuffer, layout, panel);
             return std::nullopt;
         case ui::ContainerPageKind::Furnace: {
+            // D29 同上。屏名来自 `FurnaceBlockEntity.DEFAULT_NAME`（container.furnace）。
+            title("container.furnace", "Furnace");
             // 熔炉界面按容器显示快照绘制，这里不读方块实体的位置
             const auto& worldSnap = clientMirror.world();
             const float fuel = std::clamp(worldSnap.furnaceFuelProgress, 0.0F, 1.0F);

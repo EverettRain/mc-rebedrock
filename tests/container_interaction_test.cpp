@@ -220,14 +220,34 @@ void testCreativeChrome() {
         check(action.kind == ContainerActionKind::SetCreativeTab && action.index == tab,
               "each tab must select itself", __LINE__);
 
-        // ★ 右键点页签**不是**切页签。26.1 也只在左键那一支处理页签
-        //   （CreativeModeInventoryScreen:494）。本作让它落到"面板外就丢东西"那条
-        //   通用规则上——页签正好在面板之外。这是偏差 D31（26.1 会把"当前选中的
-        //   那个页签"排除在"外面"之外），A2 保持行为不变。
+        // ★ 右键点页签**不是**切页签（26.1 只在左键那一支处理页签，:494）。它落到
+        //   "点在面板外就丢东西"那条通用规则上——页签正好在面板之外。
+        //   **但当前选中的那个页签除外**：26.1 `hasClickedOutside`（:650-654）
+        //   把它排除在"外面"之外（UI-8 / D31 补上的）。
         const auto rightClick = mc::ui::containerClickAction(page, centreOf(widget->rect),
                                                              InventoryMouseButton::Right, view);
-        check(rightClick.kind == ContainerActionKind::DropCursor,
-              "right-clicking a tab keeps today's drop behaviour (D31)", __LINE__);
+        check(rightClick.kind == (tab == view.selectedCreativeTab
+                                      ? ContainerActionKind::None
+                                      : ContainerActionKind::DropCursor),
+              "right-clicking the selected tab must not drop; other tabs still do (D31)",
+              __LINE__);
+    }
+
+    // ★ 换一个选中页签，"哪一个不丢"跟着走——而不是钉死第 0 个。
+    {
+        mc::ui::ContainerViewState moved = view;
+        moved.selectedCreativeTab = 3U;
+        const auto* zero = nthButton(page, mc::ui::WidgetId::CreativeTab, 0U);
+        const auto* three = nthButton(page, mc::ui::WidgetId::CreativeTab, 3U);
+        CHECK(zero != nullptr && three != nullptr);
+        if (zero != nullptr && three != nullptr) {
+            CHECK(mc::ui::containerClickAction(page, centreOf(zero->rect),
+                                               InventoryMouseButton::Right, moved)
+                      .kind == ContainerActionKind::DropCursor);
+            CHECK(mc::ui::containerClickAction(page, centreOf(three->rect),
+                                               InventoryMouseButton::Right, moved)
+                      .kind == ContainerActionKind::None);
+        }
     }
 
     const auto* scrollbar = nthButton(page, mc::ui::WidgetId::CreativeScrollbar, 0U);

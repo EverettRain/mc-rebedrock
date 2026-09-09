@@ -64,12 +64,18 @@ ContainerAction containerClickAction(const Page& page, UiPoint cursor,
             return {ContainerActionKind::ClearCursor, {}, 0U, 0U};
         }
         // ★ 页签与滚动条**只认左键**（26.1 `CreativeModeInventoryScreen:494` 也是
-        //   `if (event.button() == 0)`）。非左键落到下面的"面板外就丢东西"那条通用
-        //   规则上——而页签正好在面板之外，所以右键点页签会把手上的东西扔出去。
-        //   26.1 的 `hasClickedOutside`（:650-654）把"点在**当前选中**的页签上"排除
-        //   在外，本作没有这一条：偏差 D31，A2 不改（重构不改行为）。
-        if (leftButton && isButton(widget, WidgetId::CreativeTab)) {
-            return {ContainerActionKind::SetCreativeTab, {}, 0U, ordinalAmongSameId(page, hit)};
+        //   `if (event.button() == 0)`）。
+        if (isButton(widget, WidgetId::CreativeTab)) {
+            const std::size_t tab = ordinalAmongSameId(page, hit);
+            if (leftButton) {
+                return {ContainerActionKind::SetCreativeTab, {}, 0U, tab};
+            }
+            // D31：非左键落到下面那条"面板外就丢东西"的通用规则上——页签正好在面板
+            // 之外。但 26.1 的 `hasClickedOutside`（:650-654）把**当前选中的那个页签**
+            // 排除在"外面"之外，所以右键点它什么都不发生；点别的页签仍然丢。
+            if (tab == view.selectedCreativeTab) {
+                return {ContainerActionKind::None, {}, 0U, 0U};
+            }
         }
         if (leftButton && isButton(widget, WidgetId::CreativeScrollbar)) {
             // 滚不动的时候滚动条是死的：点它什么都不发生，也不该掉进"丢东西"。
