@@ -42,6 +42,12 @@ struct FurnaceRecipe final {
     float experience = 0.0F;
 };
 
+// 一格材料与一堆物品是否匹配（空格只匹配空堆）。**配方匹配的单一真相源**：
+// 合成台的形状/无序匹配、熔炉的输入匹配、配方书的"这堆材料够不够"三处消费者读
+// 的是同一个谓词，抄第二份就等于让配方书认得出而合成台认不出。
+[[nodiscard]] bool ingredientMatches(const RecipeIngredient& ingredient,
+                                     const ItemStack& stack);
+
 [[nodiscard]] std::span<const CraftingRecipe> craftingRecipes();
 [[nodiscard]] std::span<const FurnaceRecipe> furnaceRecipes();
 [[nodiscard]] int fuelBurnTicks(const ItemStack& stack);
@@ -49,6 +55,15 @@ struct FurnaceRecipe final {
 // (the block entities that smelt) so recipe matching lives with the recipe data
 // rather than being duplicated per consumer.
 [[nodiscard]] const FurnaceRecipe* matchedFurnaceRecipe(const ItemStack& input);
+// 这张网格（按行主序，宽 `gridWidth`）当前摆的是不是这条配方。
+// 26.1 的 `AbstractCraftingMenu#recipeMatches` 问的就是这个，配方书的一键填充要
+// 靠它分辨"网格里已经是这条配方了"（那时普通点击是**加一层**而不是重摆）。
+[[nodiscard]] bool craftingRecipeMatches(const CraftingRecipe& recipe,
+                                         std::span<const ItemStack> grid,
+                                         std::size_t gridWidth);
+// 这张网格摆出的配方，没有就是 nullptr。
+[[nodiscard]] const CraftingRecipe* matchedCraftingRecipe(std::span<const ItemStack> grid,
+                                                          std::size_t gridWidth);
 
 class CraftingSystem final {
   public:

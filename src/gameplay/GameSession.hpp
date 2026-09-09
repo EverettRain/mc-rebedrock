@@ -505,6 +505,8 @@ class GameSession final {
     [[nodiscard]] const Inventory& inventory() const { return primaryPlayer().inventory; }
     [[nodiscard]] EquipmentSlots& equipment() { return primaryPlayer().equipment; }
     [[nodiscard]] const EquipmentSlots& equipment() const { return primaryPlayer().equipment; }
+    [[nodiscard]] RecipeBook& recipeBook() { return primaryPlayer().recipeBook; }
+    [[nodiscard]] const RecipeBook& recipeBook() const { return primaryPlayer().recipeBook; }
     [[nodiscard]] CraftingSystem& craftingSystem() { return primaryPlayer().crafting; }
     [[nodiscard]] const CraftingSystem& craftingSystem() const { return primaryPlayer().crafting; }
     [[nodiscard]] GameMode& gameMode() { return primaryPlayer().gameMode; }
