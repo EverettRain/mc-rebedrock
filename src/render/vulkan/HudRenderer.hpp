@@ -41,6 +41,7 @@
 #include "ui/SubtitleFeed.hpp"
 #include "ui/Toast.hpp"
 #include "ui/HudLayout.hpp"
+#include "ui/ScrollingText.hpp"
 #include "ui/SliderGeometry.hpp"
 #include "ui/ItemTooltip.hpp"
 #include "ui/Language.hpp"
@@ -708,8 +709,50 @@ class HudRenderer final {
         // `x + (width - font.width(text)) / 2`，逻辑像素上的**整数除法**，
         // 而 font.width 本身是 Mth.ceil 的整数。此前这里是浮点的 *0.5F，
         // 于是奇数差时文字落在半个像素上。
-        drawHudText(commandBuffer, label, centredLabelX(snapped, label, scale), textY, scale,
-                    textColor);
+        drawScrollingLabel(commandBuffer, snapped, label, textY, scale, textColor,
+                           centredLabelX(snapped, label, scale));
+    }
+
+    // UI-6f（D17）：控件标签放不下时**剪裁 + 来回滚**，而不是画出控件外。
+    //
+    // ★ 26.1 `ActiveTextCollector.defaultScrollingHelper`：超宽时左对齐 + scissor +
+    //   正弦缓动来回滚；装得下时居中但把中心夹在两端之内。本作从前一律照居中画，
+    //   于是 "Rain Mode: Asynchronous Particle Rain" 这类标签一路画出按钮外。
+    //
+    // ★ **scissor 是动态状态**：设了必须恢复，否则后面所有绘制都被裁在这个控件里。
+    void drawScrollingLabel(VkCommandBuffer commandBuffer, const ui::UiRect& box,
+                            std::string_view label, float textY, float scale,
+                            const glm::vec4& color, float centredX) const {
+        const float margin = 2.0F * scale;
+        const float room = box.width - margin * 2.0F;
+        const auto scroll =
+            ui::scrollingTextAt(hudTextWidth(label, scale), room, scrollingTextSeconds());
+        if (!scroll.scrolls) {
+            drawHudText(commandBuffer, label, centredX, textY, scale, color);
+            return;
+        }
+        const VkRect2D clip{
+            {static_cast<std::int32_t>(std::max(box.x + margin, 0.0F)),
+             static_cast<std::int32_t>(std::max(box.y, 0.0F))},
+            {static_cast<std::uint32_t>(std::max(room, 0.0F)),
+             static_cast<std::uint32_t>(std::max(box.height, 0.0F))},
+        };
+        vkCmdSetScissor(commandBuffer, 0, 1, &clip);
+        drawHudText(commandBuffer, label, box.x + margin - scroll.offset, textY, scale, color);
+        // ★ 恢复成整屏，否则后面每一次绘制都还被裁在这个控件里。
+        const VkRect2D full{{0, 0}, swapchainExtent};
+        vkCmdSetScissor(commandBuffer, 0, 1, &full);
+    }
+
+    // 滚动用的时间。★ 出图时**钉住**（kPinnedTime）：这是时间驱动的动画，
+    // 不钉住截图通道就不再"同一条命令行跑两遍逐字节相同"。
+    [[nodiscard]] double scrollingTextSeconds() const {
+        if (uiCaptureActive) {
+            return ui::kPinnedTime;
+        }
+        return std::chrono::duration<double>(
+                   std::chrono::steady_clock::now().time_since_epoch())
+            .count();
     }
 
     void drawMinecraftSlider(VkCommandBuffer commandBuffer, const ui::UiRect& rectangle,
@@ -752,8 +795,9 @@ class HudRenderer final {
         // `x + (width - font.width(text)) / 2`，逻辑像素上的**整数除法**，
         // 而 font.width 本身是 Mth.ceil 的整数。此前这里是浮点的 *0.5F，
         // 于是奇数差时文字落在半个像素上。
-        drawHudText(commandBuffer, label, centredLabelX(snapped, label, scale), textY, scale,
-                    textColor);
+        // UI-6f（D17）：滑块标签同样会超宽，与按钮走同一条剪裁+滚动的路。
+        drawScrollingLabel(commandBuffer, snapped, label, textY, scale, textColor,
+                           centredLabelX(snapped, label, scale));
     }
 
     [[nodiscard]] float hudTextWidth(std::string_view text, float scale) const {
