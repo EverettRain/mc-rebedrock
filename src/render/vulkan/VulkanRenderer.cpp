@@ -15,6 +15,7 @@
 #include "render/vulkan/WorldRenderer.hpp"
 
 #include "render/BlockPreviewCamera.hpp"
+#include "render/UiCaptureFixture.hpp"
 #include "net/LoopbackTransport.hpp"
 
 #include "core/EnvFlags.hpp"
@@ -1522,27 +1523,91 @@ struct VulkanRenderer::Impl final : public gameplay::SimulationHost {
         uiCaptureFixtureBuilt_ = true;
     }
 
+    // 快照 → uiFrameData_ 的那一批字段。
+    //
+    // 它从帧循环里抽出来，因为**截图通道也要填同一批**：那条路不启动模拟线程，
+    // 快照是注入的，但"HUD 显示什么"这件事必须与生产路径同一份代码算出来。
+    // 两边各写一遍就是同一个事实的两份表述（README 护栏 18），而漏掉一个字段的
+    // 症状是"某一屏拍出来少了一样东西"——没有任何断言会红。
+    void syncUiFrameDataFromMirror() {
+        const auto& playerSnap = clientMirror_.player();
+        uiFrameData_.health = playerSnap.health;
+        uiFrameData_.foodLevel = playerSnap.foodLevel;
+        uiFrameData_.airTicks = playerSnap.airTicks;
+        uiFrameData_.ticksSinceDamage = playerSnap.ticksSinceDamage;
+        uiFrameData_.experienceLevel = playerSnap.experienceLevel;
+        uiFrameData_.experienceProgress = playerSnap.experienceProgress;
+        uiFrameData_.gameMode = playerSnap.gameMode;
+        uiFrameData_.eating = playerSnap.eating;
+        uiFrameData_.selectedStack = playerSnap.heldStack;
+        uiFrameData_.selectedHotbarSlot = playerSnap.selectedHotbarSlot;
+        const auto& worldSnap = clientMirror_.world();
+        uiFrameData_.containerScreen = worldSnap.openContainerScreen;
+        uiFrameData_.activeChest = worldSnap.openChest;
+    }
+
     // 这一页要拍成什么状态：有没有世界、暂停没暂停。
     //
     // 三个标志是**同一个事实的三种说法**，分散着设就会出现"世界准备好了但会话没开"
     // 这种谁也没打算过的组合。收在一处，于是"pause 页拍出来却是主菜单"这类错误
     // 只有一个地方可能发生。
-    void applyUiCapturePageState(ui::PageId page) {
-        const bool needsWorld = uiCapturePageNeedsWorld(page);
+    void applyUiCaptureTargetState(const UiCaptureTarget& target) {
+        const bool needsWorld = uiCapturePageNeedsWorld(target.page);
         if (needsWorld) {
             ensureUiCaptureWorldFixture();
         }
         // loading 是 needsWorld 与 showsWorld 的差集，理由见 uiCapturePageShowsWorld。
         // 那条判断住在 UiCapture 里而不是这里，因为这个翻译单元没有测试看得见。
-        worldReady = uiCapturePageShowsWorld(page);
+        worldReady = uiCapturePageShowsWorld(target.page);
         worldSessionActive = needsWorld;
-        paused = uiCapturePageIsPaused(page);
-        inventoryOpen = false;
+        paused = uiCapturePageIsPaused(target.page);
+        // A0-0：容器界面是 `PageId::Game` **之上**的一层，不是一个 PageId——
+        // 打开它的是这个标志，而不是页面栈。
+        inventoryOpen = target.container.has_value();
         // loading 页那行文字是这两个的函数。不钉住，它显示的百分比就取决于夹具
         // 恰好留下了多少待上传的区段。
         spawnPositionInitialized = false;
         peakPendingSectionCount = 0U;
-        menuSystem.pageStack.reset(page);
+        menuSystem.pageStack.reset(target.page);
+        // 创造背包开在哪个页签、滚到第几行，是**屏幕状态**不是快照——它住在
+        // menuSystem 里，所以在这里钉，而不是在夹具里。滚动行必须一并钉住：
+        // 不钉它，目录那 45 格显示的是上一个目标留下的滚动位置。
+        menuSystem.creativeTab =
+            target.creativeCatalog ? ui::CreativeTab::BuildingBlocks : ui::CreativeTab::Inventory;
+        menuSystem.creativeScrollRow = 0U;
+        // 背包屏那口黑井里画的是玩家模型，而它的骨骼姿态要动画器**求值过一次**才绑定
+        // （`drawPlayerPreview`：未绑定就一根骨骼也不画）。求值发生在 run() 的帧循环里，
+        // 而截图通道根本不走那条循环——不喂这一下，每一张背包截图都只有 vanilla
+        // inventory.png 自带的那口黑井，人物一次都没进过画。
+        //
+        // ★ 两个入参都取零：deltaSeconds = 0 让姿态停在动画的第 0 帧（时间是这条通道
+        //   钉死的东西），视线偏移取零让人物正视前方而不是盯着一个"光标钉在画布外"
+        //   算出来的极端角度。
+        if (inventoryOpen) {
+            playerModelAnimator.setCursorLook(0.0F, 0.0F);
+            playerModelAnimator.update(0.0F, /*walking=*/false);
+        }
+        publishUiCaptureSnapshots(target);
+    }
+
+    // A0-0：把这个目标的固定世界/玩家快照发进客户端镜像。
+    //
+    // ★ 走的是**生产的编解码通道**（loopback 一对 + ClientMirror::pump），不是给
+    //   ClientMirror 开一个"截图专用 setter"。镜像的写入者因此仍然只有一个，
+    //   而这条路 RN 的阴影导出已经在用（同一个文件里 initializeTestScene 那一段）。
+    //
+    // 内容一律是目标的函数（见 render/UiCaptureFixture.cpp）：确定性这条规矩
+    // 管到每一个槽位里的物品，否则两遍拍出来的图不可能逐字节相同。
+    void publishUiCaptureSnapshots(const UiCaptureTarget& target) {
+        auto channel = net::makeLoopbackPair();
+        net::sendMessage(*channel.server,
+                         gameplay::PublishedSnapshot{uiCaptureWorldSnapshot(target)});
+        net::sendMessage(*channel.server,
+                         gameplay::PublishedSnapshot{uiCapturePlayerSnapshot(target)});
+        static_cast<void>(clientMirror_.pump(*channel.client, *this));
+        // 快照 → uiFrameData_ 走生产路径那**同一个**函数：容器屏是哪一块、箱子在哪、
+        // 是不是创造模式，全从刚注入的快照里读出来，而不是在这里再判一次目标。
+        syncUiFrameDataFromMirror();
     }
 
     // UI-2：界面截图循环。
@@ -1556,15 +1621,15 @@ struct VulkanRenderer::Impl final : public gameplay::SimulationHost {
     [[nodiscard]] int runUiCapture() {
         std::size_t failures = 0;
         std::size_t written = 0;
-        for (const ui::PageId page : uiCapture->pages) {
+        for (const UiCaptureTarget& target : uiCapture->targets) {
             for (const int guiScale : uiCapture->guiScales) {
                 // ★ 同一个屏幕在不同 GUI scale 下是不同的版面：spec §5 的几何都是
                 //    逻辑画布（ceil(帧缓冲 / scale)）上的整数运算。只拍一档等于没拍。
                 options.guiScale = guiScale;
                 menuSystem.guiScaleSetting = guiScale;
-                applyUiCapturePageState(page);
+                applyUiCaptureTargetState(target);
                 applyUiCaptureDeterminism();
-                const auto file = uiCaptureImagePath(*uiCapture, page, guiScale);
+                const auto file = uiCaptureImagePath(*uiCapture, target, guiScale);
                 std::error_code directoryError;
                 std::filesystem::create_directories(file.parent_path(), directoryError);
                 if (directoryError) {
@@ -1937,20 +2002,12 @@ struct VulkanRenderer::Impl final : public gameplay::SimulationHost {
                 renderedFeetPosition = playerSnap.physicsPrevious +
                                        (playerSnap.physicsCurrent - playerSnap.physicsPrevious) *
                                            physicsAlpha;
-                // HUD 快照取自逐 tick 玩家快照（在模拟的写锁下发布），不取实时玩法状态
-                uiFrameData_.health = playerSnap.health;
-                uiFrameData_.foodLevel = playerSnap.foodLevel;
-                uiFrameData_.airTicks = playerSnap.airTicks;
-                uiFrameData_.ticksSinceDamage = playerSnap.ticksSinceDamage;
-                uiFrameData_.experienceLevel = playerSnap.experienceLevel;
-                uiFrameData_.experienceProgress = playerSnap.experienceProgress;
-                uiFrameData_.gameMode = playerSnap.gameMode;
-                uiFrameData_.eating = playerSnap.eating;
-                uiFrameData_.selectedStack = playerSnap.heldStack;
-                uiFrameData_.selectedHotbarSlot = playerSnap.selectedHotbarSlot;
+                // HUD 快照取自逐 tick 玩家快照（在模拟的写锁下发布），不取实时玩法状态。
+                // ★ 这一段是**一处**：截图通道注入固定快照之后要填的是同一批字段，
+                //   两边各写一遍就是同一个事实的两份表述（README 护栏 18）——漏掉
+                //   哪一个字段，症状是那一屏拍出来少了一样东西，而没有断言会红。
+                syncUiFrameDataFromMirror();
                 const auto worldSnap = clientMirror_.world();
-                uiFrameData_.containerScreen = worldSnap.openContainerScreen;
-                uiFrameData_.activeChest = worldSnap.openChest;
                 // I-3 / AnvilScreen#slotChanged: whenever the left slot changes,
                 // the box is reset to whatever that item is currently called —
                 // its custom name if it has one, otherwise empty. Without this

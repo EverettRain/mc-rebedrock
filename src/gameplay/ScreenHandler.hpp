@@ -5,6 +5,7 @@
 #include "gameplay/FurnaceSystem.hpp"
 #include "gameplay/GameMode.hpp"
 #include "gameplay/Inventory.hpp"
+#include "gameplay/ScreenTypes.hpp"
 #include "ui/HudLayout.hpp"
 
 #include <glm/vec3.hpp>
@@ -17,23 +18,8 @@ namespace mc::gameplay {
 
 class GameSession;
 
-// Which screen the player has open. This used to live in the renderer's
-// HudTypes because the renderer was the only thing that knew about screens;
-// the routing below is gameplay, so the enum belongs here and the renderer
-// aliases it.
-enum class ContainerScreen : std::uint8_t {
-    PlayerInventory,
-    CraftingTable,
-    Furnace,
-    Chest,
-    // ENCH-2. Appended at the tail: this enum crosses the client/server wire in
-    // the snapshot and the open-container event, so an inserted value would
-    // renumber the four screens a running client already knows.
-    EnchantingTable,
-    // ENCH-3. Appended at the tail for the same reason: this enum crosses the
-    // wire.
-    Anvil,
-};
+// `ContainerScreen`（这一屏是什么）住在 gameplay/ScreenTypes.hpp：它有一类只要身份、
+// 不要整套容器逻辑的消费者（截图通道的目标表），而那里也是它的 `Count` 哨兵的家。
 
 // What a slot is, which is all the click router needs to know. 26.1 expresses
 // the same thing by subclassing Slot (ResultSlot, FurnaceFuelSlot, …) and

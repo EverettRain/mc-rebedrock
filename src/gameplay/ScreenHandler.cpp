@@ -86,6 +86,9 @@ void appendContainerSlots(
         slots.push_back({layout.anvilOutputSlot(), nullptr, SlotKind::AnvilOutput, 0U});
         return;
     }
+    case ContainerScreen::Count:
+        // 哨兵，不是一屏。它不过线、也不会被发布，走到这里说明有人把它当成了取值。
+        return;
     case ContainerScreen::PlayerInventory: {
         // The 2x2 grid only exists in the survival screen; creative has no
         // crafting at all.
@@ -512,6 +515,7 @@ void ScreenHandler::quickMoveToContainer(
         }
         break;
     case ContainerScreen::PlayerInventory:
+    case ContainerScreen::Count:   // 哨兵，不是一屏
         break;
     }
 }

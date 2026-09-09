@@ -24,6 +24,12 @@
 # ★ 这条通道读的是离屏的 sceneTargets，位于 copySceneToSwapchain **之前**，
 #   因此它**看不到呈现链**（RN-25 §4）。凡引用它说"视觉验收通过"都要带这个限定。
 #
+# ★ A0-0：**容器界面也能拍**（inventory / inventory-creative / creative-catalog / chest /
+#   crafting-table / furnace / enchanting-table / anvil）。它们不是 PageId——容器屏是
+#   PageId::Game 之上的 `inventoryOpen + containerScreen` 那一层，所以拍摄目标是
+#   `UiCaptureTarget{页, 容器, 创造, 创造页签}` 而不是一个页号。每个容器目标配一份
+#   只由目标决定的世界/玩家快照夹具（src/render/UiCaptureFixture.cpp）。
+#
 # ★ UI-6-0：game / pause / death / loading 四页需要世界，渲染器会为它们打开一份
 #   **固定的世界夹具**（一片 9x9 石台加四根柱子，相机位姿是常量，不启动模拟线程）。
 #   它与 --test-scene 的方块预览共用同一条场景装配路径，但走各自的出图目录，
@@ -57,9 +63,13 @@ done
 
 if [[ -z "$PAGES" ]]; then
     echo "用法：$0 [--verify] <页名>[,<页名>...] [--scale 2,3] [--size 1280x720] [--out 目录]" >&2
-    echo "  页名：title / world-list / create-world / edit-world / confirm-delete /" >&2
-    echo "        options / video-settings / controls / language / experimental /" >&2
-    echo "        game / pause / death / loading" >&2
+    echo "  前端页：title / world-list / create-world / edit-world / confirm-delete /" >&2
+    echo "          options / video-settings / controls / language / advanced-graphics /" >&2
+    echo "          key-binds / accessibility / sound-settings / resource-packs /" >&2
+    echo "          game / pause / death / loading" >&2
+    echo "  容器屏：inventory / inventory-creative / creative-catalog / chest /" >&2
+    echo "          crafting-table / furnace / enchanting-table / anvil" >&2
+    echo "  （这份清单的单一来源是 src/render/UiCapture.cpp 的 kTargetNames）" >&2
     exit 2
 fi
 
