@@ -1224,7 +1224,11 @@ struct VulkanRenderer::Impl final : public gameplay::SimulationHost {
         // RN-47：接缝离视点多远。它是**每帧读**的（只进那个正交矩阵），所以钉在这里
         // 而不是 initialize()——与抗锯齿正相反，那一档初始化期就读走了。
         // 钉成默认档：出图要展示玩家默认看到的那一档，而不是跑它那台机器上恰好写了什么
-        options.shadowNearDistance = render::kDefaultSunShadowNearDistance;
+        // RN-55：★ 从前这里钉的是**常量** kDefaultSunShadowNearDistance，于是 16/24 档
+        // 那两条路在出图里根本拍不到——而用户报的光斑只在 24 档出现。这与 RN-44 在
+        // 抗锯齿上踩过的是同一个坑，那条注释就写着：「钉的是**与 options.properties
+        // 无关**，不是钉成一个常量」。档位现在跟着 `--near-shadow` 走，并进目录名。
+        options.shadowNearDistance = testScene->shadowNearDistance;
         // RN-23：贴花在导出里显式打开，和上面两项同理——一张取决于用户设置的图片
         // 没法和另一台机器上的图片对比，而对比正是这个工具的全部价值。
         options.entityShadows = true;

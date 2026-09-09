@@ -359,7 +359,8 @@ std::string previewDirectoryName(const TestSceneOptions& options) {
     const auto base = previewBaseDirectoryName(options);
     const bool weather = options.rainGradient > 0.0F || options.thunderGradient > 0.0F;
     if (!options.sunShadows && !options.shadowEntities && !options.sunTick && !weather &&
-        !options.outline && options.antiAliasing == config::AntiAliasingMode::Off) {
+        !options.outline && options.antiAliasing == config::AntiAliasingMode::Off &&
+        options.shadowNearDistance == 8) {
         return base;
     }
     // 天气进目录名，和其余每一项一样：RN-15 的确定性规则要求输出路径是命令行的函数，
@@ -378,7 +379,11 @@ std::string previewDirectoryName(const TestSceneOptions& options) {
         (options.outline ? "-outline" : "") +
         (options.antiAliasing == config::AntiAliasingMode::Off
              ? std::string{}
-             : (options.antiAliasing == config::AntiAliasingMode::Msaa ? "-msaa" : "-taa"));
+             : (options.antiAliasing == config::AntiAliasingMode::Msaa ? "-msaa" : "-taa")) +
+        // RN-55：档位进目录名，理由与天气那条一样——输出路径必须是命令行的函数，
+        // 否则「8 档那一版」与「24 档那一版」互相覆盖，而覆盖是静默的
+        (options.shadowNearDistance == 8 ? std::string{}
+                                         : "-near" + std::to_string(options.shadowNearDistance));
     return name.size() <= kMaxPreviewDirectoryName ? name :
         name.substr(0, kMaxPreviewDirectoryName - 10U) + "__" + shortHash(name);
 }
@@ -499,6 +504,17 @@ std::optional<TestSceneOptions> parseTestSceneArguments(
             }
             if (!result.has_value()) result = TestSceneOptions{};
             (thunder ? result->thunderGradient : result->rainGradient) = value;
+        } else if (arguments[index] == "--near-shadow") {
+            if (++index >= arguments.size())
+                throw std::invalid_argument("--near-shadow requires 8, 16 or 24");
+            int blocks = 0;
+            const auto value = arguments[index];
+            const auto [end, error] = std::from_chars(value.data(), value.data() + value.size(), blocks);
+            if (error != std::errc{} || end != value.data() + value.size() ||
+                (blocks != 8 && blocks != 16 && blocks != 24))
+                throw std::invalid_argument("--near-shadow requires 8, 16 or 24");
+            if (!result.has_value()) result = TestSceneOptions{};
+            result->shadowNearDistance = blocks;
         } else if (arguments[index] == "--sun-tick") {
             if (++index >= arguments.size()) throw std::invalid_argument("--sun-tick requires 0..23999");
             std::uint32_t tick = 0;
