@@ -69,8 +69,9 @@ struct Samples {
     std::size_t count = 0;
     // RN-34：遮挡物搜索读的是同一张图的**非比较**视图。夹具把它做成一个可编程的深度
     // 场：默认 1.0（比任何接收点都远 = 没有遮挡物），测试按需覆盖。
-    std::array<float, 4> blockerDepth{1.0F, 1.0F, 1.0F, 1.0F};
-    std::array<vec3, 4> blockerCoordinates{};
+    // RN-43：过渡带里两级各跑一次，所以遮挡搜索最多 8 次而不是 4 次
+    std::array<float, 8> blockerDepth{1.0F, 1.0F, 1.0F, 1.0F, 1.0F, 1.0F, 1.0F, 1.0F};
+    std::array<vec3, 8> blockerCoordinates{};
     std::size_t blockerCount = 0;
 };
 using sampler2DArrayShadow = Samples*;
@@ -1482,6 +1483,119 @@ void checkDirectWeight() {
     }
 }
 
+// RN-43：级联接缝的过渡带。
+void checkCascadeBlend() {
+    // ---- 1. 混合系数本身 ---------------------------------------------------
+    REQUIRE(shaderBias::sunShadowCascadeBlend(0.0F, 0.0F) == 0.0F,
+            "the middle of the near box must be pure near cascade");
+    REQUIRE(std::abs(shaderBias::sunShadowCascadeBlend(1.0F, 0.0F) - 1.0F) < 1e-6F &&
+                std::abs(shaderBias::sunShadowCascadeBlend(0.0F, -1.0F) - 1.0F) < 1e-6F,
+            "the near box's own edge must be pure far cascade");
+    REQUIRE(std::abs(shaderBias::sunShadowCascadeBlend(0.9F, 0.0F) - 0.5F) < 1e-6F,
+            "the band must be linear across its width");
+    // 对称、单调、有界
+    float previous = -1.0F;
+    for (const float edge : {0.0F, 0.5F, 0.8F, 0.85F, 0.9F, 0.95F, 1.0F, 2.0F}) {
+        const float blend = shaderBias::sunShadowCascadeBlend(edge, 0.0F);
+        REQUIRE(blend >= previous && blend >= 0.0F && blend <= 1.0F,
+                "the blend must rise monotonically and stay inside [0,1]");
+        REQUIRE(shaderBias::sunShadowCascadeBlend(-edge, 0.0F) == blend &&
+                    shaderBias::sunShadowCascadeBlend(0.0F, edge) == blend,
+                "the blend must be symmetric in both axes");
+        previous = blend;
+    }
+    // 带宽：近段框半边长 8 格，两成就是 1.6 格。带太窄就化不开 8 倍的半影差，
+    // 太宽就是让大半个近段白付两级的采样钱
+    REQUIRE(shaderBias::kSunShadowCascadeBlendStart >= 0.6F &&
+                shaderBias::kSunShadowCascadeBlendStart <= 0.9F,
+            "the blend band must stay a rim of the near box");
+
+    // ---- 2. 带内两级各采一次，结果落在两者之间 -----------------------------
+    const auto run = [](float x) {
+        shaderReceiver::Samples samples{};
+        // 前四个 tap 是近段（全亮），后四个是远段（全暗）
+        samples.visibility = {1, 1, 1, 1, 0, 0, 0, 0, 0};
+        samples.blockerDepth = {0.499F, 0.499F, 0.499F, 0.499F,
+                                0.499F, 0.499F, 0.499F, 0.499F};
+        const float factor = shaderReceiver::sunShadowFactor(
+            &samples, &samples, glm::mat4{1.0F}, glm::mat4{1.0F}, glm::vec3{x, 0, 0.5F},
+            glm::vec3{0, 1, 0}, glm::vec3{0, 1, 0}, kNearCascadeOn, kClearWeather, kSolidFace);
+        return std::pair{factor, samples.count};
+    };
+    // 带外：只采近段
+    const auto [insideFactor, insideTaps] = run(0.5F);
+    REQUIRE(insideTaps == 4 && insideFactor == 1.0F,
+            "a receiver well inside the near box must still cost four taps");
+    // 带内（NDC 0.9 ⇒ 混合系数 0.5）：八个 tap，一半在层 0 一半在层 1
+    const auto [bandFactor, bandTaps] = run(0.9F);
+    REQUIRE(bandTaps == 8, "inside the band both cascades must be sampled");
+    REQUIRE(std::abs(bandFactor - 0.5F) < 1e-6F,
+            "the band must return the blend of the two cascades, not one of them");
+    // ★ 0.5 那个点对「混反了」是瞎的（mix(1,0,0.5) 与 mix(0,1,0.5) 一样）。再取一个
+    //   不对称的：NDC 0.85 ⇒ 系数 0.25 ⇒ 近段占四分之三
+    const auto [quarterFactor, quarterTaps] = run(0.85F);
+    REQUIRE(quarterTaps == 8 && std::abs(quarterFactor - 0.75F) < 1e-6F,
+            "at a quarter of the way across the band the near cascade must still weigh three "
+            "quarters; swapping the two ends of the mix reads identically at the midpoint");
+
+    // 层号：前四个 tap 在层 0，后四个在层 1。混错层的症状是「接缝处影子整片错位」
+    shaderReceiver::Samples samples{};
+    samples.visibility = {1, 1, 1, 1, 0, 0, 0, 0, 0};
+    samples.blockerDepth = {0.499F, 0.499F, 0.499F, 0.499F, 0.499F, 0.499F, 0.499F, 0.499F};
+    shaderReceiver::sunShadowFactor(&samples, &samples, glm::mat4{1.0F}, glm::mat4{1.0F},
+                                    glm::vec3{0.9F, 0, 0.5F}, glm::vec3{0, 1, 0},
+                                    glm::vec3{0, 1, 0}, kNearCascadeOn, kClearWeather, kSolidFace);
+    for (std::size_t tap = 0; tap < 4; ++tap) {
+        REQUIRE(samples.coordinates.at(tap).z == 0.0F, "the first four taps must read layer 0");
+        REQUIRE(samples.coordinates.at(tap + 4U).z == 1.0F,
+                "the band's second four taps must read layer 1");
+    }
+    // 要混掉的那道跳变有多大：遮挡物远到两级都吃满上限（0.5 纹素）时，**世界尺度**的
+    // 半影一个是 0.0039 格、一个是 0.031 格——正好 8 倍。uv 里两者反而一样宽，因为
+    // 两级共用一张 2048 的图；差别全在一个纹素有多大
+    const float saturatedNear = shaderBias::sunShadowPenumbraTexels(
+                                    160.0F, shaderBias::kSunShadowNearTexelBlocks) *
+                                shaderBias::kSunShadowNearTexelBlocks;
+    const float saturatedFar = shaderBias::sunShadowPenumbraTexels(
+                                   160.0F, shaderBias::kSunShadowFarTexelBlocks) *
+                               shaderBias::kSunShadowFarTexelBlocks;
+    REQUIRE(std::abs(saturatedFar / saturatedNear - 8.0F) < 1e-3F,
+            "the seam this node blends away is an eightfold jump in penumbra width");
+    // 而两级各按各的纹素算半影：把 texelBlocks 传错的症状是「带内的影子比带外更糊」
+    shaderReceiver::Samples saturated{};
+    saturated.visibility = {1, 1, 1, 1, 0, 0, 0, 0, 0};
+    saturated.blockerDepth = {0.0F, 0.0F, 0.0F, 0.0F, 0.0F, 0.0F, 0.0F, 0.0F};
+    shaderReceiver::sunShadowFactor(&saturated, &saturated, glm::mat4{1.0F}, glm::mat4{1.0F},
+                                    glm::vec3{0.9F, 0, 0.5F}, glm::vec3{0, 1, 0},
+                                    glm::vec3{0, 1, 0}, kNearCascadeOn, kClearWeather,
+                                    kSolidFace);
+    REQUIRE(saturated.count == 8, "the saturated fixture must still take both cascades");
+    const float nearSpan =
+        std::abs(saturated.coordinates.at(1).x - saturated.coordinates.at(0).x);
+    const float farSpan = std::abs(saturated.coordinates.at(5).x - saturated.coordinates.at(4).x);
+    // 遮挡物**近**的时候两级都没吃满上限，半影是物理宽度，于是 uv 里远段反而窄
+    // 八倍——这一条钉的是「远段那一次用的是远段自己的纹素」。忘了换 texelBlocks
+    // 的症状是带内的影子比带外更糊，而源码读起来毫无异样
+    const float closeNearSpan =
+        std::abs(samples.coordinates.at(1).x - samples.coordinates.at(0).x);
+    const float closeFarSpan = std::abs(samples.coordinates.at(5).x - samples.coordinates.at(4).x);
+    REQUIRE(closeFarSpan < closeNearSpan * 0.25F && closeFarSpan > 0.0F,
+            "the far cascade must size its penumbra with its own texel");
+    REQUIRE(std::abs(nearSpan - farSpan) < 1e-9F && nearSpan > 0.0F,
+            "both cascades saturate at half a texel of the same 2048 map, so their uv footprints "
+            "match; the eightfold difference lives in the texel's world size");
+
+    // ---- 3. 近段关掉时不混 -------------------------------------------------
+    shaderReceiver::Samples off{};
+    off.visibility = {0, 0, 0, 0, 0, 0, 0, 0, 0};
+    off.blockerDepth = {0.499F, 0.499F, 0.499F, 0.499F, 0.499F, 0.499F, 0.499F, 0.499F};
+    shaderReceiver::sunShadowFactor(&off, &off, glm::mat4{1.0F}, glm::mat4{1.0F},
+                                    glm::vec3{0.9F, 0, 0.5F}, glm::vec3{0, 1, 0},
+                                    glm::vec3{0, 1, 0}, kNearCascadeOff, kClearWeather,
+                                    kSolidFace);
+    REQUIRE(off.count == 4, "with the near cascade off there is nothing to blend with");
+}
+
 void checkContactHardening() {
     const auto run = [](float blockerDepth) {
         shaderReceiver::Samples samples{};
@@ -1700,6 +1814,7 @@ int main() {
         checkContactHardening();
         checkThinPlaneBias();
         checkDirectWeight();
+        checkCascadeBlend();
         checkEntityWiring();
         checkDepthConvention();
         checkTexelSnapping();

@@ -44,55 +44,12 @@ bool sunShadowInsideCascade(vec3 shadowUv) {
            shadowUv.z >= 0.0 && shadowUv.z <= 1.0;
 }
 
-// `nearCascadeEnabled` 是 lightingSettings.z：近段那一层**这一帧有没有内容**。
-// 玩家把级联关掉时层 0 那一步在编译期被剪，图里留着的是上一次的内容——不跳过它，
-// 脚下会盖着一片陈旧的影子，而它随玩家走动而不动。
-float sunShadowFactor(sampler2DArrayShadow shadowMap, sampler2DArray shadowDepth,
-                      mat4 lightViewProjNear, mat4 lightViewProjFar,
-                      vec3 worldPosition, vec3 normal, vec3 sunDirection,
-                      float nearCascadeEnabled, vec2 weather, float thinPlane) {
-    // 三个接收者统一：没有太阳直射的面不受此方向的遮挡影响，也无需 PCF。
-    // 受光面的光照权重保持原样；合并 sky 通道仍包含环境天光，这是待拆分的近似。
-    float incidence = dot(normal, normalize(sunDirection));
-    if (incidence <= 0.0) {
-        return 1.0;
-    }
-    // RN-36：云厚到直射不剩什么时，整套遮挡搜索加 PCF 都不必跑——暴雨里那是逐屏幕
-    // 像素省下来的一整轮采样。算在最前面，投影之前
-    if (sunShadowOvercast(weather.x, weather.y) >= kSunShadowInvisibleOvercast) {
-        return 1.0;
-    }
-    // RN-35：选级。先试近段——它的纹素是远段的 1/8，能表达的边细八倍。
-    //
-    // ★ 法线抬升要用**被选中那一级**的纹素，而抬升又发生在投影之前，所以两级各投影
-    // 一次是不可避的：拿远段的抬升去投近段，抬的量是 8 倍，影子会整片从脚下浮起来。
-    // 代价是一次多余的 mat4 乘（近段没命中时才发生），换来的是两级各自自洽。
-    bool tryNear = nearCascadeEnabled > 0.5;
-    int cascade = tryNear ? 0 : 1;
-    float texelBlocks = sunShadowTexelBlocks(cascade);
-    vec3 offsetPosition = worldPosition + normal * sunShadowNormalOffsetBlocks(incidence, texelBlocks);
-    vec4 lightPosition = (tryNear ? lightViewProjNear : lightViewProjFar) * vec4(offsetPosition, 1.0);
-    vec3 projected = lightPosition.xyz / lightPosition.w;
-    // xy 从 [-1,1] 重映射到 [0,1]；z **不**重映射——投影是 orthoRH_ZO，
-    // 深度已经在 [0,1] 里了，再 * 0.5 + 0.5 会把它压进 [0.5,1]
-    vec3 shadowUv = vec3(projected.xy * 0.5 + 0.5, projected.z);
-    if (!sunShadowInsideCascade(shadowUv)) {
-        if (!tryNear) {
-            // 已经在远段了：最远那一级的框之外没有阴影图可查，一律按全亮
-            return 1.0;
-        }
-        cascade = 1;
-        texelBlocks = sunShadowTexelBlocks(cascade);
-        offsetPosition = worldPosition + normal * sunShadowNormalOffsetBlocks(incidence, texelBlocks);
-        lightPosition = lightViewProjFar * vec4(offsetPosition, 1.0);
-        projected = lightPosition.xyz / lightPosition.w;
-        shadowUv = vec3(projected.xy * 0.5 + 0.5, projected.z);
-        if (!sunShadowInsideCascade(shadowUv)) {
-            return 1.0;
-        }
-    }
-    float layer = float(cascade);
-
+// RN-43：**一级之内**的可见度。从 sunShadowFactor 里整段搬出来，一个字没改——
+// 过渡带要对同一个接收点跑两级，而把这段抄成两份正是这一整条链子上反复出问题的形状。
+float sunShadowVisibilityInCascade(sampler2DArrayShadow shadowMap, sampler2DArray shadowDepth,
+                                   mat4 lightViewProjFar, vec3 shadowUv, float layer,
+                                   float texelBlocks, vec3 normal, float incidence,
+                                   float thinPlane) {
     float texel = 1.0 / kSunShadowMapResolution;
     // RN-41：薄片植物再加一层，见 sunShadowThinPlaneBiasBlocks。普通面上 thinPlane 是 0，
     // 这一项整个消失
@@ -163,4 +120,79 @@ float sunShadowFactor(sampler2DArrayShadow shadowMap, sampler2DArray shadowDepth
         }
     }
     return lit * 0.25;
+}
+
+// `nearCascadeEnabled` 是 lightingSettings.z：近段那一层**这一帧有没有内容**。
+// 玩家把级联关掉时层 0 那一步在编译期被剪，图里留着的是上一次的内容——不跳过它，
+// 脚下会盖着一片陈旧的影子，而它随玩家走动而不动。
+float sunShadowFactor(sampler2DArrayShadow shadowMap, sampler2DArray shadowDepth,
+                      mat4 lightViewProjNear, mat4 lightViewProjFar,
+                      vec3 worldPosition, vec3 normal, vec3 sunDirection,
+                      float nearCascadeEnabled, vec2 weather, float thinPlane) {
+    // 三个接收者统一：没有太阳直射的面不受此方向的遮挡影响，也无需 PCF。
+    // 受光面的光照权重保持原样；合并 sky 通道仍包含环境天光，这是待拆分的近似。
+    float incidence = dot(normal, normalize(sunDirection));
+    if (incidence <= 0.0) {
+        return 1.0;
+    }
+    // RN-36：云厚到直射不剩什么时，整套遮挡搜索加 PCF 都不必跑——暴雨里那是逐屏幕
+    // 像素省下来的一整轮采样。算在最前面，投影之前
+    if (sunShadowOvercast(weather.x, weather.y) >= kSunShadowInvisibleOvercast) {
+        return 1.0;
+    }
+    // RN-35：选级。先试近段——它的纹素是远段的 1/8，能表达的边细八倍。
+    //
+    // ★ 法线抬升要用**被选中那一级**的纹素，而抬升又发生在投影之前，所以两级各投影
+    // 一次是不可避的：拿远段的抬升去投近段，抬的量是 8 倍，影子会整片从脚下浮起来。
+    // 代价是一次多余的 mat4 乘（近段没命中时才发生），换来的是两级各自自洽。
+    bool tryNear = nearCascadeEnabled > 0.5;
+    int cascade = tryNear ? 0 : 1;
+    float texelBlocks = sunShadowTexelBlocks(cascade);
+    vec3 offsetPosition = worldPosition + normal * sunShadowNormalOffsetBlocks(incidence, texelBlocks);
+    vec4 lightPosition = (tryNear ? lightViewProjNear : lightViewProjFar) * vec4(offsetPosition, 1.0);
+    vec3 projected = lightPosition.xyz / lightPosition.w;
+    // xy 从 [-1,1] 重映射到 [0,1]；z **不**重映射——投影是 orthoRH_ZO，
+    // 深度已经在 [0,1] 里了，再 * 0.5 + 0.5 会把它压进 [0.5,1]
+    vec3 shadowUv = vec3(projected.xy * 0.5 + 0.5, projected.z);
+    if (!sunShadowInsideCascade(shadowUv)) {
+        if (!tryNear) {
+            // 已经在远段了：最远那一级的框之外没有阴影图可查，一律按全亮
+            return 1.0;
+        }
+        cascade = 1;
+        texelBlocks = sunShadowTexelBlocks(cascade);
+        offsetPosition = worldPosition + normal * sunShadowNormalOffsetBlocks(incidence, texelBlocks);
+        lightPosition = lightViewProjFar * vec4(offsetPosition, 1.0);
+        projected = lightPosition.xyz / lightPosition.w;
+        shadowUv = vec3(projected.xy * 0.5 + 0.5, projected.z);
+        if (!sunShadowInsideCascade(shadowUv)) {
+            return 1.0;
+        }
+    }
+    float layer = float(cascade);
+    // RN-43：近段命中时，看它离框边有多近。带内两级各采一次再按距离混——混的是**可见度**
+    // 而不是半影宽度：两级的吸附网格不同，影子边的位置也会跳
+    float blend = cascade == 0 ? sunShadowCascadeBlend(projected.x, projected.y) : 0.0;
+    float nearVisibility = sunShadowVisibilityInCascade(shadowMap, shadowDepth, lightViewProjFar,
+                                                        shadowUv, layer, texelBlocks, normal,
+                                                        incidence, thinPlane);
+    if (blend <= 0.0) {
+        return nearVisibility;
+    }
+    // 带内：把同一个接收点再投一次远段。抬升要用远段自己的纹素（RN-35 那条），
+    // 所以这里是完整的第二次投影，不是把 uv 换算过去
+    texelBlocks = sunShadowTexelBlocks(1);
+    offsetPosition = worldPosition + normal * sunShadowNormalOffsetBlocks(incidence, texelBlocks);
+    lightPosition = lightViewProjFar * vec4(offsetPosition, 1.0);
+    projected = lightPosition.xyz / lightPosition.w;
+    shadowUv = vec3(projected.xy * 0.5 + 0.5, projected.z);
+    if (!sunShadowInsideCascade(shadowUv)) {
+        // 远段框之外没有阴影图可查。近段的框整个落在远段里，所以这一支只会在极端的
+        // 深度出框时走到——按近段处理，而不是按全亮
+        return nearVisibility;
+    }
+    float farVisibility = sunShadowVisibilityInCascade(shadowMap, shadowDepth, lightViewProjFar,
+                                                       shadowUv, 1.0, texelBlocks, normal,
+                                                       incidence, thinPlane);
+    return mix(nearVisibility, farVisibility, blend);
 }
