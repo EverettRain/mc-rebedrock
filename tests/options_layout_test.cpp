@@ -1574,6 +1574,61 @@ void testPackColumnScrolling() {
         ++zoneOfRow;
     }
 
+    // ★★ 回调带的是**绝对行号**，不是屏幕上的第几行。
+    //
+    //   这条是这一族最容易错、也最难发现的一处：滚下去之后点第一行，动的必须是
+    //   第 firstRow 个包。矩形断言完全抓不住它——两种实现画出来一模一样，
+    //   只有"点了之后动的是哪个包"不同（实测：第一版 sabotage 就这么溜过去了）。
+    {
+        std::vector<std::size_t> toggled;
+        std::vector<std::size_t> movedUp;
+        mc::ui::MenuCallbacks cb;
+        cb.togglePackSelected = [&toggled](std::size_t row) { toggled.push_back(row); };
+        cb.movePackUp = [&movedUp](std::size_t row) { movedUp.push_back(row); };
+        mc::ui::MenuBuildContext ctx;
+        ctx.selectedPackFirstRow = 2U;      // 窗口从第 2 行起
+        ctx.selectedPackRowCount = 3U;      // 屏幕上三行
+        ctx.selectedPackTotalRows = 7U;
+        mc::ui::Page page;
+        mc::ui::buildPageInto(page, mc::ui::PageId::ResourcePacks, ctx, cb);
+
+        std::vector<const mc::ui::Widget*> rows;
+        std::vector<const mc::ui::Widget*> ups;
+        std::size_t zoneIndex = 0;
+        for (const auto& widget : page) {
+            if (widget.kind == mc::ui::WidgetKind::ListRow &&
+                mc::ui::isSelectedPackRow(widget)) {
+                rows.push_back(&widget);
+                zoneIndex = 0;
+                continue;
+            }
+            if (widget.kind == mc::ui::WidgetKind::IconZone) {
+                if (zoneIndex == 1U) ups.push_back(&widget);
+                ++zoneIndex;
+            }
+        }
+        check(rows.size() == 3U && ups.size() == 3U, "three windowed rows with their zones",
+              __LINE__);
+        if (rows.size() == 3U && ups.size() == 3U) {
+            // 点屏幕上的第一行 → 动的是第 2 个包（窗口起点），不是第 0 个。
+            rows[0]->onActivate();
+            check(toggled.size() == 1U && toggled[0] == 2U,
+                  "the first visible row must act on the absolute row at the window start",
+                  __LINE__);
+            rows[2]->onActivate();
+            check(toggled.size() == 2U && toggled[1] == 4U,
+                  "the third visible row must act on absolute row 4", __LINE__);
+            // 上移那块热区同样带绝对行号。
+            ups[0]->onActivate();
+            check(movedUp.size() == 1U && movedUp[0] == 2U,
+                  "the move-up zone must carry the absolute row too", __LINE__);
+        }
+        // ★ 窗口起点 > 0 时**第一行是能上移的**（它上面还有包），而
+        //   `firstRow == 0` 那一版才不能——把可用性算在可见序号上就会错。
+        check(ups.empty() || ups[0]->enabled,
+              "a scrolled-to row is not the first pack, so it can move up", __LINE__);
+    }
+
     // 首行不能上移、末行不能下移（26.1 的 canMoveUp/canMoveDown）。
     std::vector<bool> upEnabled;
     std::vector<bool> downEnabled;
