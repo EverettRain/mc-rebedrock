@@ -12,10 +12,17 @@
 // 模型、命中测试与派发因此能被无头单测覆盖：搭一个页面，点一个坐标，断言对应的回调被触发
 // 回调可以捕获渲染器需要的任何 Vulkan、存档或音频状态，ui 命名空间从不接触这些
 //
-// Widget 设计成可嵌套的，Panel 能装子控件，并携带简单的相对布局提示
-// 将来的容器界面，比如创造页签加滚动格加搜索框，因此是在同一个模型上扩展，而不是推倒重写
-// 目前所有页面都是扁平的，嵌套只是留好了形状，还没有搭成框架
+// A0：容器界面（背包/箱子/工作台/熔炉/附魔台/铁砧/创造背包）也并进了这个模型
+// 它此前自成一套：SlotView + HudLayout 的 28 个具名槽位函数 + 绘制侧的 if/else 链
+// 于是菜单侧攒下的每一条护栏——控件不越界、命中、焦点遍历——对容器屏一条都不生效
+//
+// ★ 页面一律是**扁平**的。`Widget::children` 曾作为"将来容器界面用得上"的形状留着，
+//   而它 0 消费者、从没搭成框架；A0 真做容器界面时用的是**扁平相邻 Widget**
+//   （一行多个控件靠相邻，容器槽位同理），与 26.1 `children()` 的线性 Tab 序一致
+//   且不需要递归。那个空壳字段已删——留着一个没有消费者的嵌套形状，只会让下一个人
+//   以为该往里放东西。
 
+#include "gameplay/ScreenTypes.hpp"
 #include "ui/HudLayout.hpp"
 
 #include <cstdint>
@@ -34,9 +41,16 @@ enum class WidgetKind : std::uint8_t {
     Slider,     // a horizontal slider with a draggable handle
     ListRow,    // one selectable row in a scrolling list (worlds/languages)
     Label,      // static text, never interactive
-    Panel,      // a non-interactive container (holds children; shape only in PX-4)
+    Panel,      // 不可交互的底板（容器界面那张 176x166 / 195x136 的面板就是它）
     Toggle,     // a button whose label reflects an on/off (cycled) option
     TextField,  // an editable text line (create/edit world name)
+    // A0：容器界面的一个槽位。身份是 `slotKind + slotIndex` 两个字段，**不是**
+    // 指针——跨帧身份一直就是纯值 `gameplay::SlotRef`（`buildSlotLayout` 刻意把每个
+    // storage 置空，好让渲染线程够不着模拟线程拥有的背包内存）。
+    //
+    // 它是一个 kind 而不是另一个控件家族，理由与 IconButton 同：同一套命中、同一套
+    // 派发，区别只在绘制侧画的是一格物品。
+    Slot,
 };
 
 // UI-4：图标钮里那张图标的边长与按钮边长（26.1 `CommonButtons`：20x20 的钮里一张 15x15 的图）。
@@ -92,8 +106,15 @@ struct Widget final {
     std::function<void()> onActivate{};  // Button/Toggle/ListRow click
     SliderBind slider{};                 // Slider only
 
-    // 为将来的容器界面预留的嵌套形状，目前每个扁平页面里它都是空的
-    std::vector<Widget> children{};
+    // A0：`kind == Slot` 时这一格是哪个槽。其余 kind 下这两个字段没有意义。
+    //
+    // ★ 为什么直接用 `gameplay::SlotKind` 而不在 ui 里另建一个镜像枚举：那会是
+    //   **同一个事实的两份表述**（README 护栏 18）。加一种槽（比如酿造台）要改两处，
+    //   而漏改的症状是"槽位画对了、点击路由到另一个 kind"——没有任何断言会红。
+    //   `gameplay/ScreenTypes.hpp` 是个只有两个枚举、不含任何 ui 头的小文件，
+    //   包含它不成环（ui/UiFrameData、ui/ItemTooltip、ui/MenuSystem 早就依赖 gameplay）。
+    gameplay::SlotKind slotKind = gameplay::SlotKind::PlayerInventory;
+    std::uint16_t slotIndex = 0U;
 
     [[nodiscard]] bool interactive() const noexcept {
         return kind != WidgetKind::Label && kind != WidgetKind::Panel;

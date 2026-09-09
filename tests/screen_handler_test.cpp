@@ -191,13 +191,12 @@ void testLookups() {
     // A point in no slot resolves to nothing rather than to the nearest one.
     REQUIRE(gameplay::ScreenHandler::slotAt(slots, {0.0F, 0.0F}) == nullptr);
 
-    const auto* byStorage = gameplay::ScreenHandler::slotForStorage(slots, fifth->storage);
-    REQUIRE(byStorage != nullptr);
-    REQUIRE(byStorage->rect.x == fifth->rect.x && byStorage->rect.y == fifth->rect.y);
-    // An output slot has no storage, so a null lookup must not match it.
-    REQUIRE(gameplay::ScreenHandler::slotForStorage(slots, nullptr) == nullptr);
-    gameplay::ItemStack elsewhere;
-    REQUIRE(gameplay::ScreenHandler::slotForStorage(slots, &elsewhere) == nullptr);
+    // A0：`slotForStorage`（按 ItemStack 指针相等查槽）连同它那三行断言一起删了。
+    // 它在生产代码里 **0 调用**：跨帧的拖拽身份一直是纯值 `gameplay::SlotRef`
+    // （kind + index），而渲染线程用的 `buildSlotLayout` 刻意把每个 storage 置空——
+    // 也就是说那个函数对渲染侧那张表**永远返回 nullptr**。头文件里"storage 是拖拽
+    // 身份、靠指针相等认它"那句注释是同一个过期遗留物，也一并改了。
+    // 只有测试用得着的函数不是覆盖，是负担。
 }
 
 // Renderer hit testing receives the same geometry and slot identities, but no

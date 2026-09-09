@@ -21,42 +21,8 @@ class GameSession;
 // `ContainerScreen`（这一屏是什么）住在 gameplay/ScreenTypes.hpp：它有一类只要身份、
 // 不要整套容器逻辑的消费者（截图通道的目标表），而那里也是它的 `Count` 哨兵的家。
 
-// What a slot is, which is all the click router needs to know. 26.1 expresses
-// the same thing by subclassing Slot (ResultSlot, FurnaceFuelSlot, …) and
-// overriding mayPlace/onTake; a Kind plus a flag covers every distinction the
-// screens in this game actually make, without a virtual call per slot per
-// frame.
-enum class SlotKind : std::uint8_t {
-    // The player's own 36 slots, wherever they are drawn.
-    PlayerInventory,
-    // A crafting grid cell — the 2x2 in the player screen or the 3x3 in a table.
-    PlayerCraftingGrid,
-    TableCraftingGrid,
-    // A crafting result. Never accepts items: clicking takes the craft.
-    PlayerCraftingOutput,
-    TableCraftingOutput,
-    FurnaceInput,
-    FurnaceFuel,
-    // The smelted result. Like a crafting output, it only ever gives.
-    FurnaceOutput,
-    ChestStorage,
-    // ENCH-2: the enchanting table's two inputs. Neither has a block entity
-    // behind it — both live on the player's own EnchantingMenu, which is why
-    // they are their own kinds rather than a reuse of the furnace's.
-    EnchantingItem,
-    EnchantingLapis,
-    // ENCH-3: the anvil's two inputs and its output. Like the enchanting
-    // table's, they live on the player's own menu, not a block entity. The
-    // output never accepts an item — taking it is what pays the levels.
-    AnvilLeft,
-    AnvilRight,
-    AnvilOutput,
-    // EQ-1: one of the player's five equipment slots. `index` is the screen's
-    // own draw order (0..3 = Head/Chest/Legs/Feet, 4 = Offhand — see
-    // equipmentSlotAt below), not gameplay::EquipmentSlot's underlying value;
-    // the click router converts.
-    Equipment,
-};
+// `SlotKind`（这是个什么槽）与 `ContainerScreen` 一样住在 gameplay/ScreenTypes.hpp：
+// 界面侧的 `ui::Widget` 只要这一个枚举，不要整套容器逻辑。
 
 // EQ-1: the screen's armor-slot draw order (0..3 = Head/Chest/Legs/Feet, the
 // GUI spec §10 top-to-bottom layout) plus offhand at 4, mapped to the
@@ -78,9 +44,14 @@ inline constexpr std::size_t kEquipmentScreenSlotCount = 5U;
 // One slot on the open screen: where it is, what it is, and the exact storage
 // behind it.
 //
-// `storage` is the identity a drag uses — pointer equality against the real
-// ItemStack — and is null for the two output slots, which have no storage of
-// their own until the craft happens.
+// ★ `storage` **不是拖拽身份**。这里原来写的是"拖拽靠指针相等认它"，而实现从来
+//   不是那样：跨帧身份是纯值 `gameplay::SlotRef`（kind + index），而渲染线程用的
+//   `buildSlotLayout` **刻意把每个 storage 置空**，好让命中测试与拖拽预览够不着
+//   模拟线程拥有的背包内存。那句注释是过期遗留物，连同它描述的
+//   `slotForStorage`（生产代码 0 调用）一起删掉了（A0）。
+//
+// `storage` 只是"这个槽背后的那块存储"，给点击路由用；两个输出槽为空，它们在合成
+// 发生之前没有自己的存储。
 struct SlotView final {
     ui::UiRect rect;
     ItemStack* storage = nullptr;
@@ -88,9 +59,13 @@ struct SlotView final {
     std::uint16_t index = 0U;
 
     // Output slots are not drag targets, and QUICK_CRAFT skips them.
+    // A0：目录格同理——它今天根本不进这张表（它没有存储，走 ClickCreativeItem），
+    // 列在这里是为了万一将来有人把它加进来时答案是对的，而不是靠"它不在表里"这个
+    // 前提沉默地正确。
     [[nodiscard]] bool acceptsItems() const {
         return kind != SlotKind::PlayerCraftingOutput && kind != SlotKind::TableCraftingOutput &&
-               kind != SlotKind::FurnaceOutput && kind != SlotKind::AnvilOutput;
+               kind != SlotKind::FurnaceOutput && kind != SlotKind::AnvilOutput &&
+               kind != SlotKind::CreativeCatalog;
     }
 };
 
@@ -154,12 +129,6 @@ class ScreenHandler final {
     [[nodiscard]] static const SlotView* slotAt(
         const std::vector<SlotView>& slots,
         ui::UiPoint cursor);
-
-    // The slot a live drag is pointing at, found by the storage identity the
-    // drag captured. Returns nullptr once that storage is no longer on screen.
-    [[nodiscard]] static const SlotView* slotForStorage(
-        const std::vector<SlotView>& slots,
-        const ItemStack* storage);
 
     // Applies a click to a slot, including QUICK_MOVE between the main inventory
     // and hotbar, into an open container, or out of a creative-category hotbar.

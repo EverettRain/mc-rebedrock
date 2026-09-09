@@ -16,6 +16,7 @@
 
 #include "render/BlockPreviewCamera.hpp"
 #include "render/UiCaptureFixture.hpp"
+#include "ui/ContainerPage.hpp"
 #include "net/LoopbackTransport.hpp"
 
 #include "core/EnvFlags.hpp"
@@ -4921,13 +4922,15 @@ struct VulkanRenderer::Impl final : public gameplay::SimulationHost {
     // 拖拽记下的"类型加下标"会被解析回几何，预览因此总是落在拖拽真正会写入的那个槽上
     [[nodiscard]] std::optional<ui::UiRect> dragSlotRectangle(const ui::HudLayout& layout,
                                                               const gameplay::SlotRef& ref) const {
-        const auto slots = gameplay::ScreenHandler::buildSlotLayout(screenContext(), layout);
-        for (const auto& slot : slots) {
-            if (slot.kind == ref.kind && slot.index == ref.index) {
-                return slot.rect;
-            }
-        }
-        return std::nullopt;
+        // A0：容器界面的**页面**是这一屏几何的来源，拖拽预览是它的第一个生产消费者。
+        //
+        // ★ "抽了一个装配器"和"生产路径真的调了它"是两件事（README 护栏 29）。
+        //   这里改成走页面，不是为了少写两行——是为了让容器页在 A1/A2 之前就已经在
+        //   生产路径上跑着，而不是一段只有测试看得见的死代码。
+        ui::Page page;
+        ui::buildContainerPageInto(page, screenContext(), layout);
+        const ui::Widget* widget = ui::findSlotWidget(page, ref.kind, ref.index);
+        return widget != nullptr ? std::optional{widget->rect} : std::nullopt;
     }
 
     // 从快照取某个槽位当前的物品堆
@@ -4974,6 +4977,12 @@ struct VulkanRenderer::Impl final : public gameplay::SimulationHost {
             // 输出槽不是拖拽目标，acceptsItems 为假，预览不会来问它
             // 这里仍返回一个共享的空物品堆兜底
             break;
+        case gameplay::SlotKind::CreativeCatalog:
+            // A0：目录格的内容来自 gameplay::creativeCatalog 那张只读清单，不在世界
+            // 快照里；而它也不是拖拽目标（拖拽目标只来自 buildSlotLayout）
+            break;
+        case gameplay::SlotKind::Count:
+            break;   // 哨兵，不是一种槽
         }
         static const gameplay::ItemStack kEmptyPreviewStack;
         return kEmptyPreviewStack;
