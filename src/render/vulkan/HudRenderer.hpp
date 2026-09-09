@@ -331,7 +331,7 @@ class HudRenderer final {
         return ui::countPageButtons(buildDrawPage());
     }
     [[nodiscard]] ui::UiRect worldListRow(std::size_t index, const ui::HudLayout& layout) const {
-        return ui::worldListRow(index, layout, static_cast<float>(swapchainExtent.width));
+        return ui::worldListRow(index, layout);
     }
     [[nodiscard]] std::size_t saveListVisibleRowCount() const {
         return ui::saveListVisibleRowCount(static_cast<float>(swapchainExtent.width),
@@ -339,13 +339,13 @@ class HudRenderer final {
                                            menuSystem.guiScaleSetting, menuSystem.forceUnicodeFont);
     }
     [[nodiscard]] ui::UiRect languageListBox(const ui::HudLayout& layout) const {
-        return ui::languageListBox(layout, static_cast<float>(swapchainExtent.width));
+        return ui::languageListBox(layout);
     }
     [[nodiscard]] float languageWarningY(const ui::HudLayout& layout) const {
         return ui::languageWarningY(layout);
     }
     [[nodiscard]] ui::UiRect languageRow(std::size_t index, const ui::HudLayout& layout) const {
-        return ui::languageRow(index, layout, static_cast<float>(swapchainExtent.width));
+        return ui::languageRow(index, layout);
     }
     [[nodiscard]] std::size_t languageVisibleRowCount() const {
         return ui::languageVisibleRowCount(static_cast<float>(swapchainExtent.width),
@@ -419,7 +419,7 @@ class HudRenderer final {
             ui::optionsWindowFor(layout, pageId, menuSystem.optionsListFirstIndex);
         fillPackContext(drawContext_, layout);
         ui::buildPageInto(drawPage_, pageId, drawContext_, drawCallbacks_);
-        ui::layoutPageInto(drawPage_, pageId, layout, fbWidth, keyFirst,
+        ui::layoutPageInto(drawPage_, pageId, layout, keyFirst,
                            drawContext_.optionsWindow.firstRow);
         return drawPage_;
     }
@@ -1674,7 +1674,7 @@ class HudRenderer final {
     void drawKeyBindCategoryRows(VkCommandBuffer commandBuffer, const ui::HudLayout& layout,
                                  float scale) const {
         const float fbWidth = static_cast<float>(swapchainExtent.width);
-        const auto list = ui::keyBindsScrollList(layout, fbWidth);
+        const auto list = ui::keyBindsScrollList(layout);
         const std::size_t first =
             std::min(menuSystem.controlsListFirstIndex, ui::kKeyBindListRowCount);
         const std::size_t visible = ui::keyBindsVisibleRowCount(
@@ -1713,7 +1713,7 @@ class HudRenderer final {
         if (total <= visible) {
             return;  // everything fits; no scrollbar
         }
-        const auto list = ui::keyBindsScrollList(layout, fbWidth);
+        const auto list = ui::keyBindsScrollList(layout);
         const std::size_t first = std::min(menuSystem.controlsListFirstIndex, total - visible);
         drawScrollbar(commandBuffer, layout, list, total, first);
     }
@@ -2130,7 +2130,7 @@ class HudRenderer final {
                                  : glm::vec4{0.85F, 0.85F, 0.85F, 1.0F});
         }
         drawScrollbar(commandBuffer, layout,
-                      ui::languageScrollList(layout, static_cast<float>(swapchainExtent.width)),
+                      ui::languageScrollList(layout),
                       menuSystem.languageCodes.size(), first);
         // 列表与按钮之间的灰色提示行，vanilla 把它画在 height - 56 处
         const std::string warning = translated("options.languageWarning", "");
@@ -2171,7 +2171,7 @@ class HudRenderer final {
         //   上面那段注释：这份判断已经说过两次假话，两次都是枚举了当时的取值。
         const bool headerAndFooterPage = ui::usesHeaderAndFooter(ui::pageLayoutKind(currentPage));
         if (currentPage == ui::PageId::KeyBinds) {
-            const auto box = ui::keyBindsListBox(layout, static_cast<float>(swapchainExtent.width));
+            const auto box = ui::keyBindsListBox(layout);
             drawListBackground(commandBuffer, box, scale);
             drawListSeparators(commandBuffer, box, scale);
             drawKeyBindCategoryRows(commandBuffer, layout, scale);

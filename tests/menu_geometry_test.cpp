@@ -11,31 +11,31 @@ int main() {
     constexpr std::size_t itemCount = 40U;
     assert(visible > 0U && visible < itemCount);
 
-    const auto box = mc::ui::languageListBox(layout, width);
-    const auto row = mc::ui::languageRow(0U, layout, width);
+    const auto box = mc::ui::languageListBox(layout);
+    const auto row = mc::ui::languageRow(0U, layout);
     assert(row.width == 270.0F * layout.scale());
     assert(row.x > box.x);
     assert(row.x + row.width < box.x + box.width);
     assert(row.x + row.width * 0.5F == box.x + box.width * 0.5F);
 
-    const auto track = mc::ui::languageScrollbarTrack(layout, width);
+    const auto track = mc::ui::languageScrollbarTrack(layout);
     assert(track.x > row.x + row.width);
     assert(track.x + track.width < box.x + box.width);
     const auto firstThumb = mc::ui::languageScrollbarThumb(
-        layout, width, itemCount, visible, 0U);
+        layout, itemCount, visible, 0U);
     const auto lastThumb = mc::ui::languageScrollbarThumb(
-        layout, width, itemCount, visible, itemCount - visible);
+        layout, itemCount, visible, itemCount - visible);
     assert(track.contains(firstThumb.x + firstThumb.width * 0.5F,
                           firstThumb.y + firstThumb.height * 0.5F));
     assert(lastThumb.y > firstThumb.y);
 
     assert(mc::ui::languageScrollIndexFromCursor(
-               layout, width, itemCount, visible, track.y) == 0U);
+               layout, itemCount, visible, track.y) == 0U);
     assert(mc::ui::languageScrollIndexFromCursor(
-               layout, width, itemCount, visible, track.y + track.height) ==
+               layout, itemCount, visible, track.y + track.height) ==
            itemCount - visible);
     const auto middle = mc::ui::languageScrollIndexFromCursor(
-        layout, width, itemCount, visible, track.y + track.height * 0.5F);
+               layout, itemCount, visible, track.y + track.height * 0.5F);
     assert(middle > 0U && middle < itemCount - visible);
     return 0;
 }

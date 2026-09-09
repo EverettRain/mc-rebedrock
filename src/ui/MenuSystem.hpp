@@ -188,10 +188,16 @@ class MenuSystem final {
     std::string pendingLanguageCode{kDefaultLanguageCode};
     std::string languageStatus;
     std::size_t languageListFirstIndex = 0U;
-    bool languageScrollbarDragging = false;
     // 按键设置列表的滚动偏移与滚动条拖拽状态
     std::size_t controlsListFirstIndex = 0U;
-    bool controlsScrollbarDragging = false;
+    // 正在拖某一条滚动条。**一屏最多一张滚动列表**，所以拖的是哪一条由当前页面决定——
+    // 不必每张列表一个 bool。
+    //
+    // ★ 从前是 `languageScrollbarDragging` + `controlsScrollbarDragging` 两个，
+    //   而后者是个**只被写成 false、从没被读过**的死字段：按键绑定那张列表的滚动条
+    //   根本拖不动（偏差 D18），设置列表更是连字段都没有。加一张列表要再加一个 bool、
+    //   再抄一遍按下/拖动/松开三处——这与滑块那次"三个 xxxSliderDragging"是同一族。
+    bool scrollbarDragging = false;
     // UI-6d：三段式设置页（视频设置 / 控制 / 高级图形）那张 OptionsList 的滚动偏移。
     //
     // ★ 三页共用一个字段，与 26.1 一致：那三屏是**三个屏幕对象**，进哪一屏都是新建

@@ -55,19 +55,18 @@ constexpr int kWorldListRowStep = 22;
 
 } // namespace
 
-ScrollList languageScrollList(const HudLayout& layout, float framebufferWidth) {
-    return scrollListOf(languageListBox(layout, framebufferWidth), layout, kLanguageRowWidth, 22);
+ScrollList languageScrollList(const HudLayout& layout) {
+    return scrollListOf(languageListBox(layout), layout, kLanguageRowWidth, 22);
 }
 
-ScrollList keyBindsScrollList(const HudLayout& layout, float framebufferWidth) {
+ScrollList keyBindsScrollList(const HudLayout& layout) {
     // UI-6b：行高从自造的 12 改成 26.1 的 **20**（`KeyBindsList.ITEM_HEIGHT`）。
     // 12 塞不下一个 20 高的改键按钮——而 vanilla 那一行正是"名称 + 两个 20 高的按钮"。
-    return scrollListOf(keyBindsListBox(layout, framebufferWidth), layout, kKeyBindsRowWidth,
+    return scrollListOf(keyBindsListBox(layout), layout, kKeyBindsRowWidth,
                         kKeyBindRowHeight);
 }
 
-ScrollList worldScrollList(const HudLayout& layout, float framebufferWidth) {
-    static_cast<void>(framebufferWidth);
+ScrollList worldScrollList(const HudLayout& layout) {
     // 世界列表没有一个显式的"框"：它就是标题与底部按钮带之间那条带。
     return ScrollList{0,
                       kWorldListTop,
@@ -78,10 +77,10 @@ ScrollList worldScrollList(const HudLayout& layout, float framebufferWidth) {
 }
 
 
-UiRect worldListRow(std::size_t index, const HudLayout& layout, float framebufferWidth) {
+UiRect worldListRow(std::size_t index, const HudLayout& layout) {
     // UI-4：走统一的 ScrollList。行宽从自造的 300 改成 26.1 的 **270**
     // （`WorldSelectionList:251`）；行高仍比行距矮 2，那 2 像素是行与行之间的缝。
-    const auto list = worldScrollList(layout, framebufferWidth);
+    const auto list = worldScrollList(layout);
     auto row = fbRect(layout, scrollListRow(list, index));
     row.height = toFb(layout, kWorldListRowStep - 2);
     return row;
@@ -113,8 +112,7 @@ float languageWarningY(const HudLayout& layout) {
     return firstButton.y - 16.0F * scale;
 }
 
-UiRect languageListBox(const HudLayout& layout, float framebufferWidth) {
-    static_cast<void>(framebufferWidth);
+UiRect languageListBox(const HudLayout& layout) {
     constexpr int kRowStep = 22;
     constexpr int kTopBound = 44;
     const int bottomBound = toLogical(layout, languageWarningY(layout)) - 8;
@@ -126,10 +124,10 @@ UiRect languageListBox(const HudLayout& layout, float framebufferWidth) {
             toFb(layout, height)};
 }
 
-UiRect languageRow(std::size_t index, const HudLayout& layout, float framebufferWidth) {
+UiRect languageRow(std::size_t index, const HudLayout& layout) {
     // UI-4：走统一的 ScrollList。行宽 270 与 26.1 一致（本来就对），
     // 变的是滚动条与选中高亮，见 languageScrollbarTrack。
-    const auto list = languageScrollList(layout, framebufferWidth);
+    const auto list = languageScrollList(layout);
     auto row = fbRect(layout, scrollListRow(list, index));
     row.height = toFb(layout, 20);
     return row;
@@ -140,40 +138,40 @@ std::size_t languageVisibleRowCount(float framebufferWidth, float framebufferHei
     const HudLayout layout{framebufferWidth, framebufferHeight, guiScale, forceUnicode};
     const float scale = layout.scale();
     constexpr float kRowStep = 22.0F;
-    const float rows = std::max(languageListBox(layout, framebufferWidth).height / (kRowStep * scale),
+    const float rows = std::max(languageListBox(layout).height / (kRowStep * scale),
                                 1.0F);
     return static_cast<std::size_t>(rows);
 }
 
-UiRect languageScrollbarTrack(const HudLayout& layout, float framebufferWidth) {
+UiRect languageScrollbarTrack(const HudLayout& layout) {
     // UI-4：26.1 把滚动条贴在**行的右缘**再留 2 像素（`AbstractSelectionList.scrollBarX`），
     // 宽 6。从前这里是自造的 10 宽轨道，按"中线右 144"摆——那是照 spec §2.7 那句
     // 「贴在视口右侧」猜的，而 spec 那一条是 1.20.2 之前的状态。
-    return fbRect(layout, scrollListScrollbar(languageScrollList(layout, framebufferWidth)));
+    return fbRect(layout, scrollListScrollbar(languageScrollList(layout)));
 }
 
-UiRect languageScrollbarThumb(const HudLayout& layout, float framebufferWidth,
+UiRect languageScrollbarThumb(const HudLayout& layout,
                               std::size_t itemCount, std::size_t visibleRows,
                               std::size_t firstIndex) {
     static_cast<void>(visibleRows);
     // UI-4：滑块与轨道同宽（6），高度走 26.1 的 `clamp(h*h/内容高, 32, h-8)`。
     // 从前是"轨道 10 宽、滑块 4 宽居中、最小高 8"——三个数都是自造的。
-    return fbRect(layout, scrollListThumb(languageScrollList(layout, framebufferWidth), itemCount,
+    return fbRect(layout, scrollListThumb(languageScrollList(layout), itemCount,
                                           firstIndex));
 }
 
-std::size_t languageScrollIndexFromCursor(const HudLayout& layout, float framebufferWidth,
+std::size_t languageScrollIndexFromCursor(const HudLayout& layout,
                                           std::size_t itemCount, std::size_t visibleRows,
                                           float cursorY) {
     static_cast<void>(visibleRows);
-    return scrollListRowFromScrollbar(languageScrollList(layout, framebufferWidth), itemCount,
+    return scrollListRowFromScrollbar(languageScrollList(layout), itemCount,
                                       cursorY / layout.scale());
 }
 
 // 按键设置页的绑定列表
 // 框体位于标题与底部按钮带之间，后者是视角摇晃、自动跳跃、重置、完成
 // 几何照搬语言列表，区别是这里要给两行底部按钮留位置，而不是给一行警告文字
-UiRect keyBindsListBox(const HudLayout& layout, float framebufferWidth) {
+UiRect keyBindsListBox(const HudLayout& layout) {
     constexpr int kRowStep = kKeyBindRowHeight;
     constexpr int kTopBound = 40;
     // 列表在底部按钮带上方结束
@@ -183,7 +181,6 @@ UiRect keyBindsListBox(const HudLayout& layout, float framebufferWidth) {
     const int bottomBound = bandTop - 12;
     const int rows = std::max((bottomBound - kTopBound) / kRowStep, 1);
     const int height = rows * kRowStep;
-    static_cast<void>(framebufferWidth);
     return {0.0F, toFb(layout, kTopBound), toFb(layout, layout.logicalWidth()),
             toFb(layout, height)};
 }
@@ -200,7 +197,7 @@ std::size_t countPageButtons(const Page& page) {
     return buttons;
 }
 
-void layoutPageInto(Page& page, PageId id, const HudLayout& layout, float framebufferWidth,
+void layoutPageInto(Page& page, PageId id, const HudLayout& layout,
                     std::size_t keyBindFirstRow, std::size_t optionsFirstRow) {
     // 按钮数从装配结果**数出来**，不是另一张表说的。这就是这两趟拆分的全部意义。
     const std::size_t buttonCount = countPageButtons(page);
@@ -228,13 +225,13 @@ void layoutPageInto(Page& page, PageId id, const HudLayout& layout, float frameb
                                                             kKeyBindWidgetsPerRow);
             switch (keyWidgetIndex % kKeyBindWidgetsPerRow) {
             case 0U:
-                widget.rect = keyBindsNameCell(row, layout, framebufferWidth);
+                widget.rect = keyBindsNameCell(row, layout);
                 break;
             case 1U:
-                widget.rect = keyBindsChangeCell(row, layout, framebufferWidth);
+                widget.rect = keyBindsChangeCell(row, layout);
                 break;
             default:
-                widget.rect = keyBindsResetCell(row, layout, framebufferWidth);
+                widget.rect = keyBindsResetCell(row, layout);
                 break;
             }
             ++keyWidgetIndex;
@@ -245,10 +242,10 @@ void layoutPageInto(Page& page, PageId id, const HudLayout& layout, float frameb
     }
 }
 
-UiRect keyBindsRow(std::size_t visibleIndex, const HudLayout& layout, float framebufferWidth) {
+UiRect keyBindsRow(std::size_t visibleIndex, const HudLayout& layout) {
     // UI-4：行宽从自造的 300 改成 26.1 的 **340**（`KeyBindsList:59`）。
     // UI-6b：行高不再被压成 11——它就是列表的行高 20，因为一行里要装两个 20 高的按钮。
-    return fbRect(layout, scrollListRow(keyBindsScrollList(layout, framebufferWidth),
+    return fbRect(layout, scrollListRow(keyBindsScrollList(layout),
                                         visibleIndex));
 }
 
@@ -257,21 +254,18 @@ UiRect keyBindsRow(std::size_t visibleIndex, const HudLayout& layout, float fram
 // 动作名是一段 Label，改键按钮是一个 Button——**一行两个控件**，而不是从前那样
 // 整行一个 ListRow。焦点遍历因此会在名称与按钮之间走，与 26.1 的
 // `KeyBindsList.KeyEntry.children()` 同义。
-UiRect keyBindsNameCell(std::size_t visibleIndex, const HudLayout& layout,
-                        float framebufferWidth) {
-    const auto list = keyBindsScrollList(layout, framebufferWidth);
+UiRect keyBindsNameCell(std::size_t visibleIndex, const HudLayout& layout) {
+    const auto list = keyBindsScrollList(layout);
     return fbRect(layout, keyBindNameCell(scrollListRow(list, visibleIndex), kFontLineHeight));
 }
 
-UiRect keyBindsChangeCell(std::size_t visibleIndex, const HudLayout& layout,
-                          float framebufferWidth) {
-    const auto list = keyBindsScrollList(layout, framebufferWidth);
+UiRect keyBindsChangeCell(std::size_t visibleIndex, const HudLayout& layout) {
+    const auto list = keyBindsScrollList(layout);
     return fbRect(layout, keyBindChangeCell(list, scrollListRow(list, visibleIndex)));
 }
 
-UiRect keyBindsResetCell(std::size_t visibleIndex, const HudLayout& layout,
-                         float framebufferWidth) {
-    const auto list = keyBindsScrollList(layout, framebufferWidth);
+UiRect keyBindsResetCell(std::size_t visibleIndex, const HudLayout& layout) {
+    const auto list = keyBindsScrollList(layout);
     return fbRect(layout, keyBindResetCell(list, scrollListRow(list, visibleIndex)));
 }
 
@@ -281,19 +275,19 @@ std::size_t keyBindsVisibleRowCount(float framebufferWidth, float framebufferHei
     const float scale = layout.scale();
     constexpr float kRowStep = static_cast<float>(kKeyBindRowHeight);
     const float rows =
-        std::max(keyBindsListBox(layout, framebufferWidth).height / (kRowStep * scale), 1.0F);
+        std::max(keyBindsListBox(layout).height / (kRowStep * scale), 1.0F);
     return static_cast<std::size_t>(rows);
 }
 
-UiRect keyBindsScrollbarTrack(const HudLayout& layout, float framebufferWidth) {
-    return fbRect(layout, scrollListScrollbar(keyBindsScrollList(layout, framebufferWidth)));
+UiRect keyBindsScrollbarTrack(const HudLayout& layout) {
+    return fbRect(layout, scrollListScrollbar(keyBindsScrollList(layout)));
 }
 
-std::size_t keyBindsScrollIndexFromCursor(const HudLayout& layout, float framebufferWidth,
+std::size_t keyBindsScrollIndexFromCursor(const HudLayout& layout,
                                           std::size_t itemCount, std::size_t visibleRows,
                                           float cursorY) {
     static_cast<void>(visibleRows);
-    return scrollListRowFromScrollbar(keyBindsScrollList(layout, framebufferWidth), itemCount,
+    return scrollListRowFromScrollbar(keyBindsScrollList(layout), itemCount,
                                       cursorY / layout.scale());
 }
 
@@ -324,6 +318,12 @@ std::size_t optionsMaximumFirstRow(const HudLayout& layout, PageId page) {
 
 UiRect optionsScrollbarTrack(const HudLayout& layout) {
     return fbRect(layout, scrollListScrollbar(optionsListOf(layout)));
+}
+
+std::size_t optionsScrollIndexFromCursor(const HudLayout& layout, PageId page, float cursorY) {
+    // 与其余两张列表同一条换算（scrollListRowFromScrollbar 抓的是滑块中心）。
+    return scrollListRowFromScrollbar(optionsListOf(layout), optionsRowCountOf(page),
+                                      cursorY / layout.scale());
 }
 
 UiRect optionsScrollbarThumb(const HudLayout& layout, PageId page, std::size_t firstRow) {

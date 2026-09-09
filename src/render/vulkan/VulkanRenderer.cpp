@@ -2321,7 +2321,7 @@ struct VulkanRenderer::Impl final : public gameplay::SimulationHost {
 
     void updateLanguageScrollFromCursor() {
         if (menuSystem.pageStack.current() != ui::PageId::Language) {
-            menuSystem.languageScrollbarDragging = false;
+            menuSystem.scrollbarDragging = false;
             return;
         }
         const auto cursor = currentFramebufferCursor();
@@ -2330,8 +2330,7 @@ struct VulkanRenderer::Impl final : public gameplay::SimulationHost {
                                    menuSystem.guiScaleSetting, menuSystem.forceUnicodeFont};
         const std::size_t visible = languageVisibleRowCount();
         menuSystem.languageListFirstIndex = ui::languageScrollIndexFromCursor(
-            layout, static_cast<float>(swapchainExtent.width),
-            menuSystem.languageCodes.size(), visible, cursor.y);
+            layout, menuSystem.languageCodes.size(), visible, cursor.y);
     }
 
     void applyRename() {
@@ -3050,12 +3049,17 @@ struct VulkanRenderer::Impl final : public gameplay::SimulationHost {
             menuSystem.pageStack.pop();
             pressedMenuButton = ui::WidgetId::None;
             menuSystem.draggingSlider = ui::WidgetId::None;
+            // UI-6e ⑤（D19）：离开时把设置列表的滚动位置归零。26.1 每次进设置子屏
+            // 都是**新建**一个 OptionsList，滚动位置自然从 0 起；本作三屏共用一个字段，
+            // 不归零就会"退出去再进来还停在半截"。
+            menuSystem.optionsListFirstIndex = 0U;
             break;
         case ui::PageId::AdvancedGraphics:
         // UI-6c：两页新子屏的返回与 Experimental 同形——出栈，清掉按下态。
         case ui::PageId::Accessibility:
             menuSystem.pageStack.pop();
             pressedMenuButton = ui::WidgetId::None;
+            menuSystem.optionsListFirstIndex = 0U;   // D19
             break;
         case ui::PageId::KeyBinds:
             // ★ 正在等待按键时，Escape 是**解绑**，不是"取消改键"、也不是退出这一屏
@@ -3066,19 +3070,20 @@ struct VulkanRenderer::Impl final : public gameplay::SimulationHost {
                 static_cast<void>(keyBindScreen_.applyUnbound());
                 break;
             }
-            menuSystem.controlsScrollbarDragging = false;
+            menuSystem.scrollbarDragging = false;
             menuSystem.pageStack.pop();
             pressedMenuButton = ui::WidgetId::None;
             break;
         case ui::PageId::Language:
             // Escape 取消草稿选择；只有 Done 才启动异步的语言重载
             menuSystem.pendingLanguageCode = options.language;
-            menuSystem.languageScrollbarDragging = false;
+            menuSystem.scrollbarDragging = false;
             menuSystem.pageStack.pop();
             pressedMenuButton = ui::WidgetId::None;
             break;
         case ui::PageId::Options:
             menuSystem.pageStack.pop();
+            menuSystem.optionsListFirstIndex = 0U;   // D19
             menuSystem.optionsOpen = false;
             pressedMenuButton = ui::WidgetId::None;
             menuSystem.draggingSlider = ui::WidgetId::None;
@@ -3105,6 +3110,7 @@ struct VulkanRenderer::Impl final : public gameplay::SimulationHost {
             menuSystem.pageStack.pop();
             pressedMenuButton = ui::WidgetId::None;
             menuSystem.draggingSlider = ui::WidgetId::None;
+            menuSystem.optionsListFirstIndex = 0U;   // D19，见下
             break;
         // 26.1 里这三屏 `shouldCloseOnEsc()` 返回 **false**（`Screen` 的默认是 true）：
         //   DeathScreen / TitleScreen / LevelLoadingScreen
@@ -3226,10 +3232,92 @@ struct VulkanRenderer::Impl final : public gameplay::SimulationHost {
         }
     }
 
+    // 当前页那张滚动列表的滚动条轨道。没有列表的页面返回 nullopt。
+    //
+    // ★ 不带 default 的 switch：加一页带列表的屏幕时编译器会点名，而"滚动条拖不动"
+    //   不会让任何东西变红——D18 就是这么长期存在的（绑定列表那条从来没接过拖拽，
+    //   而它的 `controlsScrollbarDragging` 是个只写不读的死字段）。
+    [[nodiscard]] std::optional<ui::UiRect> menuScrollbarTrack(const ui::HudLayout& layout) const {
+        switch (menuSystem.pageStack.current()) {
+        case ui::PageId::Language:
+            if (menuSystem.languageCodes.size() > languageVisibleRowCount()) {
+                return ui::languageScrollbarTrack(layout);
+            }
+            return std::nullopt;
+        case ui::PageId::KeyBinds:
+            if (ui::kKeyBindListRowCount > keyBindsVisibleRowCountForFrame()) {
+                return ui::keyBindsScrollbarTrack(layout);
+            }
+            return std::nullopt;
+        case ui::PageId::VideoSettings:
+        case ui::PageId::Controls:
+        case ui::PageId::AdvancedGraphics:
+        case ui::PageId::SoundSettings:
+        case ui::PageId::Options:
+            if (ui::optionsMaximumFirstRow(layout, menuSystem.pageStack.current()) > 0U) {
+                return ui::optionsScrollbarTrack(layout);
+            }
+            return std::nullopt;
+        case ui::PageId::Title:
+        case ui::PageId::WorldList:
+        case ui::PageId::CreateWorld:
+        case ui::PageId::EditWorld:
+        case ui::PageId::ConfirmDelete:
+        case ui::PageId::Loading:
+        case ui::PageId::Game:
+        case ui::PageId::Pause:
+        case ui::PageId::Death:
+        case ui::PageId::Accessibility:
+        case ui::PageId::ResourcePacks:
+        case ui::PageId::Count:
+            break;
+        }
+        return std::nullopt;
+    }
+
+    // 把光标位置折算成当前页那张列表的首行。与上面那个 switch 一一对应。
+    void updateMenuScrollFromCursor() {
+        const ui::HudLayout layout{static_cast<float>(swapchainExtent.width),
+                                   static_cast<float>(swapchainExtent.height),
+                                   menuSystem.guiScaleSetting, menuSystem.forceUnicodeFont};
+        const auto cursor = currentFramebufferCursor();
+        switch (menuSystem.pageStack.current()) {
+        case ui::PageId::Language:
+            menuSystem.languageListFirstIndex = ui::languageScrollIndexFromCursor(
+                layout, menuSystem.languageCodes.size(), languageVisibleRowCount(), cursor.y);
+            break;
+        case ui::PageId::KeyBinds:
+            menuSystem.controlsListFirstIndex = ui::keyBindsScrollIndexFromCursor(
+                layout, ui::kKeyBindListRowCount, keyBindsVisibleRowCountForFrame(), cursor.y);
+            break;
+        case ui::PageId::VideoSettings:
+        case ui::PageId::Controls:
+        case ui::PageId::AdvancedGraphics:
+        case ui::PageId::SoundSettings:
+        case ui::PageId::Options:
+            menuSystem.optionsListFirstIndex = ui::optionsScrollIndexFromCursor(
+                layout, menuSystem.pageStack.current(), cursor.y);
+            break;
+        case ui::PageId::Title:
+        case ui::PageId::WorldList:
+        case ui::PageId::CreateWorld:
+        case ui::PageId::EditWorld:
+        case ui::PageId::ConfirmDelete:
+        case ui::PageId::Loading:
+        case ui::PageId::Game:
+        case ui::PageId::Pause:
+        case ui::PageId::Death:
+        case ui::PageId::Accessibility:
+        case ui::PageId::ResourcePacks:
+        case ui::PageId::Count:
+            break;
+        }
+    }
+
     // 菜单页上的光标移动只对已经在拖拽的控件有意义，各个拖拽标志互斥
     void dragMenuControl() {
-        if (menuSystem.languageScrollbarDragging) {
-            updateLanguageScrollFromCursor();
+        if (menuSystem.scrollbarDragging) {
+            updateMenuScrollFromCursor();
         } else if (menuSystem.draggingSlider != ui::WidgetId::None) {
             dragSliderFromCursor();
         }
@@ -3795,7 +3883,7 @@ struct VulkanRenderer::Impl final : public gameplay::SimulationHost {
     // 存档界面的列表行位于标题与底部功能按钮之间的那条带内
     // saveListVisibleRowCount 决定能放几行，任何分辨率下行都不会撞上按钮
     [[nodiscard]] ui::UiRect worldListRow(std::size_t index, const ui::HudLayout& layout) const {
-        return ui::worldListRow(index, layout, static_cast<float>(swapchainExtent.width));
+        return ui::worldListRow(index, layout);
     }
 
     // 当前画布尺寸下列表带里能放几行世界
@@ -3810,7 +3898,7 @@ struct VulkanRenderer::Impl final : public gameplay::SimulationHost {
     // 框高按行数决定，并在标题与灰色提示行之间垂直居中
     // 语言项因此是绝对居中的，而不是挤在一个高框的顶部
     [[nodiscard]] ui::UiRect languageListBox(const ui::HudLayout& layout) const {
-        return ui::languageListBox(layout, static_cast<float>(swapchainExtent.width));
+        return ui::languageListBox(layout);
     }
 
     // 列表下方那行灰色的 "(" + options.languageWarning + ")"
@@ -3821,7 +3909,7 @@ struct VulkanRenderer::Impl final : public gameplay::SimulationHost {
 
     // 通栏深色框内语言列表的一行
     [[nodiscard]] ui::UiRect languageRow(std::size_t index, const ui::HudLayout& layout) const {
-        return ui::languageRow(index, layout, static_cast<float>(swapchainExtent.width));
+        return ui::languageRow(index, layout);
     }
 
     // 当前画布尺寸下黑框里能放几行语言
@@ -3927,8 +4015,8 @@ struct VulkanRenderer::Impl final : public gameplay::SimulationHost {
             menuSystem.optionsOpen = true;
             menuSystem.pageStack.push(ui::PageId::Options);
         };
-        cb.openVideoSettings = [this] { menuSystem.pageStack.push(ui::PageId::VideoSettings); };
-        cb.openControls = [this] { menuSystem.pageStack.push(ui::PageId::Controls); };
+        cb.openVideoSettings = [this] { menuSystem.optionsListFirstIndex = 0U; menuSystem.pageStack.push(ui::PageId::VideoSettings); };
+        cb.openControls = [this] { menuSystem.optionsListFirstIndex = 0U; menuSystem.pageStack.push(ui::PageId::Controls); };
         cb.openLanguage = [this] {
             menuSystem.pendingLanguageCode = options.language;
             menuSystem.languageStatus.clear();
@@ -3973,7 +4061,10 @@ struct VulkanRenderer::Impl final : public gameplay::SimulationHost {
             };
             return bind;
         };
-        cb.openSoundSettings = [this] { menuSystem.pageStack.push(ui::PageId::SoundSettings); };
+        cb.openSoundSettings = [this] {
+            menuSystem.optionsListFirstIndex = 0U;
+            menuSystem.pageStack.push(ui::PageId::SoundSettings);
+        };
         // UI-6e ③：资源包选择。后端是 assets::ResourcePackLibrary（子 agent 那一轮），
         // 这里只做"栏内行号 → 包 id"的换算，不碰 provider，更不碰 Vulkan。
         cb.openResourcePacks = [this] {
@@ -4003,8 +4094,8 @@ struct VulkanRenderer::Impl final : public gameplay::SimulationHost {
         };
         // UI-6c：26.1 的两条新入口（§7.6 枢纽 → §7.8 绑定列表，Options → §7.11 辅助功能）
         cb.resetKeyBind = [this](input::InputAction action) { keyBindScreen_.resetOne(action); };
-        cb.openKeyBinds = [this] { menuSystem.pageStack.push(ui::PageId::KeyBinds); };
-        cb.openAccessibility = [this] { menuSystem.pageStack.push(ui::PageId::Accessibility); };
+        cb.openKeyBinds = [this] { menuSystem.optionsListFirstIndex = 0U; menuSystem.pageStack.push(ui::PageId::KeyBinds); };
+        cb.openAccessibility = [this] { menuSystem.optionsListFirstIndex = 0U; menuSystem.pageStack.push(ui::PageId::Accessibility); };
         cb.doneOptions = [this] {
             // UI-6e ③：资源包那一屏的 Done 才提交草稿（26.1 同样是 onClose 时 apply）。
             if (menuSystem.pageStack.current() == ui::PageId::ResourcePacks) {
@@ -4158,8 +4249,7 @@ struct VulkanRenderer::Impl final : public gameplay::SimulationHost {
         fillPackContext(ctx, layout);
         ui::Page built;
         ui::buildPageInto(built, page, ctx, buildMenuCallbacks());
-        ui::layoutPageInto(built, page, layout, static_cast<float>(swapchainExtent.width),
-                           keyFirst, ctx.optionsWindow.firstRow);
+        ui::layoutPageInto(built, page, layout, keyFirst, ctx.optionsWindow.firstRow);
         return built;
     }
 
@@ -4265,6 +4355,17 @@ struct VulkanRenderer::Impl final : public gameplay::SimulationHost {
         pressedMenuButton = pressedMenuIndex_ != ui::kNoWidget
                                 ? static_cast<ui::WidgetId>(page[pressedMenuIndex_].debugId)
                                 : ui::WidgetId::None;
+        // UI-6e ⑤（D8）：键盘焦点跟着鼠标点击走（26.1 `Screen.mouseClicked` →
+        // `setFocused(child)`）。从前点一个按钮之后再按 Tab，焦点是从**上一次 Tab 停的
+        // 地方**继续，而不是从刚点的那个继续——两套导航各走各的。
+        // ★ 点空（kNoWidget）时**清掉**焦点，与 vanilla 一致：点在空白处等于取消聚焦。
+        if (pressedMenuIndex_ == ui::kNoWidget) {
+            menuSystem.setFocus(menuSystem.pageStack.current(), ui::kNoWidget);
+        } else if (page[pressedMenuIndex_].interactive() && page[pressedMenuIndex_].enabled) {
+            // 只有能交互且没被灰掉的控件才配得到焦点——灰按钮聚焦之后回车也按不动，
+            // 那种焦点只会让 Tab 序看起来卡住。
+            menuSystem.setFocus(menuSystem.pageStack.current(), pressedMenuIndex_);
+        }
         // 按在滑块上即开始拖拽，拖拽效果一律经该滑块的 onDrag 回调，绝不是遍历的副作用
         // 拖拽标志保留下来，松开路径与绘制高亮才继续可用
         if (pressedMenuIndex_ != ui::kNoWidget &&
@@ -4281,6 +4382,21 @@ struct VulkanRenderer::Impl final : public gameplay::SimulationHost {
         }
         // 26.1 在界面打开期间只维护一个草稿选择，按 Done 才用一次资源重载提交
         // 于是连着浏览好几行不会反复解析翻译、反复重建字体
+        // UI-6e ⑤（D18）：滚动条拖拽。**所有**带列表的页面走这一条——从前只有语言列表
+        // 接了拖拽，绑定列表那条滚动条根本拖不动、设置列表连字段都没有。
+        {
+            const auto cursor = currentFramebufferCursor();
+            const ui::HudLayout layout{static_cast<float>(swapchainExtent.width),
+                                       static_cast<float>(swapchainExtent.height),
+                                       menuSystem.guiScaleSetting, menuSystem.forceUnicodeFont};
+            const auto track = menuScrollbarTrack(layout);
+            if (track.has_value() && track->contains(cursor.x, cursor.y)) {
+                menuSystem.scrollbarDragging = true;
+                pressedMenuButton = ui::WidgetId::None;
+                updateMenuScrollFromCursor();
+                return;
+            }
+        }
         if (menuSystem.pageStack.current() == ui::PageId::Language) {
             const auto cursor = currentFramebufferCursor();
             const ui::HudLayout layout{static_cast<float>(swapchainExtent.width),
@@ -4291,15 +4407,6 @@ struct VulkanRenderer::Impl final : public gameplay::SimulationHost {
                                                  ? menuSystem.languageCodes.size() - visible
                                                  : 0U;
             const std::size_t first = std::min(menuSystem.languageListFirstIndex, maximumFirst);
-            const auto scrollTrack = ui::languageScrollbarTrack(
-                layout, static_cast<float>(swapchainExtent.width));
-            if (menuSystem.languageCodes.size() > visible &&
-                scrollTrack.contains(cursor.x, cursor.y)) {
-                menuSystem.languageScrollbarDragging = true;
-                pressedMenuButton = ui::WidgetId::None;
-                updateLanguageScrollFromCursor();
-                return;
-            }
             for (std::size_t row = 0; row < visible; ++row) {
                 const std::size_t index = first + row;
                 if (index >= menuSystem.languageCodes.size()) {
@@ -4452,8 +4559,8 @@ struct VulkanRenderer::Impl final : public gameplay::SimulationHost {
     }
 
     void handleMenuButtonRelease() {
-        if (menuSystem.languageScrollbarDragging) {
-            updateLanguageScrollFromCursor();
+        if (menuSystem.scrollbarDragging) {
+            updateMenuScrollFromCursor();
         }
         // 松开前先按最后一次光标位置应用一遍，然后由下面那条统一的 onCommit 提交
         // （持久化与反馈音都在各自的 onCommit 里，这里不再逐个滑块写一遍）。
@@ -4468,7 +4575,7 @@ struct VulkanRenderer::Impl final : public gameplay::SimulationHost {
         pressedMenuButton = ui::WidgetId::None;
         pressedMenuIndex_ = ui::kNoWidget;
         menuSystem.draggingSlider = ui::WidgetId::None;
-        menuSystem.languageScrollbarDragging = false;
+        menuSystem.scrollbarDragging = false;
         // 滑块松开时经它自己的回调提交，含持久化与反馈音
         if (pressed != ui::kNoWidget && page[pressed].kind == ui::WidgetKind::Slider &&
             page[pressed].slider.onCommit) {

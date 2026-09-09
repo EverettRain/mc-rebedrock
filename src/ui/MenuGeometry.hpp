@@ -19,8 +19,7 @@ namespace mc::ui {
 
 
 // 标题与底部按钮之间那条带里的一个存档列表行
-[[nodiscard]] UiRect worldListRow(std::size_t index, const HudLayout& layout,
-                                  float framebufferWidth);
+[[nodiscard]] UiRect worldListRow(std::size_t index, const HudLayout& layout);
 
 // 当前画布尺寸下，列表带里放得下多少个存档行
 // UI-3：`forceUnicode` 参与缩放求解（26.1 `Window.calculateScale`），因此凡是自己构造
@@ -32,34 +31,33 @@ namespace mc::ui {
 // UI-4：三张滚动列表的统一几何（GUI spec §2.7 / §5 的 L3）。
 // 行宽是从 26.1 源码查来的覆写值：语言 270、按键 340、世界列表 270。
 // 下面那些逐屏函数都从这里派生，不再各写各的。
-[[nodiscard]] ScrollList languageScrollList(const HudLayout& layout, float framebufferWidth);
-[[nodiscard]] ScrollList keyBindsScrollList(const HudLayout& layout, float framebufferWidth);
-[[nodiscard]] ScrollList worldScrollList(const HudLayout& layout, float framebufferWidth);
+[[nodiscard]] ScrollList languageScrollList(const HudLayout& layout);
+[[nodiscard]] ScrollList keyBindsScrollList(const HudLayout& layout);
+[[nodiscard]] ScrollList worldScrollList(const HudLayout& layout);
 // 世界列表那条带在当前画布下放得下几行（逻辑像素版，saveListVisibleRowCount 的内核）
 [[nodiscard]] std::size_t worldListVisibleRows(const HudLayout& layout);
 
 // 灰色警告行的 Y 坐标、整宽的语言框，以及一个语言行
 [[nodiscard]] float languageWarningY(const HudLayout& layout);
-[[nodiscard]] UiRect languageListBox(const HudLayout& layout, float framebufferWidth);
-[[nodiscard]] UiRect languageRow(std::size_t index, const HudLayout& layout,
-                                 float framebufferWidth);
+[[nodiscard]] UiRect languageListBox(const HudLayout& layout);
+[[nodiscard]] UiRect languageRow(std::size_t index, const HudLayout& layout);
 [[nodiscard]] std::size_t languageVisibleRowCount(float framebufferWidth, float framebufferHeight,
                                                   int guiScale, bool forceUnicode);
 // 绘制与输入共用的滚动条几何，以及光标到行的映射
 // 命中轨道比四像素宽的滑块更宽，这与 vanilla 列表控件那条好点的边槽一致，视觉上仍然窄
-[[nodiscard]] UiRect languageScrollbarTrack(const HudLayout& layout, float framebufferWidth);
-[[nodiscard]] UiRect languageScrollbarThumb(const HudLayout& layout, float framebufferWidth,
+[[nodiscard]] UiRect languageScrollbarTrack(const HudLayout& layout);
+[[nodiscard]] UiRect languageScrollbarThumb(const HudLayout& layout,
                                              std::size_t itemCount,
                                              std::size_t visibleRows,
                                              std::size_t firstIndex);
 [[nodiscard]] std::size_t languageScrollIndexFromCursor(
-    const HudLayout& layout, float framebufferWidth, std::size_t itemCount,
+    const HudLayout& layout, std::size_t itemCount,
     std::size_t visibleRows, float cursorY);
 
 // 按键设置页的绑定列表是一个滚动列表，与世界列表和语言列表同类，而不是固定的按钮网格
 // 24 个可重绑的动作会冲破 20 个按钮的菜单上限并抛出，所以它必须是滚动的
 // 几何照搬语言列表：标题与底部按钮带之间一个按内容定尺寸的框，每个可见动作一行，外加一条滚动条
-[[nodiscard]] UiRect keyBindsListBox(const HudLayout& layout, float framebufferWidth);
+[[nodiscard]] UiRect keyBindsListBox(const HudLayout& layout);
 // 一页里第 `widgetIndex` 个控件的矩形。**页面 → 矩形这件事只有这一处。**
 //
 // ★ 它存在的理由是一次真实的崩溃：UI-6b 把按键绑定行拆成两个控件之后，绘制侧与
@@ -87,7 +85,7 @@ namespace mc::ui {
 //
 // ★ 这两个滚动位置必须与**装配**用的那一个是同一个值。装配按窗口跳过控件、布局按同一
 //   个 firstRow 折算行号，两边错开一行就是"名字和控件错位"或者"滚动条动了内容不动"。
-void layoutPageInto(Page& page, PageId id, const HudLayout& layout, float framebufferWidth,
+void layoutPageInto(Page& page, PageId id, const HudLayout& layout,
                     std::size_t keyBindFirstRow = 0U, std::size_t optionsFirstRow = 0U);
 
 // 一页里有几个**按钮**（不含绑定列表那些行内控件）。布局用它，测试也用它断言页面形状。
@@ -95,19 +93,14 @@ void layoutPageInto(Page& page, PageId id, const HudLayout& layout, float frameb
 
 // UI-6b：按键绑定行里的两个格子（动作名 / 改键按钮）。一行两个控件，
 // 几何在 ui/ListRow.hpp，这两个只是换算到帧缓冲像素。
-[[nodiscard]] UiRect keyBindsNameCell(std::size_t visibleIndex, const HudLayout& layout,
-                                      float framebufferWidth);
-[[nodiscard]] UiRect keyBindsChangeCell(std::size_t visibleIndex, const HudLayout& layout,
-                                        float framebufferWidth);
-[[nodiscard]] UiRect keyBindsResetCell(std::size_t visibleIndex, const HudLayout& layout,
-                                       float framebufferWidth);
-[[nodiscard]] UiRect keyBindsRow(std::size_t visibleIndex, const HudLayout& layout,
-                                 float framebufferWidth);
+[[nodiscard]] UiRect keyBindsNameCell(std::size_t visibleIndex, const HudLayout& layout);
+[[nodiscard]] UiRect keyBindsChangeCell(std::size_t visibleIndex, const HudLayout& layout);
+[[nodiscard]] UiRect keyBindsResetCell(std::size_t visibleIndex, const HudLayout& layout);
+[[nodiscard]] UiRect keyBindsRow(std::size_t visibleIndex, const HudLayout& layout);
 [[nodiscard]] std::size_t keyBindsVisibleRowCount(float framebufferWidth, float framebufferHeight,
                                                   int guiScale, bool forceUnicode);
-[[nodiscard]] UiRect keyBindsScrollbarTrack(const HudLayout& layout, float framebufferWidth);
+[[nodiscard]] UiRect keyBindsScrollbarTrack(const HudLayout& layout);
 [[nodiscard]] std::size_t keyBindsScrollIndexFromCursor(const HudLayout& layout,
-                                                        float framebufferWidth,
                                                         std::size_t itemCount,
                                                         std::size_t visibleRows, float cursorY);
 
@@ -129,5 +122,8 @@ void layoutPageInto(Page& page, PageId id, const HudLayout& layout, float frameb
 [[nodiscard]] UiRect optionsScrollbarTrack(const HudLayout& layout);
 [[nodiscard]] UiRect optionsScrollbarThumb(const HudLayout& layout, PageId page,
                                            std::size_t firstRow);
+// UI-6e ⑤（D18）：拖设置列表的滚动条——光标位置 → 首行。
+[[nodiscard]] std::size_t optionsScrollIndexFromCursor(const HudLayout& layout, PageId page,
+                                                       float cursorY);
 
 } // namespace mc::ui

@@ -278,7 +278,7 @@ void testControlsHubLayout() {
     const mc::ui::MenuCallbacks cb;
     mc::ui::Page page;
     mc::ui::buildPageInto(page, mc::ui::PageId::Controls, ctx, cb);
-    mc::ui::layoutPageInto(page, mc::ui::PageId::Controls, layout, 1280.0F);
+    mc::ui::layoutPageInto(page, mc::ui::PageId::Controls, layout);
     // 两个跳转 + 七个设置项 + Done。★ 这个 10 是数出来的，不是另一张表说的。
     const std::size_t count = mc::ui::countPageButtons(page);
     CHECK(count == 10U);
@@ -550,7 +550,7 @@ void testVideoSettingsWindowedLayout() {
         const mc::ui::MenuCallbacks cb;
         mc::ui::Page built;
         mc::ui::buildPageInto(built, page, ctx, cb);
-        mc::ui::layoutPageInto(built, page, layout, 1280.0F, 0U, ctx.optionsWindow.firstRow);
+        mc::ui::layoutPageInto(built, page, layout, 0U, ctx.optionsWindow.firstRow);
         return built;
     };
 
@@ -1189,7 +1189,7 @@ void testNoWidgetEscapesTheCanvas() {
             const mc::ui::MenuCallbacks cb;
             mc::ui::Page built;
             mc::ui::buildPageInto(built, page, ctx, cb);
-            mc::ui::layoutPageInto(built, page, layout, canvas.width, 0U,
+            mc::ui::layoutPageInto(built, page, layout, 0U,
                                    ctx.optionsWindow.firstRow);
             // 夹具自证：这些页面必须真的装配出了控件，否则上面那个循环是空的，
             // 整条测试就成了摆设。
@@ -1264,7 +1264,7 @@ void testCreateWorldForm() {
         const mc::ui::MenuCallbacks cb;
         mc::ui::Page page;
         mc::ui::buildPageInto(page, mc::ui::PageId::CreateWorld, ctx, cb);
-        mc::ui::layoutPageInto(page, mc::ui::PageId::CreateWorld, layout, 1280.0F);
+        mc::ui::layoutPageInto(page, mc::ui::PageId::CreateWorld, layout);
         const std::size_t count = mc::ui::countPageButtons(page);
         CHECK(count >= 5U);
 
@@ -1350,7 +1350,7 @@ void testSoundSettingsPage() {
     const mc::ui::MenuCallbacks cb;
     mc::ui::Page built;
     mc::ui::buildPageInto(built, page, ctx, cb);
-    mc::ui::layoutPageInto(built, page, layout, 1280.0F, 0U, ctx.optionsWindow.firstRow);
+    mc::ui::layoutPageInto(built, page, layout, 0U, ctx.optionsWindow.firstRow);
 
     const auto find = [&](mc::ui::WidgetId id) -> const mc::ui::Widget* {
         for (const auto& widget : built) {
@@ -1383,7 +1383,7 @@ void testSoundSettingsPage() {
         layout, page, mc::ui::optionsMaximumFirstRow(layout, page));
     mc::ui::Page bottom;
     mc::ui::buildPageInto(bottom, page, bottomCtx, cb);
-    mc::ui::layoutPageInto(bottom, page, layout, 1280.0F, 0U, bottomCtx.optionsWindow.firstRow);
+    mc::ui::layoutPageInto(bottom, page, layout, 0U, bottomCtx.optionsWindow.firstRow);
     const auto findBottom = [&](mc::ui::WidgetId id) -> const mc::ui::Widget* {
         for (const auto& widget : bottom) {
             if (static_cast<mc::ui::WidgetId>(widget.debugId) == id) {
@@ -1610,7 +1610,7 @@ void testHeaderAndFooterClassification() {
         const mc::ui::MenuCallbacks cb;
         mc::ui::Page built;
         mc::ui::buildPageInto(built, page, ctx, cb);
-        mc::ui::layoutPageInto(built, page, layout, 1280.0F, 0U, ctx.optionsWindow.firstRow);
+        mc::ui::layoutPageInto(built, page, layout, 0U, ctx.optionsWindow.firstRow);
         const std::size_t count = mc::ui::countPageButtons(built);
         if (count == 0U) {
             continue;
