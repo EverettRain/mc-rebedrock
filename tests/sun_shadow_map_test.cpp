@@ -1158,9 +1158,13 @@ void checkWeatherResponse() {
         const float shadowed = shaderBias::sunSkyFactor(1.0F, 1.0F, 0.0F, 0.0F, 0.0F, kGroundFacing, kSunOverhead, kDryLand);
         REQUIRE(std::abs(lit - 1.0F) < 1e-6F,
                 "晴天全亮必须是 1.0——受光面的亮度一个字都不该动");
-        REQUIRE(std::abs(shadowed - shaderBias::kSkyAmbientFraction) < 1e-6F,
-                "晴天全影剩下的正是天空散射那一份，不是一个硬编码的系数");
-        // 影子比从前更暗（0.2 而不是 0.35），那是这个节点买到的东西
+        // RN-46b：全影处 = 散射份额 + 假反射光。后者正比于**丢掉的直射**，所以它
+        // 只在有直射可弹的时候出现——这一条与 RN-38 的原意不冲突：影子里的亮度仍旧是
+        // 从物理量算出来的，不是一个硬编码的系数
+        const float bounce = shaderBias::kBouncedLight * (1.0F - shaderBias::kSkyAmbientFraction);
+        REQUIRE(std::abs(shadowed - (shaderBias::kSkyAmbientFraction + bounce)) < 1e-6F,
+                "晴天全影 = 天空散射那一份 + 假反射光，两者都是算出来的");
+        // 影子比 RN-38 之前那个 0.35 的系数更暗，那是拆开买到的东西
         REQUIRE(shadowed < 0.35F, "拆开之后影子必须比那个 0.35 的系数更暗");
 
         // 云把直射**转给**散射：全阴时阴影完全不起作用，而总亮度不变
@@ -1487,6 +1491,56 @@ void checkDirectWeight() {
 
 // RN-43：级联接缝的过渡带。
 // RN-46a：水下的直射被水散掉。
+// RN-46b：假反射光——影子里那点兜底亮度。
+void checkBouncedLight() {
+    const auto sky = [](float visibility, float incidence, float sunUp, float depth,
+                        float rain, float thunder) {
+        return shaderBias::sunSkyFactor(1.0F, 1.0F, visibility, rain, thunder, incidence, sunUp,
+                                        depth);
+    };
+    // ---- 1. 受光处仍旧恰好是 1.0 ------------------------------------------
+    // ★ RN-42 立的锚。假反射光只加在**丢掉的**那部分直射上，所以全亮处一点不加
+    REQUIRE(std::abs(sky(1.0F, kGroundFacing, kSunOverhead, kDryLand, 0.0F, 0.0F) - 1.0F) < 1e-6F,
+            "the lit ground must still be exactly 1.0 — the bounce only fills what is missing");
+    // ---- 2. 影子被抬起来了，而且抬的量是算出来的 --------------------------
+    const float shadowed = sky(0.0F, kGroundFacing, kSunOverhead, kDryLand, 0.0F, 0.0F);
+    REQUIRE(shadowed > shaderBias::kSkyAmbientFraction,
+            "the bounce must lift the shadow above the bare ambient share");
+    REQUIRE(shadowed < 0.25F,
+            "and not so far that it undoes RN-42's darker shadows");
+    // 正午的竖直面（直射权重 0）拿到的是同一份兜底——那正是「画面偏暗」的那一半
+    const float noonWall = sky(1.0F, 0.0F, 0.95F, kDryLand, 0.0F, 0.0F);
+    REQUIRE(std::abs(noonWall - shadowed) < 1e-6F,
+            "a wall that receives no direct light must get the same bounce as a shadow: both are "
+            "missing all of it");
+    // ---- 3. 没有直射可弹的时候，这一项必须消失 ----------------------------
+    // 夜里：直射份额整份转给散射 ⇒ 天光通道恒为 1，兜底无处可加
+    for (const float sunUp : {-1.0F, 0.0F}) {
+        REQUIRE(std::abs(sky(0.0F, kGroundFacing, sunUp, kDryLand, 0.0F, 0.0F) - 1.0F) < 1e-6F,
+                "night has no direct light to bounce; the sky channel stays whole");
+    }
+    // 全阴天同理
+    REQUIRE(std::abs(sky(0.0F, kGroundFacing, kSunOverhead, kDryLand, 1.0F, 1.0F) - 1.0F) < 1e-6F,
+            "an overcast sky has no beam to bounce either");
+    // 深水下：直射份额被水散掉了多少，兜底就少多少
+    const float shallowShadow = sky(0.0F, kGroundFacing, kSunOverhead, 0.0F, 0.0F, 0.0F);
+    const float deepShadow = sky(0.0F, kGroundFacing, kSunOverhead, 15.0F, 0.0F, 0.0F);
+    REQUIRE(deepShadow > shallowShadow,
+            "deep water transfers the direct share to ambient, so the shadow there is lighter "
+            "than a dry shadow — but for a different reason, and the two must not double up");
+    // ---- 4. 有界 ----------------------------------------------------------
+    for (const float visibility : {0.0F, 0.5F, 1.0F}) {
+        for (const float incidence : {-1.0F, 0.0F, 0.5F, 1.0F}) {
+            for (const float sunUp : {-1.0F, 0.05F, 1.0F}) {
+                const float value = sky(visibility, incidence, sunUp, 0.0F, 0.0F, 0.0F);
+                REQUIRE(std::isfinite(value) && value >= 0.0F && value <= 1.0F,
+                        "the sky channel must stay inside [0,1]: it is multiplied into an 8-bit "
+                        "lightmap and anything above 1 is clipped, not brighter");
+            }
+        }
+    }
+}
+
 void checkWaterTransmittance() {
     // ---- 1. 透射率本身 ----------------------------------------------------
     REQUIRE(shaderBias::sunWaterTransmittance(0.0F) == 1.0F,
@@ -1901,6 +1955,7 @@ int main() {
         checkDirectWeight();
         checkCascadeBlend();
         checkWaterTransmittance();
+        checkBouncedLight();
         checkEntityWiring();
         checkDepthConvention();
         checkTexelSnapping();

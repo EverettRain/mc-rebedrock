@@ -96,6 +96,12 @@ float sunShadowOvercast(float rainGradient, float thunderGradient) {
 // 而晴空正午的散射份额实测在 10%~15% 之间，0.15 取的是这一档的上沿。
 const float kSkyAmbientFraction = 0.15F;
 
+// RN-46b：假反射光的强度，相对**直射**的份额。0.06 让全影处从 0.15 抬到约 0.19，
+// 也就是 RN-42 收窄散射份额之前的量级——但只在**有直射可弹**的时候。
+// Photon 用的是 0.033 乘它自己的 ao 与 skylight^4；我们没有逐片元的 ao，
+// 天光曲线替它做了「洞里没有」这一半。
+const float kBouncedLight = 0.06F;
+
 // 云厚到这个程度，直射已经不剩什么，整套遮挡搜索加 PCF 都可以省掉——
 // 逐屏幕像素的开销，换一个看不见的差别。
 const float kSunShadowInvisibleOvercast = 0.98F;
@@ -175,10 +181,24 @@ float sunSkyFactor(float skyLightFactor, float weatherDimming, float visibility,
                         (1.0F - sunShadowOvercast(rain, thunder)) * sunPresence(sunUpCosine) *
                         sunWaterTransmittance(submergedBlocks);
     float ambientShare = 1.0F - directShare;
+    // RN-46b：假反射光。RN-42 把直射项带上入射角之后，正午的竖直面掉到了散射那一份，
+    // 画面整体偏暗——真正缺的是**从周围受光表面弹回来的那一点光**（GI），而在 LDR 里
+    // 它只能是一项近似。
+    //
+    // 形状照 Photon 的 `bounced`（`diffuse_lighting.glsl`）：正比于**被挡住了多少**，
+    // 不是一个常数底值。理由是物理的——反射光来自周围被照亮的表面，所以：
+    //
+    //   * 乘 directShare ⇒ 夜里、全阴天、深水下**没有可弹的光**，这一项自动消失；
+    //   * 乘 (1 - 已收到的直射) ⇒ 受光面一点不加，全影处加满；
+    //   * 整个天光通道随后还要乘 lightmap 的天空曲线，所以洞里（skyLevel = 0）也没有。
+    //
+    // ★ 受光处因此**仍然恰好是 1.0**——RN-42 立的那个锚一个字不动。
+    float missingDirect = 1.0F - sunDirectWeight(incidenceCosine, sunUpCosine) *
+                                     clamp(visibility, 0.0F, 1.0F);
     return skyLightFactor * weatherDimming *
            (directShare * sunDirectWeight(incidenceCosine, sunUpCosine) *
                 clamp(visibility, 0.0F, 1.0F) +
-            ambientShare);
+            ambientShare + kBouncedLight * directShare * missingDirect);
 }
 
 
