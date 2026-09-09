@@ -29,6 +29,10 @@
 # RN-38：--rain 0..1 / --thunder 0..1 固定降雨与雷暴强度（默认 0 = 晴）。
 # 天气进输出目录名，所以晴天那一版与雨天那一版不会互相覆盖。
 #
+# RN-55：--near-shadow 8|16|24 固定近段级联那个框的档位（默认 8）。它是每帧读的
+# 选项，从前**没被钉**，出图跑哪一档全看那台机器的 options.properties——而它正是
+# 这条线上最关键的可变量（用户报的光斑只在 24 档出现）。档位进输出目录名。
+#
 # RN-11b：--sun-shadows 开太阳阴影；--sun-tick 0..23999 固定时刻；
 # --shadow-entities 在 8x8 地板上放固定的玩家/猪/两种掉落物/下落沙块（仅隐藏导出）。
 # --verify 跑两遍、写进两个目录、逐字节比对。
@@ -54,6 +58,7 @@ while [[ $# -gt 0 ]]; do
         --verify) VERIFY=1; shift ;;
         --sun-shadows|--shadow-entities|--outline) SHADOW_ARGS+=("$1"); shift ;;
         --sun-tick) SHADOW_ARGS+=("$1" "$2"); shift 2 ;;
+        --near-shadow) SHADOW_ARGS+=("$1" "$2"); shift 2 ;;
         --anti-aliasing) SHADOW_ARGS+=("$1" "$2"); shift 2 ;;
         --rain|--thunder) SHADOW_ARGS+=("$1" "$2"); shift 2 ;;
         --scene)  SCENE="$2"; shift 2 ;;

@@ -38,9 +38,23 @@ layout(location = 1) flat out float fragmentTextureLayer;
 // 物理上这也是对的：侧对光的薄片挡住的光正比于 |N·L|，趋于零。
 layout(location = 2) flat out float fragmentCasterFacing;
 
-// 薄投射者（玻璃那一层）的门槛。边框宽 1/16 格，要它在阴影图里盖住至少两个纹素
-// 才算得上信号——低于这个数，通断全看纹素中心落在边框内外，渲进去的是噪声。
-const float kThinCasterFrameBlocks = 1.0 / 16.0;
+// 薄投射者（玻璃那一层）的**退化**门槛。
+//
+// ★ RN-55 更正 RN-51/52。这个门槛判的只有一件事：**这个面整个塌成一条线了吗**。
+// 一个面在光空间的投影，沿它的面内投影方向被压缩 |N·L| 倍。面宽 1 格，所以投影宽度
+// 是 `1 x |N·L|` 格；要它还能盖住采样点，就得 `|N·L| >= kMinTexels x 纹素`。
+//
+// 从前这里除的是**边框宽 1/16**，那等于把边框在投影里的宽度当成 `1/16 x |N·L|`。
+// 错在：边框宽度的方向是**面内**的一个轴 W，它在投影里的压缩系数是
+// `sqrt(1 - (W·L)^2)`，与 `|N·L|` 是两回事——两者在数值上毫无关系。
+// 正午的南北向玻璃面 `|N·L| = 0.2696`，而它竖边框的投影宽度是**满的** 1/16 格
+// （默认档 8 个纹素）。旧门槛（8/16/24 档 = 0.25/0.5/0.75）因此把这个**信号**
+// 当噪声筛掉了：南北向的玻璃侧面阴影几乎全天消失，16/24 档更是一天都没有。
+//
+// 边框宽度够不够一个纹素是**另一条**判据，与朝向无关，由 RN-50「玻璃只进近段」
+// 管着（远段一个纹素正好是 1/16 格，任何朝向都撑不住）。两条判据正交，
+// 混成一个数正是上一轮的缺陷。
+const float kThinCasterFaceBlocks = 1.0;
 const float kThinCasterMinTexels = 2.0;
 
 const float kLocalScale = 17.0 / 65535.0;
@@ -63,14 +77,10 @@ void main() {
         vec3 lightForward = normalize(vec3(shadow.lightViewProj[0][2], shadow.lightViewProj[1][2],
                                            shadow.lightViewProj[2][2]));
         vec3 normal = kVertexNormals[int(inZNorm.y & 0xFFu)];
-        // RN-52：门槛随**这一级的纹素**走，不是一个常数。
-        //
-        // 边框宽 1/16 格，它挡光的投影宽度是 1/16 x |N·L|；要它算得上信号，就得盖住至少
-        // 两个纹素。于是 |N·L| >= 2 x 纹素 / (1/16)。默认档（纹素 1/128 格）这是 0.25，
-        // 16 格档 0.5，24 格档 0.75——**用户把它调到 24 之后光斑回来，正是因为这个数
-        // 从前写死在 0.25**：那时边框才盖住 1.5 个纹素，渲进去的仍是噪声。
+        // 门槛随**这一级的纹素**走（RN-52 立的这条是对的，错的是被除的那个宽度）。
+        // 面宽 1 格 ⇒ 三档分别是 0.0156 / 0.0312 / 0.0468——只有真正与光平行的面才落进去。
         float texelBlocks = sunShadowTexelBlocksOf(shadow.lightViewProj);
-        float minFacing = kThinCasterMinTexels * texelBlocks / kThinCasterFrameBlocks;
+        float minFacing = kThinCasterMinTexels * texelBlocks / kThinCasterFaceBlocks;
         fragmentCasterFacing = abs(dot(normal, lightForward)) < minFacing ? 0.0 : 1.0;
     }
 }

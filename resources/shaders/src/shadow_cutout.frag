@@ -14,10 +14,14 @@ layout(location = 0) in vec2 fragmentUv;
 layout(location = 1) flat in float fragmentTextureLayer;
 layout(location = 2) flat in float fragmentCasterFacing;
 
-// RN-51/52：薄投射者（玻璃那一层）侧对光到判不出来的程度就不投影了。
+// RN-51/52/55：薄投射者（玻璃那一层）与光**平行**到整个面塌成一条线时才不投影。
 //
 // 判断本身在 shadow.vert 里做完——它要用**这一级的纹素**（门槛随近段距离那一档变），
-// 而纹素是从矩阵推的。这里收到的是结论：0 = 这一面渲进去只会是噪声。
+// 而纹素是从矩阵推的。这里收到的是结论：0 = 这一面在阴影图里已经没有宽度了。
+//
+// ★ RN-55 把门槛从「边框宽 1/16」改回「面宽 1 格」，小了 16 倍。旧门槛判的是一个
+// 与它无关的量（见 shadow.vert 那段），代价是玻璃与玻璃板的侧面阴影在 16/24 档
+// 一天都没有。
 
 layout(binding = 1) uniform sampler2DArray blockTextures;
 
