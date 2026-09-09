@@ -305,15 +305,20 @@ OptionsWindow optionsWindowFor(const HudLayout& layout, PageId page, std::size_t
         return OptionsWindow{};
     }
     const auto list = optionsListOf(layout);
+    const auto groups = optionsGroupsOf(page);
     const std::size_t rows = optionsRowCountOf(page);
-    return OptionsWindow{std::min(firstRow, list.maximumFirstRow(rows)), list.visibleRows()};
+    // ★ 变高版：分节行高 13 / 31，不是 25。等高公式在有分节行的页面上会算错
+    //   "一屏装几行"与"最多滚到哪"，症状是滚到底还差一行、或滚过头露出空白。
+    const std::size_t clamped = std::min(firstRow, optionsMaxFirstRow(groups, list.height, rows));
+    return OptionsWindow{clamped, optionsVisibleRows(groups, clamped, list.height, rows)};
 }
 
 std::size_t optionsMaximumFirstRow(const HudLayout& layout, PageId page) {
     if (pageLayoutKind(page) != PageLayoutKind::HeaderFooterList) {
         return 0U;
     }
-    return optionsListOf(layout).maximumFirstRow(optionsRowCountOf(page));
+    const auto list = optionsListOf(layout);
+    return optionsMaxFirstRow(optionsGroupsOf(page), list.height, optionsRowCountOf(page));
 }
 
 UiRect optionsScrollbarTrack(const HudLayout& layout) {
@@ -373,11 +378,15 @@ UiRect frontendButtonRect(const HudLayout& layout, PageId page, std::size_t inde
         // ★ `index` 是**已装配**控件的序号，不是设置项的序号：滚上去的那些项根本没被
         //   造出来，因此不占序号。这条换算只有 `optionsScrolledSlot` 一处，装配侧
         //   （PageBuilder 的 `optionVisible`）与它走的是同一遍循环。
-        const auto slot =
-            optionsScrolledSlot(optionsGroupsOf(page), optionsFirstRow, index);
+        const auto groups = optionsGroupsOf(page);
+        const auto slot = optionsScrolledSlot(groups, optionsFirstRow, index);
+        // ★ y 走**像素偏移**，不是"可见行号 × 25"：分节行高 13 / 31，等高公式会让
+        //   分节之后的每一个控件都偏。`slot.row` 是可见行号，加回 firstRow 才是绝对行号。
+        const int rowTop = optionsRowTop(groups, slot.row + optionsFirstRow) -
+                           optionsRowTop(groups, optionsFirstRow);
         // addBig 的一项铺满行宽（310），addSmall 的一项是双列里的一格（150）。
-        return fbRect(layout, slot.big ? optionsBigCell(list, slot.row)
-                                       : optionsSmallCell(list, slot.row, slot.column));
+        return fbRect(layout, slot.big ? optionsBigCellAt(list, rowTop)
+                                       : optionsSmallCellAt(list, rowTop, slot.column));
     }
     case PageLayoutKind::HeaderFooterForm: {
         // 26.1 CreateWorldScreen：页眉标题、内容区表单、页脚 Create/Cancel 两个按钮。

@@ -565,12 +565,19 @@ inline void buildPageInto(Page& page, PageId id, const MenuBuildContext& ctx,
         // 「实验性内容」那一页没有了：雨、粒子、雨碰撞缓存是**渲染表现**项，26.1 里它们
         // 的同类（`particles`）就在这一屏；太阳阴影与动态光源归新的高级图形页。
         case PageId::VideoSettings: {
-            // 这一屏装不下：只装配落在滚动窗口里的项（`optionVisible`）。
-            // 页脚的 Done 不在窗口里——它是三段式版面的页脚，永远在。
+            // UI-6f（D15）：装配顺序照 26.1 `VideoSettingsScreen.addOptions()`——
+            // **Display 在前，Quality 在后**，两组各自由一个 addHeader 领起。
+            // 分节行不产生控件（它由绘制侧直接画），所以这里只装配设置项。
             detail::OptionCursor add{ctx, id};
-            // preset 大按钮：本作没有预设机制，置灰。少了它版面比 26.1 短一行。
+            // ── Display ──
+            // 26.1 这一格的 addBig 是全屏分辨率；本作的 Resolution 按钮对应它。
+            add([&] { addButton(page, ctx, WidgetId::Resolution, cb.cycleResolution); });
+            add([&] { addOptionButton(page, ctx, WidgetId::FrameRateLimit, cb); });
+            add([&] { addOptionButton(page, ctx, WidgetId::Vsync, cb); });
+            add([&] { addButton(page, ctx, WidgetId::GuiScale, cb.cycleGuiScale); });
+            // ── Quality ──
+            // preset 大按钮：本作没有预设机制，置灰。
             add([&] { addButton(page, ctx, WidgetId::GraphicsPreset, nullptr, /*enabled=*/false); });
-            // 第一组：画质
             add([&] { addSlider(page, ctx, WidgetId::ViewDistance, cb.viewDistance); });
             add([&] { addSlider(page, ctx, WidgetId::SimulationDistance, cb.simulationDistance); });
             add([&] { addOptionButton(page, ctx, WidgetId::SmoothLighting, cb); });
@@ -582,11 +589,6 @@ inline void buildPageInto(Page& page, PageId id, const MenuBuildContext& ctx,
             add([&] { addOptionButton(page, ctx, WidgetId::RainMode, cb); });
             add([&] { addOptionButton(page, ctx, WidgetId::RainCollisionCache, cb); });
             add([&] { addButton(page, ctx, WidgetId::AdvancedGraphics, cb.openAdvancedGraphics); });
-            // 第二组：窗口
-            add([&] { addOptionButton(page, ctx, WidgetId::FrameRateLimit, cb); });
-            add([&] { addOptionButton(page, ctx, WidgetId::Vsync, cb); });
-            add([&] { addButton(page, ctx, WidgetId::GuiScale, cb.cycleGuiScale); });
-            add([&] { addButton(page, ctx, WidgetId::Resolution, cb.cycleResolution); });
             addButton(page, ctx, WidgetId::Done, cb.doneOptions);
             break;
         }
