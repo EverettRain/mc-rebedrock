@@ -16,6 +16,7 @@
 #include <cstdint>
 #include <filesystem>
 #include <set>
+#include <span>
 #include <string>
 #include <string_view>
 #include <utility>
@@ -28,6 +29,15 @@ struct SaveSummary final {
     std::string displayName;
     std::uint64_t seed = 0U;
     std::int64_t lastPlayedUnixSeconds = 0;
+    // Whether this world has a thumbnail on disk (`<world>/icon.png`, the same
+    // file name and location vanilla uses, so a JC import/export needs no
+    // translation). It is *derived*, never stored in level.properties: the
+    // listing decides it by asking whether the file exists, which is one stat
+    // per world. Deliberately not the image itself — a 64x64 RGBA thumbnail is
+    // 16 KB, and a listing that decoded every world's icon would read (and
+    // throw away) all of them just to draw a screen that may show none. The
+    // consumer loads the pixels from iconPath() only for the entries it draws.
+    bool hasIcon = false;
 };
 
 // A save's self-description: which build wrote it (META-1, the equivalent of
@@ -397,6 +407,33 @@ class SaveRepository final {
     void rename(const std::string& identifier, std::string displayName) const;
     // Permanently removes the world directory and everything inside it.
     void remove(const std::string& identifier) const;
+
+    // Where this world's thumbnail lives: `<root>/<identifier>/icon.png`, the
+    // vanilla name and location. Pure path arithmetic — it never touches the
+    // disk, so it answers for a world that does not exist yet (the caller that
+    // is about to write one needs the path before the file is there) and for
+    // one that has no icon. Ask SaveSummary::hasIcon, not this, for existence.
+    [[nodiscard]] std::filesystem::path iconPath(std::string_view identifier) const;
+
+    // Writes `rgba` (width*height*4 bytes, RGBA8, top row first) as this
+    // world's icon.png, replacing any previous one. Returns false and writes
+    // nothing when the identifier is unsafe, the world directory does not
+    // exist, either dimension is zero (or too large to be an int), the span's
+    // length is not exactly width*height*4, or the disk write fails.
+    //
+    // The size check is not defensive politeness: the encoder is handed a raw
+    // pointer plus w/h/channels and reads w*h*4 bytes from it, so a span that
+    // is short for its declared dimensions is an out-of-bounds read, not a
+    // wrong picture. Rejecting it here is the only place that can see both the
+    // length and the dimensions.
+    //
+    // The file is written to a sibling `.tmp` and renamed into place, the same
+    // way world.dat and level.properties are installed, so an interrupted
+    // write cannot leave a half-encoded icon.png behind for the listing to
+    // find.
+    [[nodiscard]] bool writeIcon(std::string_view identifier,
+                                 std::span<const std::uint8_t> rgba,
+                                 std::uint32_t width, std::uint32_t height);
 
     [[nodiscard]] static std::string sanitizeDisplayName(std::string name);
     // 显示名 -> 文件夹名的那一步 slug 化，**不含**去重后缀。

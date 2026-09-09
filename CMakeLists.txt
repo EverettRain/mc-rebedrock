@@ -3283,6 +3283,23 @@ if(BUILD_TESTING)
     )
     add_test(NAME save_repository COMMAND mc_rebedrock_save_repository_test)
 
+    # The save thumbnail's storage layer (icon.png). It reads its own output back
+    # through the game's decoder, so it needs ImageData and the stb translation
+    # unit behind it — the same way image_data_test names them (they live in the
+    # executable target, not the runtime library).
+    add_executable(mc_rebedrock_save_icon_test
+        tests/save_icon_test.cpp
+        src/assets/ImageData.cpp
+        src/assets/StbImageImplementation.cpp
+    )
+    target_link_libraries(mc_rebedrock_save_icon_test PRIVATE mc_rebedrock_runtime)
+    target_include_directories(mc_rebedrock_save_icon_test PRIVATE
+        src
+        "${glm_SOURCE_DIR}"
+        "${stb_SOURCE_DIR}"
+    )
+    add_test(NAME save_icon COMMAND mc_rebedrock_save_icon_test)
+
     if(MC_REBEDROCK_BUILD_TOOLS)
         # migration_diag <world-dir> loads a real old-format world, saves it
         # (rewriting to the current format) and reloads to prove the migration lost

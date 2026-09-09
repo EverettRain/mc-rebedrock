@@ -8,6 +8,13 @@
 #include "persistence/SaveStream.hpp"
 #include "persistence/UnknownBlockTable.hpp"
 
+// The world thumbnail is a PNG, and miniz — already vendored and already part of
+// this library for StructureTemplate's gzip reader — carries a PNG encoder
+// (tdefl_write_image_to_png_file_in_memory_ex). No new dependency, and no new
+// link edge either: pulling in stb_image_write instead would have added an
+// unresolved symbol to every headless target that links this runtime library.
+#include <miniz.h>
+
 #include "world/BlockRegistry.hpp"
 #include "world/DayNightCycle.hpp"
 #include "world/WorldConstants.hpp"
@@ -49,6 +56,13 @@ std::uint64_t SaveRepository::regionReadCount() {
 namespace {
 
 constexpr std::array<std::uint8_t, 8> kMagic{'M', 'C', 'R', 'B', 'S', 'A', 'V', 'E'};
+// The world thumbnail's file name, matching vanilla byte for byte so a world
+// copied either way across the JC boundary keeps its icon. One constant, because
+// three places name the file: iconPath(), writeIcon(), and the two listings that
+// decide SaveSummary::hasIcon by asking whether it exists.
+constexpr std::string_view kIconFileName = "icon.png";
+// RGBA8: four bytes per pixel, and the channel count the PNG encoder is told.
+constexpr std::uint64_t kIconChannels = 4U;
 // Format 8 moved `randomTickSpeed` into a fixed header field; format 9 replaces
 // that with a sparse, self-describing GameRules block after the chests section;
 // format 10 appends the /spawnpoint block; format 11 appends the weather block;
@@ -3006,7 +3020,17 @@ std::vector<SaveSummary> SaveRepository::list() const {
         const auto metadata = entry.path() / "level.properties";
         if (!std::filesystem::is_regular_file(metadata)) continue;
         try {
-            saves.push_back(summaryFromProperties(metadata, identifier));
+            auto summary = summaryFromProperties(metadata, identifier);
+            // One stat per world, no decode: the listing reports *whether* there
+            // is a thumbnail, never its 16 KB of pixels. The error_code overload
+            // keeps a permission failure on one world from throwing the whole
+            // listing away (an unreadable icon just reads as "no icon"), and it
+            // is deliberately a separate error_code from the iteration's — that
+            // one is the loop's break condition.
+            std::error_code iconError;
+            summary.hasIcon =
+                std::filesystem::is_regular_file(entry.path() / kIconFileName, iconError);
+            saves.push_back(std::move(summary));
         } catch (const std::exception&) {
             // A damaged world remains isolated and does not hide healthy saves.
         }
@@ -3032,6 +3056,10 @@ std::vector<WorldSummary> SaveRepository::worldSummaries() const {
             // it can be badged FromNewerVersion, not silently dropped.
             summary.summary =
                 summaryFieldsFromProperties(readProperties(metadata), identifier);
+            // Same existence-only probe list() does; see the note there.
+            std::error_code iconError;
+            summary.summary.hasIcon =
+                std::filesystem::is_regular_file(entry.path() / kIconFileName, iconError);
             // Lazy: only world.dat's header, never the region chunks.
             summary.versionHeader = readVersionHeaderOnly(entry.path() / "world.dat");
             summary.compatibility = classifyCompatibility(summary.versionHeader.worldVersion);
@@ -3395,6 +3423,83 @@ void SaveRepository::remove(const std::string& identifier) const {
     if (error) throw std::runtime_error("Unable to delete save: " + error.message());
 }
 
+std::filesystem::path SaveRepository::iconPath(std::string_view identifier) const {
+    // Path arithmetic only — no stat, no throw. Callers need the answer before
+    // the file (or even the world) exists; existence is SaveSummary::hasIcon's
+    // job. It goes through root_ and operator/ rather than string concatenation
+    // so the separator stays the platform's, exactly like every other path this
+    // class hands out.
+    return root_ / std::filesystem::path{identifier} / std::filesystem::path{kIconFileName};
+}
+
+bool SaveRepository::writeIcon(std::string_view identifier,
+                               std::span<const std::uint8_t> rgba,
+                               std::uint32_t width, std::uint32_t height) {
+    // An identifier that is not a plain folder name would let `..` walk the
+    // write out of the save root. Every other mutating entry point throws on
+    // this; here the contract is a bool, so it joins the other refusals.
+    if (!safeIdentifier(identifier)) return false;
+    if (width == 0U || height == 0U) return false;
+    // The encoder takes int dimensions. Refusing anything that would not
+    // survive the narrowing keeps the cast below from being the thing that
+    // decides what gets encoded.
+    constexpr auto kMaximumDimension =
+        static_cast<std::uint32_t>(std::numeric_limits<int>::max());
+    if (width > kMaximumDimension || height > kMaximumDimension) return false;
+    // The load-bearing check. The encoder is handed rgba.data() plus w/h/4 and
+    // reads exactly that many bytes from it, so a span shorter than its declared
+    // dimensions is an out-of-bounds read — not a wrong-looking picture. This is
+    // the only place that can see both the length and the dimensions, so it is
+    // the only place that can refuse. Computed in u64 (both operands widened
+    // before multiplying) so a large width*height cannot wrap into a small
+    // number that a short span happens to match.
+    const std::uint64_t expectedBytes =
+        static_cast<std::uint64_t>(width) * static_cast<std::uint64_t>(height) * kIconChannels;
+    if (static_cast<std::uint64_t>(rgba.size()) != expectedBytes) return false;
+
+    const auto directory = root_ / std::filesystem::path{identifier};
+    std::error_code error;
+    // No world, no icon: writeIcon must not conjure a save directory, or a typo
+    // in the identifier would leave a stray folder holding one orphaned PNG that
+    // the listing then skips (it has no level.properties) and nobody deletes.
+    if (!std::filesystem::is_directory(directory, error)) return false;
+
+    std::size_t encodedBytes = 0U;
+    void* encoded = tdefl_write_image_to_png_file_in_memory_ex(
+        rgba.data(), static_cast<int>(width), static_cast<int>(height),
+        static_cast<int>(kIconChannels), &encodedBytes, MZ_DEFAULT_LEVEL, MZ_FALSE);
+    if (encoded == nullptr) return false;
+
+    const auto target = directory / std::filesystem::path{kIconFileName};
+    const std::filesystem::path temporary{target.string() + ".tmp"};
+    bool written = false;
+    {
+        std::ofstream output{temporary, std::ios::binary | std::ios::trunc};
+        if (output) {
+            output.write(reinterpret_cast<const char*>(encoded),
+                         static_cast<std::streamsize>(encodedBytes));
+            written = static_cast<bool>(output);
+        }
+    }
+    mz_free(encoded);
+    if (!written) {
+        std::error_code ignored;
+        std::filesystem::remove(temporary, ignored);
+        return false;
+    }
+    // Rename into place, the same install step world.dat and level.properties
+    // use: a crash mid-encode leaves the previous icon intact rather than a
+    // truncated PNG that the listing would happily report as present.
+    std::error_code renameError;
+    std::filesystem::rename(temporary, target, renameError);
+    if (renameError) {
+        std::error_code ignored;
+        std::filesystem::remove(temporary, ignored);
+        return false;
+    }
+    return true;
+}
+
 namespace {
 
 // Formats 1 through 16, where every section sat at a fixed offset and each new
@@ -3697,6 +3802,13 @@ SaveGame SaveRepository::load(const std::string& identifier) const {
     const auto directory = root_ / identifier;
     SaveGame game;
     game.summary = summaryFromProperties(directory / "level.properties", identifier);
+    {
+        // An opened world reports its thumbnail the same way the listing does,
+        // so a SaveGame's summary never contradicts the list entry it came from.
+        std::error_code iconError;
+        game.summary.hasIcon =
+            std::filesystem::is_regular_file(directory / kIconFileName, iconError);
+    }
     std::ifstream input{directory / "world.dat", std::ios::binary | std::ios::ate};
     if (!input) throw std::runtime_error("Unable to open world.dat");
     const auto length = input.tellg();
