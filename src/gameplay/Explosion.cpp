@@ -69,13 +69,19 @@ std::vector<world::BlockPos> explodedPositions(const world::World& world,
                     if (!world::isWorldYInRange(cellY)) {
                         break;
                     }
-                    const float resistance =
-                        explosion_detail::blockExplosionResistance(world, cellX, cellY, cellZ);
-                    if (resistance > 0.0F) {
-                        remaining -= (resistance + 0.3F) * 0.3F;
+                    // vanilla: `getBlockExplosionResistance` returns empty ONLY for
+                    // air-with-no-fluid; every other block pays, including the
+                    // ones whose resistance is zero (grass, flowers, torches).
+                    // Keying on "resistance > 0" instead let a ray cross a
+                    // flower bed or a torch for free, which is exactly the
+                    // "spreads too far sideways" this had: the ground floor of a
+                    // world is full of zero-resistance decoration.
+                    const auto cellBlock = world.block(cellX, cellY, cellZ);
+                    if (cellBlock != world::Block::Air) {
+                        remaining -=
+                            (world::blockDefinition(cellBlock).blastResistance + 0.3F) * 0.3F;
                     }
-                    if (remaining > 0.0F &&
-                        world.block(cellX, cellY, cellZ) != world::Block::Air) {
+                    if (remaining > 0.0F && cellBlock != world::Block::Air) {
                         if (seen.insert(packCell(cellX, cellY, cellZ)).second) {
                             result.push_back({cellX, cellY, cellZ});
                         }

@@ -60,6 +60,12 @@ int main() {
     // Vitals are separate: hurting the second player leaves the primary's
     // health untouched.
     TestHost host;
+    // EXP-1 put a creative-invulnerability gate on hurtPlayer (Player#
+    // isInvulnerableTo), and ServerPlayer's default mode is Creative — so a
+    // test about two players' vitals being separate has to say it is testing
+    // survival players, which is what it always meant.
+    p1.gameMode = gameplay::GameMode::Survival;
+    p2.gameMode = gameplay::GameMode::Survival;
     const float p1Health = p1.vitals.health();
     const float p2Health = p2.vitals.health();
     assert(session.hurtPlayer(second, gameplay::DamageType::Fall, 5.0F, host));

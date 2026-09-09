@@ -205,6 +205,34 @@ int main() {
         assert(refused.action == mc::gameplay::ItemUseAction::Nothing);
     }
 
+    // ---------------------------------------------------------------------
+    // 6) ★ The field bug: a bed placed from a LEGACY stack (a block stack whose
+    //    item pointer is null, which is what the creative catalog and the tests
+    //    hand out) went down the single-cell path, because that path only knew
+    //    about the door. A lone bed half then failed its own support rule
+    //    (BedOtherHalf: no partner), so nothing was placed and nothing said why.
+    // ---------------------------------------------------------------------
+    {
+        World world = floored();
+        mc::world::PlacementContext context{};
+        context.clickedBlock = {8, 0, 7};
+        context.placePosition = {8, 1, 7};
+        context.clickedFace = BlockOrientation::Up;
+        context.lookDirection = {0.0F, 0.0F, -1.0F};
+        const mc::gameplay::ItemStack legacy{Block::RedBed, 1U, nullptr};
+        const auto result = mc::gameplay::legacyBlockStackUseOn(legacy, world, context);
+        assert(result.action == mc::gameplay::ItemUseAction::PlaceBed);
+        assert(result.state.block() == Block::RedBed);
+        assert(!result.state.isBedHead());
+        assert(result.state.orientation() == BlockOrientation::North);
+        // The live-item path agrees with it, which is the property that was
+        // silently untrue.
+        const auto viaItem =
+            mc::gameplay::itemUseOn(mc::gameplay::blockItemFor(Block::RedBed), world, context);
+        assert(viaItem.action == result.action);
+        assert(viaItem.state == result.state);
+    }
+
     std::cout << "bed_test passed\n";
     return 0;
 }

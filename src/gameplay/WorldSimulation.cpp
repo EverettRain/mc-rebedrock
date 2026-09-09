@@ -2130,10 +2130,16 @@ std::vector<BlockChange> WorldSimulation::tick(
         }
         if (--tnt.fuse <= 0) {
             tnt.removed = true;
-            // PrimedTnt#explode: `level.explode(this, x, y + height/2, z, 4.0F, MOB)`.
-            pendingExplosions_.push_back({{tnt.position.x, tnt.position.y + 0.49F,
-                                           tnt.position.z},
-                                          4.0F});
+            // PrimedTnt#explode: `level.explode(this, x, y + height/2, z, 4.0F)`,
+            // where vanilla's `y` is the entity's FEET and its height is 0.98 —
+            // so the centre is half a block above the floor of the cell.
+            //
+            // This entity stores its CENTRE (the falling block beside it does
+            // too), so the blast centre is the position as-is. Adding another
+            // half-height on top of a centre put the blast a full block above
+            // the floor, which threw every downward ray half a block further out
+            // and made the crater visibly wider than vanilla's.
+            pendingExplosions_.push_back({tnt.position, 4.0F});
         }
     }
     std::erase_if(primedTnt_, [](const PrimedTntEntity& tnt) { return tnt.removed; });
