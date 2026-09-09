@@ -21,6 +21,23 @@ namespace mc::ui {
 // 26.1 `Font.lineHeight = 9`。字形本身高 8，行与行之间因此多一像素的呼吸。
 // 两者是**不同的量**：垂直居中用的是字形高 8，行距用的是 9。
 inline constexpr float kFontLineHeight = 9.0F;
+
+// 聊天每一行占的高度。
+//
+// ★ UI-6f（D7 更正）：26.1 `ChatComponent.getLineHeight()`（:430-432）算的是
+//     (int)(9.0 * (options.chatLineSpacing + 1.0))
+//   而 `chatLineSpacing` 的默认值是 **0**，所以默认行距就是 **9** —— 与字形行高相同。
+//   本作从前用 11（底衬高度与行步进两处），那是自造值。
+//
+// ★ 偏差表 D7 原本写的是"多行文本行距三处各写各的（聊天 11 / 提示框 10 / 字体 9）"，
+//   暗示三者该统一。**那个描述是错的**：vanilla 里它们本来就是三个不同的量——
+//   `Font.lineHeight = 9`（字形行高）、`ClientTextTooltip.getHeight` 恒为 10
+//   （提示框每行的占位，比字形多一像素的呼吸）、聊天 `9 × (spacing + 1)`。
+//   真正的缺陷只有一条：聊天那个 11。
+//
+// 本作没有 `chatLineSpacing` 这个选项（26.1 在 §7.10 聊天设置里，那一屏本作没有），
+// 所以这里就是 spacing = 0 的那一档。等聊天设置屏做出来时，它应该变成一个函数。
+inline constexpr float kChatLineHeight = kFontLineHeight;
 inline constexpr float kFontGlyphHeight = 8.0F;
 
 // 文字阴影：偏移 +1/+1 逻辑像素，颜色 = 主色 × 0.25。

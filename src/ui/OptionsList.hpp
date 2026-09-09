@@ -79,6 +79,26 @@ static_assert(kOptionsSmallWidth + 10 == kOptionsColumnOffset,
             static_cast<float>(kOptionsWidgetHeight)};
 }
 
+// 变高版的格位：按**像素偏移**定位，而不是"第几个可见行 × 25"。
+//
+// ★ 有了分节行（13 / 31）之后，`scrollListRow(list, visibleIndex)` 那条
+//   `y = list.y + index * rowHeight` 就不成立了——分节行之后的每一个控件都会偏。
+//   偏移由 `optionsRowTop` 累加得出，这两个函数是同一条几何的两端。
+[[nodiscard]] constexpr UiRect optionsSmallCellAt(const ScrollList& list, int rowTop,
+                                                  int column) {
+    return {static_cast<float>(list.rowLeft() + column * kOptionsColumnOffset),
+            static_cast<float>(list.y + rowTop + kListEntryPadding),
+            static_cast<float>(kOptionsSmallWidth),
+            static_cast<float>(kOptionsWidgetHeight)};
+}
+
+[[nodiscard]] constexpr UiRect optionsBigCellAt(const ScrollList& list, int rowTop) {
+    return {static_cast<float>(list.rowLeft()),
+            static_cast<float>(list.y + rowTop + kListEntryPadding),
+            static_cast<float>(kOptionsBigWidth),
+            static_cast<float>(kOptionsWidgetHeight)};
+}
+
 // 一个设置项落在第几行、第几列，以及它是不是**独占整行**的那种。
 struct OptionsSlot final {
     std::size_t row = 0;
@@ -229,6 +249,30 @@ struct OptionsRowInfo final {
     return rows;
 }
 
+// 最多能滚到第几行——**变高版**。
+//
+// ★ 等高时它是 `总行数 - 视口/行高`，一句除法；有了分节行（13 / 31）就不行了：
+//   最后一屏能装几行取决于**末尾那几行各自多高**。从末尾往回累加到装不下为止，
+//   剩下的就是起点。用等高公式的症状是"滚到底还差一行"或者"滚过头露出空白"。
+[[nodiscard]] constexpr std::size_t optionsMaxFirstRow(std::span<const OptionsGroup> groups,
+                                                       int viewportHeight,
+                                                       std::size_t totalRows) {
+    if (viewportHeight <= 0) {
+        return totalRows;
+    }
+    int used = 0;
+    std::size_t rows = 0;
+    for (std::size_t index = totalRows; index > 0U; --index) {
+        const int height = optionsRowAt(groups, index - 1U).height;
+        if (used + height > viewportHeight) {
+            break;
+        }
+        used += height;
+        ++rows;
+    }
+    return totalRows > rows ? totalRows - rows : 0U;
+}
+
 [[nodiscard]] constexpr OptionsSlot optionsGroupedSlot(std::span<const OptionsGroup> groups,
                                                        std::size_t index) {
     std::size_t row = 0;
@@ -276,22 +320,35 @@ struct OptionsRowInfo final {
 inline constexpr std::array<OptionsGroup, 2> kControlsHubGroups{
     {{2U, OptionsGroupKind::Small}, {7U, OptionsGroupKind::Small}}};
 
-// UI-6d：视频设置的分组，按 26.1 `VideoSettingsScreen.addOptions()` 的调用顺序。
-//   1. preset 大按钮独占一行（26.1 的 `list.addBig`）
-//   2. 画质：11 项（本作有后端的那些，加上跳进高级图形的按钮）
-//   3. 窗口：4 项
-// 26.1 那三次 addSmall 分别是 17 / 7 / 4 项；本作只补有后端的，所以项数少，
-// **但分组结构照抄**——那两道行边界是语义的，不是排版凑出来的。
-inline constexpr std::array<OptionsGroup, 3> kVideoSettingsGroups{
-    {{1U, OptionsGroupKind::Big}, {11U, OptionsGroupKind::Small}, {4U, OptionsGroupKind::Small}}};
+// UI-6f（D15）：视频设置，照 26.1 `VideoSettingsScreen.addOptions()` 的**真实**结构：
+//   addHeader(DISPLAY)     → addBig(fullscreenResolution) → addSmall(7 项)
+//   addHeader(QUALITY)     → addBig(graphicsPreset)       → addSmall(17 项)
+//   addHeader(PREFERENCES) → addSmall(4 项)
+//
+// ★ 三件事在这一轮之前都是错的（偏差 D15）：**缺三个分节行**、**分节顺序反了**
+//   （26.1 是 Display 在前）、以及**第一个大按钮是全屏分辨率而不是预设**。
+//   UI-6d 立项时我给出的分组表还没查到分节行，那是事后更正的事实。
+//
+// 本作只补有后端的项，所以每组的项数比 vanilla 少，**但分组结构与顺序照抄**：
+//   Display    : addBig(Resolution) + addSmall(FrameRateLimit, Vsync, GuiScale)
+//   Quality    : addBig(GraphicsPreset 置灰) + addSmall(11 项)
+//   Preferences: 26.1 那 4 项（自动保存指示器 / 暗角 / 攻击指示器 / 区块淡入）
+//                本作**一个都没有后端**，整组不放——不做点不动的空壳（已登记 D16）。
+inline constexpr std::array<OptionsGroup, 6> kVideoSettingsGroups{{
+    {0U, OptionsGroupKind::Header, "options.video.display.header", "Display"},
+    {1U, OptionsGroupKind::Big},
+    {3U, OptionsGroupKind::Small},
+    {0U, OptionsGroupKind::Header, "options.video.quality.header", "Quality"},
+    {1U, OptionsGroupKind::Big},
+    {11U, OptionsGroupKind::Small},
+}};
 
-// UI-6e：音乐与声音，照 26.1 `SoundOptionsScreen.addOptions()` 的五次调用：
+// UI-6e ②：音乐与声音，照 26.1 `SoundOptionsScreen.addOptions()` 的五次调用：
 //   addBig(MASTER)                          → 1 项，独占一行
 //   addSmall(其余 9 类)                      → 9 项，5 行（最后一项落单）
 //   addBig(soundDevice)                     → 1 项（本作置灰）
 //   addSmall(showSubtitles, directionalAudio) → 2 项
 //   addSmall(musicFrequency, musicToast)      → 2 项（本作两个都置灰）
-// 共 9 行 > 内容区的 6 行，所以这一屏**必然要滚**——UI-6d 的滚动在这里第二次被用上。
 inline constexpr std::array<OptionsGroup, 5> kSoundSettingsGroups{
     {{1U, OptionsGroupKind::Big},
      {9U, OptionsGroupKind::Small},
@@ -302,10 +359,8 @@ inline constexpr std::array<OptionsGroup, 5> kSoundSettingsGroups{
 // UI-6e ④：Options 主页。26.1 `OptionsScreen.init()`：
 //   副页眉一行两项：fov 滑块 + （世界内 Difficulty / 世界外 Online）
 //   内容区一张 2 列 GridLayout，十个跳转按钮
-// ★ 本作把副页眉那两项**放进内容区第一行**（26.1 在页眉里）。理由：本作的
-//   `HeaderAndFooterLayout` 页眉是固定 33 高，装不下一行控件；把页眉改成可变高
-//   是另一块工作。已登记为偏差。
-// 项数因此恒定 12（不随"在不在世界里"变），行数恒定 6 —— 正好装满内容区，不用滚。
+// ★ 本作把副页眉那两项放进内容区第一行（26.1 在页眉里，偏差 D23）。
+// 项数恒定 12（不随"在不在世界里"变），行数恒定 6。
 inline constexpr std::array<OptionsGroup, 2> kOptionsHubGroups{
     {{2U, OptionsGroupKind::Small}, {10U, OptionsGroupKind::Small}}};
 

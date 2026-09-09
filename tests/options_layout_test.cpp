@@ -462,14 +462,22 @@ void testScrollbarUsesRowCountSourceGuard() {
 //   所以除了对 `big` 断言之外没有任何东西会红。
 void testBigGroups() {
     const auto video = mc::ui::optionsGroupsOf(mc::ui::PageId::VideoSettings);
-    // 第 0 项是 Preset：独占行 0、左列、big
-    const auto preset = mc::ui::optionsGroupedSlot(video, 0);
-    CHECK(preset == (mc::ui::OptionsSlot{0U, 0, true}));
-    // 第 1 项（Render Distance）从**新行**起，而且是小格
-    CHECK(mc::ui::optionsGroupedSlot(video, 1) == (mc::ui::OptionsSlot{1U, 0, false}));
-    CHECK(mc::ui::optionsGroupedSlot(video, 2) == (mc::ui::OptionsSlot{1U, 1, false}));
-    // 1 + ceil(11/2) + ceil(4/2) = 1 + 6 + 2 = 9 行
-    CHECK(mc::ui::optionsRowCountOf(mc::ui::PageId::VideoSettings) == 9U);
+    // ★ UI-6f（D15）：结构已按 26.1 `VideoSettingsScreen.addOptions()` 重排——
+    //   **Display 在前**（addHeader → addBig(全屏分辨率) → addSmall），
+    //   Quality 在后（addHeader → addBig(预设) → addSmall）。
+    //   行 0 是分节行，所以第 0 个设置项落在**行 1**，不是行 0。
+    CHECK(mc::ui::optionsRowAt(video, 0).isHeader);
+    CHECK(mc::ui::optionsGroupedSlot(video, 0) == (mc::ui::OptionsSlot{1U, 0, true}));  // 分辨率
+    CHECK(mc::ui::optionsGroupedSlot(video, 1) == (mc::ui::OptionsSlot{2U, 0, false}));
+    CHECK(mc::ui::optionsGroupedSlot(video, 2) == (mc::ui::OptionsSlot{2U, 1, false}));
+    // 第二个分节行在行 4（1 header + 1 big + 2 small 行）
+    CHECK(mc::ui::optionsRowAt(video, 4).isHeader);
+    CHECK(mc::ui::optionsRowAt(video, 4).height == 31);   // 其后的 header 高 31
+    CHECK(mc::ui::optionsRowAt(video, 0).height == 13);   // 首个 header 高 13
+    // 预设是第 4 个设置项，落在第二个分节行的下一行，且是 big
+    CHECK(mc::ui::optionsGroupedSlot(video, 4) == (mc::ui::OptionsSlot{5U, 0, true}));
+    // 1 + 1 + 2 + 1 + 1 + 6 = 12 行
+    CHECK(mc::ui::optionsRowCountOf(mc::ui::PageId::VideoSettings) == 12U);
     CHECK(mc::ui::optionsCountOf(video) == 16U);
 
     // 一个**两项的 big 组**占两行，不是一行——big 与 small 的行数算法不同，
@@ -502,16 +510,14 @@ void testScrolledSlots() {
         check(mc::ui::optionsScrolledSlot(video, 0U, i) == mc::ui::optionsGroupedSlot(video, i),
               "firstRow = 0 must reduce to the unscrolled mapping", __LINE__);
     }
-    // 滚到第 3 行：行 0..2 的那些项（Preset + 行1 两项 + 行2 两项 = 5 项）不再装配，
-    // 于是装配序号 0 对应的是**第 5 个设置项**，画在可见行 0。
+    // 滚到第 3 行：行 0..2 的设置项不再装配，装配序号 0 对应的是第一个 row >= 3 的项。
     const auto first = mc::ui::optionsScrolledSlot(video, 3U, 0U);
     CHECK(first.row == 0U);
     CHECK(first.column == 0);
-    CHECK(mc::ui::optionsGroupedSlot(video, 5U).row == 3U);
-    // 装配序号 1 是同一可见行的右列
-    CHECK(mc::ui::optionsScrolledSlot(video, 3U, 1U) == (mc::ui::OptionsSlot{0U, 1, false}));
-    // 再往后一格换行
-    CHECK(mc::ui::optionsScrolledSlot(video, 3U, 2U).row == 1U);
+    // 行 3 是 GuiScale（Display 组的最后一项，落单占左列）
+    CHECK(mc::ui::optionsGroupedSlot(video, 3U).row == 3U);
+    // 装配序号 1 是预设（big，绝对行 5 → 可见行 2）
+    CHECK(mc::ui::optionsScrolledSlot(video, 3U, 1U) == (mc::ui::OptionsSlot{2U, 0, true}));
     // ★ 滚动之后**每一个已装配的控件**都落在第 0 行之后、列表之内——把 firstRow
     //   多减一次会让首行跑到列表之前（无符号下折成天文数字），少减一次会让末行跑出去。
     //   注意上界是**已装配数**，不是设置项总数：越过它得到的是"没有这个控件"的哨兵值，
@@ -540,9 +546,11 @@ void testVideoSettingsWindowedLayout() {
     const mc::ui::HudLayout layout{1280.0F, 720.0F, 3};
     const auto page = mc::ui::PageId::VideoSettings;
     const auto window = mc::ui::optionsWindowFor(layout, page, 0U);
-    // 内容区 174 逻辑像素 / 每行 25 = 6 行；总共 9 行，所以确实滚得动。
-    CHECK(window.rowCount == 6U);
-    CHECK(mc::ui::optionsMaximumFirstRow(layout, page) == 3U);
+    // ★ 变高：内容区 174 逻辑像素装得下 13+25+25+25+31+25+25 = 169 → **7 行**，
+    //   而不是 174/25 = 6 行。分节行 13 / 31 让"一屏几行"不再是一句除法。
+    CHECK(window.rowCount == 7U);
+    // 从末尾往回累加：25×6 = 150 ≤ 174，再加一行 175 > 174 → 最后一屏 6 行，起点 12-6 = 6
+    CHECK(mc::ui::optionsMaximumFirstRow(layout, page) == 6U);
 
     const auto build = [&](std::size_t firstRow) {
         mc::ui::MenuBuildContext ctx;
@@ -581,29 +589,44 @@ void testVideoSettingsWindowedLayout() {
         check(done.y >= footerTop - 0.5F, "Done stays in the footer", __LINE__);
     }
 
-    // ★ 具体控件落在具体格位上。这一条挡的是"布局侧拿装配序号当设置项序号"：
-    //   滚到第 3 行时 Advanced Graphics… 是第 11 个设置项、第 6 个**已装配**控件，
-    //   正确落点是可见行 3 的**左**列；照装配序号查表会查到第 6 个设置项，
-    //   那是可见行 3 的**右**列。行号相同、只有列不同——所以只量"没压到页脚"看不出来。
+    // ★ 具体控件落在具体格位上。这一条挡的是"布局侧拿装配序号当设置项序号"，
+    //   也挡"变高之后仍按可见行号 × 25 算 y"——两种错法都只动位置不动数量。
     {
-        const auto built = build(3U);
+        constexpr std::size_t kFirst = 3U;
+        const auto built = build(kFirst);
         const auto list = mc::ui::optionsScrollList(frame.contentBox());
-        const auto expect = [&](mc::ui::WidgetId id, std::size_t visibleRow, int column) {
+        const auto groups = mc::ui::optionsGroupsOf(page);
+        // 期望按**绝对行号**给，测试自己折算像素偏移——与生产代码同一条几何，
+        // 但表达的是"这个控件属于第几行"这个事实，不是抄它的算术。
+        const auto expect = [&](mc::ui::WidgetId id, std::size_t absoluteRow, int column,
+                                bool big) {
             for (const auto& widget : built) {
                 if (widget.debugId != static_cast<std::uint16_t>(id)) {
                     continue;
                 }
-                const auto cell = mc::ui::optionsSmallCell(list, visibleRow, column);
+                const int rowTop = mc::ui::optionsRowTop(groups, absoluteRow) -
+                                   mc::ui::optionsRowTop(groups, kFirst);
+                const auto cell = big ? mc::ui::optionsBigCellAt(list, rowTop)
+                                      : mc::ui::optionsSmallCellAt(list, rowTop, column);
                 check(widget.rect.x == cell.x * 3.0F, "widget is in the wrong column", __LINE__);
                 check(widget.rect.y == cell.y * 3.0F, "widget is in the wrong row", __LINE__);
                 return;
             }
             check(false, "the expected widget was not assembled", __LINE__);
         };
-        expect(mc::ui::WidgetId::AdvancedGraphics, 3U, 0);
-        expect(mc::ui::WidgetId::FrameRateLimit, 4U, 0);
-        expect(mc::ui::WidgetId::Vsync, 4U, 1);
-        expect(mc::ui::WidgetId::Resolution, 5U, 1);
+        // 窗口从行 3 起：GuiScale(行3) / 分节行(行4，无控件) / 预设(行5,big) / 画质项(行6起)
+        expect(mc::ui::WidgetId::GuiScale, 3U, 0, false);
+        expect(mc::ui::WidgetId::GraphicsPreset, 5U, 0, true);
+        expect(mc::ui::WidgetId::ViewDistance, 6U, 0, false);
+        expect(mc::ui::WidgetId::SimulationDistance, 6U, 1, false);
+        // ★ Display 组的项在行 2，已经滚出窗口——不该被装配
+        bool sawVsync = false;
+        for (const auto& widget : built) {
+            if (widget.debugId == static_cast<std::uint16_t>(mc::ui::WidgetId::Vsync)) {
+                sawVsync = true;
+            }
+        }
+        CHECK(!sawVsync);
     }
 
     // ★ 走**生产路径**量 Preset 的宽度。testBigGroups 只证了 optionsBigCell 比
@@ -631,27 +654,24 @@ void testVideoSettingsWindowedLayout() {
     }
 
     // 滚过头必须被钳住：窗口起点不会越过最后一屏，否则整张列表滚成空白。
-    CHECK(mc::ui::optionsWindowFor(layout, page, 99U).firstRow == 3U);
-    CHECK(mc::ui::optionsWindowFor(layout, page, 3U).firstRow == 3U);
+    CHECK(mc::ui::optionsWindowFor(layout, page, 99U).firstRow == 6U);
+    CHECK(mc::ui::optionsWindowFor(layout, page, 6U).firstRow == 6U);
 
-    // 滚到底那一屏必须**露出最后一项**（Resolution）——窗口算错一行的典型症状是
-    // 滚到底了还差一行进不来。
-    const auto bottom = build(3U);
-    bool sawResolution = false;
-    for (const auto& widget : bottom) {
-        if (widget.debugId == static_cast<std::uint16_t>(mc::ui::WidgetId::Resolution)) {
-            sawResolution = true;
+    // 滚到底那一屏必须**露出最后一项**（Advanced Graphics…，Quality 组的末项）——
+    // 窗口算错一行的典型症状就是滚到底了还差一行进不来。
+    const auto bottom = build(mc::ui::optionsMaximumFirstRow(layout, page));
+    const auto has = [&](mc::ui::WidgetId id) {
+        for (const auto& widget : bottom) {
+            if (widget.debugId == static_cast<std::uint16_t>(id)) {
+                return true;
+            }
         }
-    }
-    CHECK(sawResolution);
-    // 反过来，滚到底之后 Preset 不该还在（它在行 0）
-    bool sawPreset = false;
-    for (const auto& widget : bottom) {
-        if (widget.debugId == static_cast<std::uint16_t>(mc::ui::WidgetId::GraphicsPreset)) {
-            sawPreset = true;
-        }
-    }
-    CHECK(!sawPreset);
+        return false;
+    };
+    CHECK(has(mc::ui::WidgetId::AdvancedGraphics));
+    // 反过来，滚到底之后 Display 组与预设都不该还在（它们在前几行）
+    CHECK(!has(mc::ui::WidgetId::Resolution));
+    CHECK(!has(mc::ui::WidgetId::GraphicsPreset));
 }
 
 // --- 13b. 哪些三段式页面真的滚得动 --------------------------------------------
@@ -1055,10 +1075,26 @@ void testOptionsHeaderRows() {
     // ★★ 回归护栏：**没有标题行时，一切必须与等高时逐字节相同**。
     //    这一条挡的是"为了做变高，把等高情形也算歪了"——那会让 Controls、
     //    高级图形、以及今天的视频设置三屏同时错位，而它们本来是好的。
-    for (const auto page : {mc::ui::PageId::Controls, mc::ui::PageId::VideoSettings,
-                            mc::ui::PageId::AdvancedGraphics}) {
+    // ★ 只对**没有分节行**的页面断言等高——VideoSettings 自 UI-6f 起有了三个
+    //   分节行（13 / 31 高），它不再属于这一类。判据是**动态问出来的**，
+    //   不是手写一张"哪几页是等高的"清单：那种清单正是护栏 27 说的那种，
+    //   加一页带分节行的屏幕时它会静默说假话。
+    for (std::size_t raw = 0; raw < static_cast<std::size_t>(mc::ui::PageId::Count); ++raw) {
+        const auto page = static_cast<mc::ui::PageId>(raw);
+        if (mc::ui::pageLayoutKind(page) != mc::ui::PageLayoutKind::HeaderFooterList) {
+            continue;
+        }
         const auto groups = mc::ui::optionsGroupsOf(page);
         const std::size_t rows = mc::ui::optionsRowCountOf(page);
+        bool anyHeader = false;
+        for (std::size_t row = 0; row < rows; ++row) {
+            if (mc::ui::optionsRowAt(groups, row).isHeader) {
+                anyHeader = true;
+            }
+        }
+        if (anyHeader) {
+            continue;
+        }
         for (std::size_t row = 0; row <= rows; ++row) {
             check(mc::ui::optionsRowTop(groups, row) ==
                       static_cast<int>(row) * mc::ui::kOptionsRowHeight,
@@ -1073,6 +1109,26 @@ void testOptionsHeaderRows() {
             check(byPixels == byDivision,
                   "equal-height visible-row count must match plain division", __LINE__);
         }
+    }
+
+    // ★ **最多滚到第几行**同样不能用等高公式，但要区分两者需要**分节行落进最后一屏**：
+    //   VideoSettings 的两个分节行都在前面，最后一屏全是 25 高的行，于是等高与变高
+    //   恰好给出同一个数——拿它做夹具，把 `optionsMaxFirstRow` 换成等高公式也不会红。
+    //   （实测：sabotage 没抓住，不是断言漏了，是夹具分不开。）
+    //   这里造一个末尾带分节行的形状来分开它们。
+    {
+        constexpr std::array<mc::ui::OptionsGroup, 3> kHeaderNearEnd{{
+            {5U, K::Small},                                  // 行 0..2
+            {0U, K::Header, "x", "X"},                       // 行 3，高 31
+            {1U, K::Small},                                  // 行 4
+        }};
+        CHECK(mc::ui::optionsGroupedRowCount(kHeaderNearEnd) == 5U);
+        // 视口 100：从末尾往回 25 + 31 + 25 = 81 ≤ 100，再加一行 106 > 100 → 3 行，
+        // 起点 5 - 3 = 2。等高公式会算成 5 - 100/25 = 1 —— 差一行，症状是"滚过头"。
+        CHECK(mc::ui::optionsMaxFirstRow(kHeaderNearEnd, 100, 5U) == 2U);
+        const mc::ui::ScrollList equalHeight{0, 0, 320, 100, mc::ui::kOptionsRowWidth,
+                                             mc::ui::kOptionsRowHeight};
+        CHECK(equalHeight.maximumFirstRow(5U) == 1U);   // 等高公式给的是别的数
     }
 
     // 变高时"一屏装几行"取决于从哪一行开始看——这正是不能用除法的原因。

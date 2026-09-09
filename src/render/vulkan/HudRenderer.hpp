@@ -1718,6 +1718,48 @@ class HudRenderer final {
         drawScrollbar(commandBuffer, layout, list, total, first);
     }
 
+    // UI-6f（D15）：设置列表里的**分节标题行**（26.1 `OptionsList.addHeader`）。
+    //
+    // ★ 它**不是控件**：纯文本、不可交互、焦点不该停在上面，所以它不进 ui::Page，
+    //   由这里直接画——与绑定列表的分类标题行同一做法。
+    //   行高不是 25：首个 13、其后 31（`OptionsList.java:52-56` 的
+    //   `paddingTop + lineHeight + 4`），那 18 的留白属于标题行本身。
+    void drawOptionsSectionHeaders(VkCommandBuffer commandBuffer, const ui::HudLayout& layout,
+                                   float scale) const {
+        const auto page = menuSystem.pageStack.current();
+        const auto groups = ui::optionsGroupsOf(page);
+        const auto frame =
+            ui::headerAndFooterLayout(layout.logicalWidth(), layout.logicalHeight());
+        const auto list = ui::optionsScrollList(frame.contentBox());
+        const std::size_t total = ui::optionsRowCountOf(page);
+        const auto window = ui::optionsWindowFor(layout, page, menuSystem.optionsListFirstIndex);
+        if (window.rowCount == 0U) {
+            return;
+        }
+        for (std::size_t offset = 0; offset < window.rowCount; ++offset) {
+            const std::size_t row = window.firstRow + offset;
+            if (row >= total) {
+                break;
+            }
+            const auto info = ui::optionsRowAt(groups, row);
+            if (!info.isHeader) {
+                continue;
+            }
+            const std::string text = translated(info.headerKey, info.headerFallback);
+            // 标题在这一行里**底端对齐**（26.1 的 HeaderEntry 把文字贴在条目下缘，
+            // 上面那段 paddingTop 是与前一节之间的留白）。
+            const int top = static_cast<int>(list.y) +
+                            ui::optionsRowTop(groups, row) - ui::optionsRowTop(groups, window.firstRow);
+            const float y =
+                static_cast<float>(top + info.height - ui::kOptionsHeaderLineHeight -
+                                   ui::kOptionsHeaderPadding) * scale;
+            drawHudText(commandBuffer, text,
+                        (static_cast<float>(swapchainExtent.width) -
+                         hudTextWidth(text, scale)) * 0.5F,
+                        y, scale, {1.0F, 1.0F, 1.0F, 1.0F});
+        }
+    }
+
     // UI-6e ③：资源包选择的两栏。26.1 `PackSelectionScreen`：两张 200 宽的列表，
     // 各自有标题（`pack.available.title` / `pack.selected.title`）与底衬。
     //
@@ -2175,10 +2217,8 @@ class HudRenderer final {
             drawListBackground(commandBuffer, box, scale);
             drawListSeparators(commandBuffer, box, scale);
             drawKeyBindCategoryRows(commandBuffer, layout, scale);
-        } else if (currentPage == ui::PageId::ResourcePacks) {
-            drawResourcePackColumns(commandBuffer, layout, scale);
-        } else if (headerAndFooterPage) {
-            // 设置列表也是 AbstractSelectionList：同一套底衬 + 上下两道分隔线。
+        } else if (headerAndFooterPage &&
+                   ui::pageLayoutKind(currentPage) == ui::PageLayoutKind::HeaderFooterList) {
             const auto frameBox =
                 ui::headerAndFooterLayout(layout.logicalWidth(), layout.logicalHeight())
                     .contentBox();
@@ -2186,6 +2226,9 @@ class HudRenderer final {
                                         frameBox.width * scale, frameBox.height * scale};
             drawListBackground(commandBuffer, box, scale);
             drawListSeparators(commandBuffer, box, scale);
+            drawOptionsSectionHeaders(commandBuffer, layout, scale);
+        } else if (currentPage == ui::PageId::ResourcePacks) {
+            drawResourcePackColumns(commandBuffer, layout, scale);
         }
         const std::size_t buttonCount = menuButtonCount();
         const auto firstButton =
@@ -3031,11 +3074,11 @@ class HudRenderer final {
                 }
                 drawHudQuad(commandBuffer,
                             {2.0F * scale, messageY, hudTextWidth(*line, scale) + 4.0F * scale,
-                             11.0F * scale},
+                             ui::kChatLineHeight * scale},
                             {0.0F, 0.0F, 0.0F, 0.55F});
                 drawHudText(commandBuffer, *line, 4.0F * scale, messageY + scale, scale, color,
                             false);
-                messageY -= 11.0F * scale;
+                messageY -= ui::kChatLineHeight * scale;
             }
         }
         if (!chatOpen) {

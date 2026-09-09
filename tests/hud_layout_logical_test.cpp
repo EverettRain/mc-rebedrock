@@ -96,8 +96,10 @@ void testGuiScale() {
 // 也就是说本轮的改动在整除档下一像素都不该动。
 void testHudAnchorsEvenScale() {
     const mc::ui::HudLayout layout{1280.0F, 720.0F, 2};
-    // x = (640-182)/2 = 229 -> 458；y = 360-22-4 = 334 -> 668
-    EXPECT_RECT(layout.hotbarBackground(), 458.0F, 668.0F, 364.0F, 44.0F);
+    // x = (640-182)/2 = 229 -> 458；y = 360-22 = 338 -> 676
+    // ★ UI-6f（D5）：**贴底**，没有边距（26.1 `Gui.java:554` 的 `guiHeight() - 22`）。
+    //   从前留 4 逻辑像素，那是自造值。
+    EXPECT_RECT(layout.hotbarBackground(), 458.0F, 676.0F, 364.0F, 44.0F);
     // x = (640-176)/2 = 232 -> 464；y = (360-166)/2 = 97 -> 194
     EXPECT_RECT(layout.inventoryPanel(), 464.0F, 194.0F, 352.0F, 332.0F);
     // x = (640-195)/2 = 222 -> 444；y = (360-136)/2 = 112 -> 224
@@ -110,14 +112,15 @@ void testHudAnchorsEvenScale() {
 void testHudAnchorsOddScale() {
     const mc::ui::HudLayout layout{1280.0F, 720.0F, 3};
     // ★ x = (427-182)/2 = 122 -> 366。旧算法：(1280-546)/2 = 367。
-    //    y = 240-22-4 = 214 -> 642。
-    EXPECT_RECT(layout.hotbarBackground(), 366.0F, 642.0F, 546.0F, 66.0F);
+    //    y = 240-22 = 218 -> 654（D5：贴底，无边距）。
+    EXPECT_RECT(layout.hotbarBackground(), 366.0F, 654.0F, 546.0F, 66.0F);
     // 槽位是从锚点派生的，因此自动落回整数网格
-    EXPECT_RECT(layout.hotbarSlot(0), 366.0F + 9.0F, 642.0F + 9.0F, 48.0F, 48.0F);
+    EXPECT_RECT(layout.hotbarSlot(0), 366.0F + 9.0F, 654.0F + 9.0F, 48.0F, 48.0F);
     // x = (427-176)/2 = 125 -> 375；y = (240-166)/2 = 37 -> 111
     EXPECT_RECT(layout.inventoryPanel(), 375.0F, 111.0F, 528.0F, 498.0F);
-    // 经验条贴在快捷栏上方 7 逻辑像素
-    EXPECT_RECT(layout.experienceBar(), 366.0F, 642.0F - 21.0F, 546.0F, 15.0F);
+    // 经验条贴在快捷栏上方 7 逻辑像素。★ 它**相对快捷栏**定位，所以 D5 那一个常量
+    //   一改，它自动跟着下移——这正是当初就该这么写的理由。
+    EXPECT_RECT(layout.experienceBar(), 366.0F, 654.0F - 21.0F, 546.0F, 15.0F);
     // 聊天输入：x = 2 -> 6；y = 240-14 = 226 -> 678；w = 427-4 = 423 -> 1269
     EXPECT_RECT(layout.chatInput(), 6.0F, 678.0F, 1269.0F, 36.0F);
 }
