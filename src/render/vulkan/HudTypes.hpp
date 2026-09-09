@@ -294,9 +294,13 @@ static_assert(sizeof(ItemPush) <= 128U, "Item push constants must fit Vulkan's g
 // a bare `std::array<glm::vec4, 3>` — the fields had no names on the C++ side at
 // all, so nothing could hold them against the shader's.
 struct OutlinePush final {
-    // The block's cell corner, in world coordinates.
+    // The block's cell corner, in world coordinates. RN-45: `.w` carries the line
+    // width in pixels — the widening happens in the vertex shader and it needs a
+    // number, and this struct's three w components were the free space
+    // （HudPush 那条「已满 128 字节，只能用未赋义分量」的同一个办法）。
     glm::vec4 blockOrigin;
     // The line's two endpoints, in block-local (0..1) coordinates.
+    // RN-45: `.w` carries the framebuffer size (start = width, end = height).
     glm::vec4 segmentStart;
     glm::vec4 segmentEnd;
 };
@@ -308,12 +312,17 @@ static_assert(sizeof(OutlinePush) <= 128U,
 // `outlineEdgesOf` in block-local coordinates and is not transformed here — the
 // shader adds the origin, exactly as the box form did.
 [[nodiscard]] inline OutlinePush makeOutlineSegmentPush(glm::ivec3 blockPosition,
-                                                        const OutlineSegment& segment) {
+                                                        const OutlineSegment& segment,
+                                                        float framebufferWidth,
+                                                        float framebufferHeight) {
     return OutlinePush{
         glm::vec4{static_cast<float>(blockPosition.x), static_cast<float>(blockPosition.y),
-                  static_cast<float>(blockPosition.z), 0.0F},
-        glm::vec4{segment.start, 0.0F},
-        glm::vec4{segment.end, 0.0F},
+                  static_cast<float>(blockPosition.z),
+                  // RN-45：线宽是**帧缓冲宽度**的函数，不是一个常数——vanilla 的
+                  // Window.getAppropriateLineWidth。单一源在 BlockOutlineGeometry.hpp
+                  outlineLineWidthPixels(framebufferWidth)},
+        glm::vec4{segment.start, framebufferWidth},
+        glm::vec4{segment.end, framebufferHeight},
     };
 }
 

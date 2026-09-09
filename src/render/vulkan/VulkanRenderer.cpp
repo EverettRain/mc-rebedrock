@@ -6935,7 +6935,10 @@ struct VulkanRenderer::Impl final : public gameplay::SimulationHost {
 
         auto outlineVertexInput = vkStructure<VkPipelineVertexInputStateCreateInfo>(
             VK_STRUCTURE_TYPE_PIPELINE_VERTEX_INPUT_STATE_CREATE_INFO);
-        inputAssembly.topology = VK_PRIMITIVE_TOPOLOGY_LINE_LIST;
+        // RN-45：描边不再是 GL 线。vanilla 把每条棱在顶点着色器里撑成屏幕空间四边形
+        // （rendertype_lines.vsh），于是线与面都是三角形、取同一批采样点——掠射的棱
+        // 不再被自己所在的面吃掉，MSAA 下也不再是只盖住一个采样点的半透明细丝
+        inputAssembly.topology = VK_PRIMITIVE_TOPOLOGY_TRIANGLE_LIST;
         rasterization.cullMode = VK_CULL_MODE_NONE;
         depthStencil.depthWriteEnable = VK_FALSE;
         depthStencil.depthCompareOp = VK_COMPARE_OP_LESS_OR_EQUAL;

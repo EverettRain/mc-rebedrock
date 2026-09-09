@@ -2716,12 +2716,15 @@ class WorldRenderer final {
                     // 就地拼一个 vec4 数组正是「声明分散到每个调用点」的形状，
                     // hud_push_constant_test 拦的就是它
                     const render::OutlinePush outlinePush = render::makeOutlineSegmentPush(
-                        targetedBlock->block, outlineEdges.segments[i]);
+                        targetedBlock->block, outlineEdges.segments[i],
+                        static_cast<float>(swapchainExtent.width),
+                        static_cast<float>(swapchainExtent.height));
                     vkCmdPushConstants(frame.commandBuffer, pipelines.outlinePipelineLayout,
                                        VK_SHADER_STAGE_VERTEX_BIT, 0, sizeof(outlinePush),
                                        &outlinePush);
-                    // 一条线段两个端点；着色器按 gl_VertexIndex 取，没有顶点缓冲，
-                    // 所以这个数与 BlockOutlineGeometry.hpp 必须同源
+                    // RN-45：一条棱是两个三角形、六个顶点；着色器按 gl_VertexIndex
+                    // 查表取端点与推向哪一侧，没有顶点缓冲，所以这个数与
+                    // BlockOutlineGeometry.hpp 必须同源
                     vkCmdDraw(frame.commandBuffer, render::kOutlineSegmentVertexCount, 1, 0, 0);
                 }
             }

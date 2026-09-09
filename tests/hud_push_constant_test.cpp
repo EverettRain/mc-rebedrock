@@ -436,10 +436,21 @@ int main() {
         // shader adds the origin, and doing it on both sides would double it.
         const mc::render::OutlineSegment segment{{0.25F, 0.5F, 0.75F}, {0.25F, 1.0F, 0.75F}};
         const mc::render::OutlinePush push =
-            mc::render::makeOutlineSegmentPush(glm::ivec3{12, -34, 56}, segment);
+            mc::render::makeOutlineSegmentPush(glm::ivec3{12, -34, 56}, segment, 3840.0F, 2160.0F);
         assert(glm::vec3(push.blockOrigin) == glm::vec3(12.0F, -34.0F, 56.0F));
         assert(glm::vec3(push.segmentStart) == segment.start);
         assert(glm::vec3(push.segmentEnd) == segment.end);
+        // RN-45：三个 w 分量装的是撑宽那一步要的两个数。线宽是**帧缓冲宽度的函数**，
+        // 不是常数——4K 上是 5 像素，1080p 上是 2.5
+        assert(push.blockOrigin.w == mc::render::outlineLineWidthPixels(3840.0F));
+        assert(push.blockOrigin.w == 5.0F);
+        assert(push.segmentStart.w == 3840.0F && push.segmentEnd.w == 2160.0F);
+        // ★ 宽与高不能写反：写反的症状是描边在非正方形窗口上按错误的比例变粗，
+        // 而正方形的出图（512x512）**看不出来**——这一条正是出图夹具的盲区
+        assert(push.segmentStart.w != push.segmentEnd.w);
+        const mc::render::OutlinePush narrow =
+            mc::render::makeOutlineSegmentPush(glm::ivec3{0, 0, 0}, segment, 1280.0F, 720.0F);
+        assert(narrow.blockOrigin.w == 2.5F && "1920 以下恒为 2.5 像素");
         // A start and an end that came out equal is a zero-length line: the two
         // fields have to stay two fields, which is what a copy-paste in the maker
         // would undo.

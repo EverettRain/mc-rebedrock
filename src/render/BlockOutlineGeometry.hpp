@@ -48,29 +48,39 @@
 
 namespace mc::render {
 
-// JE ProjectionType.PERSPECTIVE's layering transform at bias 1 scales the
-// camera-relative position by 1 - 1/4096. Applied in VIEW space, so the offset is
-// a fixed fraction of the distance to the eye and does not scale with the box —
-// which is the whole difference from the 1.02 it replaced.
+// RN-45：vanilla 的描边**不是线**。
 //
-// RN-39: the fraction here is 1/1024, four times vanilla's. The intent transfers;
-// the number does not. A line is rasterised at pixel centres that a triangle
-// covering the same edge samples half a pixel away, and on a grazing face half a
-// pixel of screen space is a depth step far larger than 1/4096 of the distance —
-// so the line loses those pixels to the very face it lies on. Measured off the
-// export (`--outline`), a stone cube's outline drew **824 of its 1194 line
-// pixels** at 1/4096: the edge facing the camera solid, the grazing ones dashed.
-// That is the flicker a player sees when they aim at a block.
+// `assets/minecraft/shaders/core/rendertype_lines.vsh`（26.1 资源包里的原文）把每条棱在
+// 顶点着色器里撑成一个**屏幕空间四边形**：顶点格式 POSITION_COLOR_NORMAL_LINE_WIDTH 的
+// Normal 装的是这条棱的方向（ShapeRenderer.renderShape 逐棱写），图元模式 LINES 的索引数
+// 是 `vertexCount / 4 * 6`（VertexFormat.java:210，与 QUADS 同一条）——每条棱 4 个顶点、
+// 两个三角形。着色器把起点与「起点 + 棱方向」各投影一次求出屏幕方向，取它的法向乘
+// `LineWidth / ScreenSize`，按 gl_VertexID 的奇偶推向两侧。
 //
-// 1/1024 saturates it (1187; 1/512 and 1/256 add three and six more, which is
-// antialiasing noise) and is still 0.004 blocks at four blocks out — under a
-// pixel, so the line does not visibly float, and a block in front still occludes
-// it (verified with a brick beside the target).
-inline constexpr float kOutlineViewShrink = 1.0F - 1.0F / 1024.0F;
+// 这一条同时解释了本作此前的两个症状：
+//
+//   * RN-39 的虚线——线光栅化取像素中心，而覆盖同一条棱的三角形在半个像素之外采样。
+//     vanilla 两边都是三角形，取的是同一批采样点。
+//   * MSAA 下仍旧闪（RN-44 §4）——一条 1 像素宽的 GL 线在 2x 靶上平均只盖住每像素两个
+//     采样点中的一个，resolve 之后是半透明的，亮度逐像素起伏。四边形有真实覆盖率。
+//
+// ★ 深度推近量也抄漏了一半。RN-39 抄的是 LayeringTransform.VIEW_OFFSET_Z_LAYERING →
+// `ProjectionType.PERSPECTIVE` 的 `scale(1 - bias/4096)`（ProjectionType.java:7），
+// 但 `rendertype_lines.vsh` **自己还有一份** `VIEW_SHRINK = 1 - 1/256`，两者**相乘**。
+// vanilla 实际约 1/241，我们当时落地的 1/1024 比它保守四倍——「我们比 vanilla 激进」
+// 那句记录是反的（RN-39 §4 已标注更正）。这里取两项的乘积，与 vanilla 逐位相同。
+inline constexpr float kOutlineViewShrink = (1.0F - 1.0F / 256.0F) * (1.0F - 1.0F / 4096.0F);
 
-// One line, two endpoints: the shader has no vertex buffer and picks its
-// endpoint off `gl_VertexIndex`, so a draw is exactly this many vertices.
-inline constexpr std::uint32_t kOutlineSegmentVertexCount = 2U;
+// 线宽（像素），`Window.getAppropriateLineWidth`：`max(2.5, 宽度 / 1920 * 2.5)`。
+// 1920 以下恒为 2.5 像素，再宽才按比例长——高 DPI 上描边不会退化成一根细丝。
+[[nodiscard]] inline constexpr float outlineLineWidthPixels(float framebufferWidth) {
+    const float scaled = framebufferWidth / 1920.0F * 2.5F;
+    return scaled > 2.5F ? scaled : 2.5F;
+}
+
+// 一条棱是两个三角形。着色器没有顶点缓冲，端点与推向哪一侧都按 gl_VertexIndex 查表，
+// 所以这个数与 block_outline.vert 的两张表必须同源。
+inline constexpr std::uint32_t kOutlineSegmentVertexCount = 6U;
 
 // An axis-aligned box in block-local (0..1) coordinates. Mirrors
 // `world::BlockBounds` without depending on it: this header is pure geometry and

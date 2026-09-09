@@ -344,6 +344,7 @@ void assertEdgeSetMatchesOracle(const std::vector<OutlineBox>& boxes, const Outl
 
 int main() {
     using mc::render::kOutlineSegmentVertexCount;
+    using mc::render::outlineLineWidthPixels;
     using mc::render::kOutlineViewShrink;
 
     // --- A single box is still its twelve edges, merged. -----------------------
@@ -503,9 +504,12 @@ int main() {
 
         // One draw is one line: the shader picks an endpoint off gl_VertexIndex,
         // so the vertex count and the two-field push block are the same fact.
-        assert(kOutlineSegmentVertexCount == 2U);
-        assert(body.find("gl_VertexIndex == 0 ? outline.segmentStart.xyz : outline.segmentEnd.xyz") !=
-               std::string::npos);
+        // RN-45：一条棱是两个三角形。六个顶点，端点与侧别都查表
+        assert(kOutlineSegmentVertexCount == 6U);
+        // 端点仍旧只有两个来源，两个都要被用到——把 mix 的两端写成同一个的症状是
+        // 整条棱塌成一个点，而画面上只是「少了一条线」
+        assert(body.find("outline.segmentStart.xyz") != std::string::npos &&
+               body.find("outline.segmentEnd.xyz") != std::string::npos);
         // The box form is gone in both directions: no corner tables to index and
         // no min/max to interpolate between.
         assert(source.find("boundsMin") == std::string::npos &&
@@ -520,11 +524,28 @@ int main() {
         // other literal there is a fudge factor applied to the position, which is
         // exactly what the 1.02 was; the one legitimate constant is named, lives
         // outside main() and is checked against the header below.
+        // RN-45 之后 main 里多了一个 0.0：那是 offset 方向的**符号判定**
+        // （vanilla 的 `if (lineOffset.x < 0.0)`），不是加在位置上的系数。四边形的两张
+        // 表仍旧在 main 外面，正是为了让这一条护栏保持它原来的力度
         for (const std::string& literal : floatLiterals(body)) {
-            assert(literal == "1.0" &&
+            assert((literal == "1.0" || literal == "0.0") &&
                    "block_outline.vert's main() grew a magic constant — the position must be the "
                    "segment endpoint, and the only nudge is the named view-space one");
         }
+        // 而撑宽那一步必须真的在：少了它这条棱就退回成一条 GL 线，RN-39 的虚线与
+        // RN-44 的 MSAA 半透明细丝会一起回来
+        assert(body.find("kQuadEndpoint[gl_VertexIndex]") != std::string::npos &&
+               "the endpoint must come from the quad table, not from gl_VertexIndex directly");
+        assert(body.find("kQuadSide[gl_VertexIndex]") != std::string::npos &&
+               "the vertex must be pushed to one side of the edge");
+        assert(body.find("normalize(") != std::string::npos &&
+               body.find("screenSize") != std::string::npos &&
+               "the offset is a SCREEN-space normal of the edge, so it needs the framebuffer size");
+        // 符号统一那一手不能少：没有它，一条棱两端的「正侧」可能相反，四边形拧成沙漏
+        assert(body.find("offset = -offset") != std::string::npos &&
+               "vanilla flips the offset so that the same side is chosen at both ends");
+        // 线宽必须来自推送常量而不是写死：它是帧缓冲宽度的函数
+        assert(body.find("outline.blockOrigin.w") != std::string::npos);
         assert(std::fabs(constantValue(source, "kViewShrink") - kOutlineViewShrink) < 1.0e-9F &&
                "the depth nudge must be JE's 1 - 1/4096, the same value the header states");
 
@@ -538,6 +559,12 @@ int main() {
         //
         // 下限写 1/2048 而不是 1/1024：留一档余量给将来调，但把「改回 vanilla 那个
         // 数字」挡在门外。
+        // RN-45：vanilla 的推近量是**两项的乘积**——rendertype_lines.vsh 自己的
+        // 1 - 1/256 乘 LayeringTransform 的 1 - 1/4096。RN-39 只抄到后一半，因此那句
+        // 「我们比 vanilla 激进四倍」是反的：1/1024 比 vanilla 保守。现在逐位对齐
+        assert(std::fabs(kOutlineViewShrink -
+                         (1.0F - 1.0F / 256.0F) * (1.0F - 1.0F / 4096.0F)) < 1.0e-9F &&
+               "the nudge must be vanilla's two terms multiplied, not just the layering one");
         assert(kOutlineViewShrink <= 1.0F - 1.0F / 2048.0F &&
                "the outline's depth nudge must be at least 1/2048 of the camera distance; "
                "vanilla's 1/4096 leaves the grazing edges dashed on this pipeline");
