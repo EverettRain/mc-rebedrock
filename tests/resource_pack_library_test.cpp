@@ -265,6 +265,54 @@ int main() {
         assert(resolvedStone(library.provider()) == "charlie");
     }
 
+    // --- 7b. 草稿与生效是**两份**：改草稿不动生效值，commit 才合流 ---
+    //
+    // ★ 这是这个类的核心语义（26.1 的"浏览时只改草稿，Done 才提交"），而它
+    //   **第一轮 sabotage 没被抓住**：让 setEnabled 顺手也改 active_，
+    //   上面那些断言一条都不会红——它们全在问草稿，没有一条问过生效值。
+    //   一个只读草稿的测试，对"草稿泄漏进生效值"是瞎的。
+    {
+        writeFile(selectionFile, "alpha\n");
+        ResourcePackLibrary library{selectionFile};
+        library.addPack(ResourcePackEntry{"alpha", "alpha", "", 84, 84, true, false}, alpha);
+        library.addPack(ResourcePackEntry{"bravo", "bravo", "", 84, 84, true, false}, bravo);
+        library.loadSelection();
+        const auto activeAtStart = library.activeOrder();
+        assert(activeAtStart == (std::vector<std::string>{"alpha"}));
+        assert(!library.draftDiffersFromActive());
+
+        // 改草稿：生效值**必须原封不动**
+        assert(library.setEnabled("bravo", true));
+        assert(library.draftOrder() == (std::vector<std::string>{"alpha", "bravo"}));
+        assert(library.activeOrder() == activeAtStart);
+        assert(library.draftDiffersFromActive());
+
+        // 调序同样只动草稿
+        assert(library.movePriorityUp("alpha"));
+        assert(library.activeOrder() == activeAtStart);
+
+        // 放弃草稿后两者重新一致
+        library.discardDraft();
+        assert(library.draftOrder() == activeAtStart);
+        assert(!library.draftDiffersFromActive());
+
+        // ★ 提交**不**把 active 合流过来——这一条反直觉，但它正是
+        //   `restartRequired` 能成立的原因：换包不做热重载，`activeOrder()` 的语义是
+        //   "**本次运行**实际生效的那一份"（启动时装配的），而 draft 是写进文件、
+        //   下次启动才生效的。commit 后若把 active 同步了，`draftDiffersFromActive()`
+        //   立刻变成假，`restartRequired` 就永远是 false，界面再也不会提示"重启后生效"。
+        //   （我第一次写这条测试时按"提交即合流"断言，红了才发现设计是对的、断言是错的。）
+        assert(library.setEnabled("bravo", true));
+        assert(library.draftDiffersFromActive());
+        const auto result = library.commit();
+        assert(result.written);
+        assert(result.restartRequired);
+        assert(library.activeOrder() == activeAtStart);      // 本次运行仍是老那份
+        assert(library.draftOrder() != library.activeOrder());
+        // 再次 commit 仍然说要重启（差异还在，直到进程重启）
+        assert(library.commit().restartRequired);
+    }
+
     // --- 8. 一个包的 overlay 只叠在这个包之上，不越过下一个包 ---
     {
         // alpha 带一个 overlay（覆盖 stone.png），bravo 叠在 alpha 之上。
