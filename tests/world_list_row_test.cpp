@@ -168,12 +168,21 @@ void testPageLayout() {
     CHECK(page[0].rect.width == 270.0F * scale);
     CHECK(page[0].rect.height == 36.0F * scale);
     CHECK(page[2].rect.y - page[0].rect.y == 36.0F * scale);
-    // 缩略图坐在它那一行里，位置就是 worldRowParts 给的那一块。
-    const auto expected =
-        mc::ui::worldRowParts(mc::ui::logicalWorldListRow(0U, layout)).icon;
-    CHECK(page[1].rect.x == expected.x * scale);
-    CHECK(page[1].rect.y == expected.y * scale);
-    CHECK(page[1].rect.width == 32.0F * scale);
+    // 缩略图坐在**它自己那一行**里，位置就是 worldRowParts 给的那一块。
+    //
+    // ★ 三行都要断言，不能只断言第 0 行：把 imageIndex 换成常量 0（"所有图标都画在
+    //   第一行"）时，第 0 行的矩形**一个字节都不变**——第一轮 sabotage 就是这么
+    //   漏过去的（REGULAR §5 的第一问，这一次是断言不够，不是夹具分辨不出）。
+    for (std::size_t row = 0; row < 3U; ++row) {
+        const auto expected =
+            mc::ui::worldRowParts(mc::ui::logicalWorldListRow(row, layout)).icon;
+        const auto& image = page[row * 2U + 1U];
+        CHECK(image.rect.x == expected.x * scale);
+        CHECK(image.rect.y == expected.y * scale);
+        CHECK(image.rect.width == 32.0F * scale);
+    }
+    // 相邻两行的图标正好差一个行高——"都画在第一行"会让这个差变成 0。
+    CHECK(page[3].rect.y - page[1].rect.y == 36.0F * scale);
     // 四个按钮仍然在底部带里，而且**行不占按钮序号**：第一个按钮是第 0 个按钮。
     CHECK(mc::ui::countPageButtons(page) == 4U);
     CHECK(page[6].rect.y ==
