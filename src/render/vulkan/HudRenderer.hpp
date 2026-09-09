@@ -941,43 +941,31 @@ class HudRenderer final {
                     color);
     }
 
+    // 一格槽位：悬停高亮 + 物品图标 + 耐久条 + 数量。
+    //
+    // ★ A1 删掉了两个死参数。`selected`（画一圈黄框、加深底色）与 `minecraftStyle`
+    //   （自造的深色格子底）：三个调用点**全部**传 `minecraftStyle = true`，于是那条
+    //   分支连同 `selected` 一起从来没有被执行过——快捷栏那个选中框是 HUD 层另画的
+    //   一张 24x24 精灵（`layout.hotbarSelection`），与这里无关。
+    //   ★ 它还骗过了一次 sabotage：把"选中框只属于玩家自己的槽"这条判断放宽，
+    //     箱子屏的图**一个像素都没变**——因为那个参数根本没人读。留着一个不被读的
+    //     参数，等于给未来的每一次 sabotage 发一张免检票。
     void drawHudSlot(VkCommandBuffer commandBuffer, const ui::UiRect& rectangle,
-                     const gameplay::ItemStack& stack, bool selected, bool hovered = false,
-                     bool minecraftStyle = false) const {
-        if (!minecraftStyle) {
-            const float border = selected ? 3.0F : 2.0F;
-            drawHudQuad(commandBuffer, rectangle,
-                        selected ? glm::vec4{0.96F, 0.82F, 0.28F, 0.96F}
-                                 : glm::vec4{0.08F, 0.08F, 0.10F, 0.88F});
-            const ui::UiRect inner{
-                rectangle.x + border,
-                rectangle.y + border,
-                rectangle.width - border * 2.0F,
-                rectangle.height - border * 2.0F,
-            };
-            drawHudQuad(commandBuffer, inner, {0.24F, 0.24F, 0.27F, 0.90F});
-        }
+                     const gameplay::ItemStack& stack, bool hovered = false) const {
         if (hovered) {
             drawHudQuad(commandBuffer, rectangle, {1.0F, 1.0F, 1.0F, 0.34F});
         }
-        if (!stack.empty()) {
-            const float iconInset = minecraftStyle ? 0.0F : rectangle.width * 0.16F;
-            const ui::UiRect icon{
-                rectangle.x + iconInset,
-                rectangle.y + iconInset,
-                rectangle.width - iconInset * 2.0F,
-                rectangle.height - iconInset * 2.0F,
-            };
-            drawHudItemIcon(commandBuffer, icon, stack);
-            drawDurabilityBar(commandBuffer, icon, stack);
-            if (stack.count > 1U) {
-                const std::string count = std::to_string(stack.count);
-                const float textScale =
-                    minecraftStyle ? rectangle.width / 16.0F : rectangle.width / 40.0F;
-                drawHudText(commandBuffer, count,
-                            rectangle.x + 17.0F * textScale - hudTextWidth(count, textScale),
-                            rectangle.y + 9.0F * textScale, textScale, {1.0F, 1.0F, 1.0F, 1.0F});
-            }
+        if (stack.empty()) {
+            return;
+        }
+        drawHudItemIcon(commandBuffer, rectangle, stack);
+        drawDurabilityBar(commandBuffer, rectangle, stack);
+        if (stack.count > 1U) {
+            const std::string count = std::to_string(stack.count);
+            const float textScale = rectangle.width / 16.0F;
+            drawHudText(commandBuffer, count,
+                        rectangle.x + 17.0F * textScale - hudTextWidth(count, textScale),
+                        rectangle.y + 9.0F * textScale, textScale, {1.0F, 1.0F, 1.0F, 1.0F});
         }
     }
 
@@ -3178,8 +3166,8 @@ class HudRenderer final {
             drawGuiSprite(commandBuffer, layout.hotbarSelection(uiFrameData_.selectedHotbarSlot),
                           0.0F, {0.0F, 22.0F, 24.0F, 24.0F});
             for (std::size_t index = 0; index < gameplay::Inventory::kHotbarSize; ++index) {
-                drawHudSlot(commandBuffer, layout.hotbarSlot(index), clientMirror.world().inventorySlots[index],
-                            index == uiFrameData_.selectedHotbarSlot, false, true);
+                drawHudSlot(commandBuffer, layout.hotbarSlot(index),
+                            clientMirror.world().inventorySlots[index]);
             }
             if (uiFrameData_.gameMode == gameplay::GameMode::Survival) {
                 drawSurvivalStatusBars(commandBuffer, layout);
@@ -3293,14 +3281,11 @@ class HudRenderer final {
             } else {
                 stack = gameplay::snapshotSlotStack(snapshot, widget.slotKind, widget.slotIndex);
             }
-            // 选中框只属于玩家自己的快捷栏那一格，无论它被画在哪一屏的哪个位置。
-            const bool selected = widget.slotKind == gameplay::SlotKind::PlayerInventory &&
-                                  widget.slotIndex == uiFrameData_.selectedHotbarSlot;
             const bool hovered = widget.rect.contains(cursor.x, cursor.y);
             if (hovered && !stack.empty()) {
                 hoveredStack = stack;
             }
-            drawHudSlot(commandBuffer, widget.rect, stack, selected, hovered, true);
+            drawHudSlot(commandBuffer, widget.rect, stack, hovered);
         }
         return hoveredStack;
     }
@@ -3334,8 +3319,7 @@ class HudRenderer final {
         const auto cursor = currentFramebufferCursor();
         const float size = 16.0F * layout.scale();
         drawHudSlot(commandBuffer,
-                    {cursor.x - size * 0.5F, cursor.y - size * 0.5F, size, size}, cursorStack,
-                    false, false, true);
+                    {cursor.x - size * 0.5F, cursor.y - size * 0.5F, size, size}, cursorStack);
     }
 
     // A1：生存模式的背包屏。
