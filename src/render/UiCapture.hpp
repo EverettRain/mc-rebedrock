@@ -101,6 +101,12 @@ struct UiCaptureOptions final {
     //   并且**抑制**提示框"。合成一个开关就再也拍不到"悬停且手上是空的"那一档，
     //   而那正是二十张常规基线图的那一档。
     bool carryStack = false;
+    // UI-9：带标签页的屏幕开在第几页（创建世界的 Game / World / More）。默认第 0 页。
+    //
+    // ★ 又一根**正交**的轴，理由与 `--ui-cursor` / `--ui-carry` 同：标签页是**屏幕
+    //   状态**，不是目标身份的一部分——把它做进目标表，26 个目标会立刻变成 28 个，
+    //   而真正变化的只有一屏。默认 0 保持现状，既有基线不动。
+    std::size_t tabIndex = 0U;
     std::filesystem::path root{"export/ui-preview"};
 
     [[nodiscard]] bool operator==(const UiCaptureOptions&) const = default;
@@ -156,6 +162,7 @@ struct UiCaptureOptions final {
 //   --ui-size  <宽>x<高>           默认 1280x720
 //   --ui-cursor <x>,<y>            光标钉在哪（帧缓冲像素，可为负）；默认画布外
 //   --ui-carry                     光标上拿着一堆东西（容器目标才有意义）
+//   --ui-tab <n>                   带标签页的屏幕开在第几页；默认 0
 //   --ui-out   <目录>              默认 export/ui-preview
 // 没有 --ui-shot 时返回 nullopt。参数写错直接抛，免得自动化跑着跑着悄悄拍了别的屏幕
 // 还当成功——这与 parseTestSceneArguments 的理由是同一条。

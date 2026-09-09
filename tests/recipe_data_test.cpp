@@ -138,7 +138,7 @@ void testBuiltinFloorResolves() {
     // MDL-1 added 24 (6 wooden fences + iron bars + plain pane + 16 stained
     // panes) and MDL-2 added 16 carpets — the whole family is craftable from
     // material this build already had, so none of them is survival-unreachable.
-    assert(crafting.size() == 43U + 16U + 8U + 1U + 2U + 24U + 16U);
+    assert(crafting.size() == 43U + 16U + 8U + 1U + 2U + 24U + 16U + 2U);
     assert(furnace.size() == 7U);
 
     // MDL-1/2 spot checks: the shapes and yields vanilla gives, not just a count.
@@ -149,6 +149,13 @@ void testBuiltinFloorResolves() {
     assert(pane != nullptr && pane->width == 3U && pane->height == 2U && pane->output.count == 16U);
     const CraftingRecipe* bars = findCrafting(crafting, "minecraft:iron_bars");
     assert(bars != nullptr && bars->output.count == 16U);
+    // MDL-3: snowballs pack into a block, a block cuts into six layers.
+    const CraftingRecipe* snowBlock = findCrafting(crafting, "minecraft:snow_block");
+    assert(snowBlock != nullptr && snowBlock->width == 2U && snowBlock->height == 2U &&
+           snowBlock->output.count == 1U);
+    const CraftingRecipe* snowLayers = findCrafting(crafting, "minecraft:snow");
+    assert(snowLayers != nullptr && snowLayers->width == 3U && snowLayers->height == 2U &&
+           snowLayers->output.count == 6U);
     const CraftingRecipe* carpet = findCrafting(crafting, "minecraft:white_carpet");
     assert(carpet != nullptr && carpet->width == 2U && carpet->height == 1U &&
            carpet->output.count == 3U);
@@ -355,7 +362,7 @@ void testOverlayMerges() {
     // 43+16 built-ins (EQ-0 armor) + 8 AR-CX utility (paper resolves + yellow_dye
     // (AR-CX2) + flint_and_steel (AR-CX4-b)) + 1 ENCH-2 (enchanting_table) +
     // demo_combo (oak_planks replaced in place, not added).
-    assert(table.crafting().size() == 43U + 16U + 8U + 1U + 2U + 40U + 1U);
+    assert(table.crafting().size() == 43U + 16U + 8U + 1U + 2U + 42U + 1U);
     assert(findCrafting(table.crafting(), "minecraft:demo_combo") != nullptr);
     assert(findCrafting(table.crafting(), "minecraft:oak_planks")->output.count == 8U);
     const FurnaceRecipe* smelt = findFurnace(table.furnace(), "minecraft:demo_smelt");
@@ -367,7 +374,7 @@ void testNoDataFallback() {
     RecipeTable table;
     MemoryProvider empty;
     table.load(empty);
-    assert(table.crafting().size() == 43U + 16U + 8U + 1U + 2U + 40U);
+    assert(table.crafting().size() == 43U + 16U + 8U + 1U + 2U + 42U);
     assert(table.furnace().size() == 7U);
     assert(findCrafting(table.crafting(), "minecraft:oak_planks")->output.count == 4U);
 }
@@ -384,7 +391,7 @@ void testUnknownIdentifierSkipped() {
              R"({"width":1,"height":1,"ingredients":[{"item":"minecraft:coal"}],
                  "output":"minecraft:no_such_block","count":1})");
     table.load(pack);
-    assert(table.crafting().size() == 43U + 16U + 8U + 1U + 2U + 40U); // neither bad recipe was added
+    assert(table.crafting().size() == 43U + 16U + 8U + 1U + 2U + 42U); // neither bad recipe was added
     assert(findCrafting(table.crafting(), "minecraft:bad_item") == nullptr);
     assert(findCrafting(table.crafting(), "minecraft:bad_output") == nullptr);
 }

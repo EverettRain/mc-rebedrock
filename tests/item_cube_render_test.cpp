@@ -93,6 +93,10 @@ using mc::world::rendersAsModelItem;
     // MDL-2：地毯的物品就是 `block/carpet` 那一片 1/16。
     case BlockModel::Carpet:
         return ItemModelKind::Carpet;
+    // MDL-3：雪层的物品是 `block/snow_height2`，2/16 的一片（不是地毯那 1/16，
+    // 也不是扁平贴图）。
+    case BlockModel::Layered:
+        return ItemModelKind::SnowLayer;
     }
     return ItemModelKind::None;
 }

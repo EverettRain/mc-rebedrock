@@ -1586,6 +1586,12 @@ struct VulkanRenderer::Impl final : public gameplay::SimulationHost {
         menuSystem.creativeTab =
             target.creativeCatalog ? ui::CreativeTab::BuildingBlocks : ui::CreativeTab::Inventory;
         menuSystem.creativeScrollRow = 0U;
+        // UI-9：带标签页的屏幕开在第几页。★ 与创造页签同理，它是**屏幕状态**，
+        // 所以在这里钉，不在夹具里。
+        menuSystem.createWorldTab =
+            uiCapture->tabIndex < static_cast<std::size_t>(ui::CreateWorldTab::Count)
+                ? static_cast<ui::CreateWorldTab>(uiCapture->tabIndex)
+                : ui::CreateWorldTab::Game;
         // 背包屏那口黑井里画的是玩家模型，而它的骨骼姿态要动画器**求值过一次**才绑定
         // （`drawPlayerPreview`：未绑定就一根骨骼也不画）。求值发生在 run() 的帧循环里，
         // 而截图通道根本不走那条循环——不喂这一下，每一张背包截图都只有 vanilla
@@ -4062,6 +4068,16 @@ struct VulkanRenderer::Impl final : public gameplay::SimulationHost {
             }
         };
         cb.confirmCreate = [this] { startNewWorld(); };
+        // UI-9：切标签页。★ 它只改**屏幕状态**——页面在下一次装配时自然变成另一页，
+        //   这里不去手工增删控件（那会立刻变成"同一事实两份表述"）。
+        cb.selectCreateWorldTab = [this](std::size_t tab) {
+            if (tab < static_cast<std::size_t>(ui::CreateWorldTab::Count)) {
+                menuSystem.createWorldTab = static_cast<ui::CreateWorldTab>(tab);
+                // 换页等于换了一批控件，焦点必须跟着重置：留在旧序号上会指到
+                // 新页的另一个控件（与 UI-6e 那次"换屏不重置滚动位置"同族）。
+                menuSystem.setFocus(ui::PageId::CreateWorld, ui::kNoWidget);
+            }
+        };
         cb.toggleCreateGameMode = [this] {
             menuSystem.createWorldGameMode =
                 menuSystem.createWorldGameMode == gameplay::GameMode::Survival
@@ -4322,9 +4338,19 @@ struct VulkanRenderer::Impl final : public gameplay::SimulationHost {
         ctx.optionsWindow =
             ui::optionsWindowFor(layout, page, menuSystem.optionsListFirstIndex);
         fillPackContext(ctx, layout);
+        // UI-9：与绘制侧读同一个标签页。两侧不一致的后果不是"少画一页"，而是
+        // **点 A 触发 B**：装配按一页造控件、布局按另一页给矩形。
+        ctx.createWorldTab = menuSystem.createWorldTab;
+        ctx.createWorldFolderHint = hud_.folderHintForCreateWorld();
+        ctx.createWorldTabLabels = {
+            hud_.translated("createWorld.tab.game.title", "Game"),
+            hud_.translated("createWorld.tab.world.title", "World"),
+            hud_.translated("createWorld.tab.more.title", "More"),
+        };
         ui::Page built;
         ui::buildPageInto(built, page, ctx, buildMenuCallbacks());
-        ui::layoutPageInto(built, page, layout, keyFirst, ctx.optionsWindow.firstRow);
+        ui::layoutPageInto(built, page, layout, keyFirst, ctx.optionsWindow.firstRow,
+                           menuSystem.createWorldTab);
         return built;
     }
 

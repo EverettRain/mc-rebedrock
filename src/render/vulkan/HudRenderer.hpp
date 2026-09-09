@@ -426,9 +426,22 @@ class HudRenderer final {
         drawContext_.optionsWindow =
             ui::optionsWindowFor(layout, pageId, menuSystem.optionsListFirstIndex);
         fillPackContext(drawContext_, layout);
+        // UI-9：创建世界开在哪一页，以及三个页签上的字。
+        // ★ **装配与布局必须读同一个值**——装配按当前页造控件、布局按同一页算矩形，
+        //   两边不同步就是"点 A 触发 B"（护栏 21）。所以它从这一处喂给两遍。
+        drawContext_.createWorldTab = menuSystem.createWorldTab;
+        // UI-10 / D20：世界名框那句提示框文案。与 SaveRepository::create 用的是**同一个**
+        // slug 函数，"预览说的"与"真正建出来的"因此不可能各自演化。重名时 create()
+        // 还会加 `-2` 这类后缀，那要摸磁盘，预览不做——26.1 那行提示同样只给基名。
+        drawContext_.createWorldFolderHint = folderHintForCreateWorld();
+        drawContext_.createWorldTabLabels = {
+            translated("createWorld.tab.game.title", "Game"),
+            translated("createWorld.tab.world.title", "World"),
+            translated("createWorld.tab.more.title", "More"),
+        };
         ui::buildPageInto(drawPage_, pageId, drawContext_, drawCallbacks_);
         ui::layoutPageInto(drawPage_, pageId, layout, keyFirst,
-                           drawContext_.optionsWindow.firstRow);
+                           drawContext_.optionsWindow.firstRow, menuSystem.createWorldTab);
         return drawPage_;
     }
 
@@ -1147,8 +1160,8 @@ class HudRenderer final {
             return translated("narrator.screen.title", "Title Screen");
         if (page == ui::PageId::WorldList)
             return translated("menu.singleplayer", "Singleplayer");
-        if (page == ui::PageId::CreateWorld)
-            return translated("selectWorld.create", "Create New World");
+        // ★ UI-9：创建世界那一屏不再画标题（标签栏取代了页眉），所以这里没有它的分支。
+        //   页脚那个 "Create New World" 是**按钮**，走 WidgetLabels，不走这里。
         if (page == ui::PageId::ConfirmDelete)
             return translated("selectWorld.deleteQuestion", "Delete World?");
         if (menuSystem.selectedWorldIndex < menuSystem.saveSummaries.size())
@@ -1179,7 +1192,8 @@ class HudRenderer final {
     //   往上堆的版面没有上界，而"顶出画布"不会让任何断言变红——只有截图看得见。
     [[nodiscard]] CreateWorldForm createWorldForm(const ui::HudLayout& layout) const {
         const auto form =
-            ui::createWorldLayout(layout.logicalWidth(), layout.logicalHeight());
+            ui::createWorldLayout(layout.logicalWidth(), layout.logicalHeight(),
+                                  menuSystem.createWorldTab);
         const float scale = layout.scale();
         const auto toFb = [scale](const ui::UiRect& rect) {
             return ui::UiRect{rect.x * scale, rect.y * scale, rect.width * scale,
@@ -1201,34 +1215,24 @@ class HudRenderer final {
         // vanilla 的 GRAY：预览与提示都是"这不是你输入的内容"，不该和正文一个亮度
         const glm::vec4 hintColour{0.66F, 0.66F, 0.66F, 1.0F};
 
-        drawHudText(commandBuffer, translated("selectWorld.enterName", "World Name"),
-                    form.nameField.x, form.nameLabelY, scale, labelColour);
-        TextFieldStyle nameStyle;
-        nameStyle.focused = !menuSystem.createWorldSeedFocused;
-        drawTextField(commandBuffer, form.nameField, scale, menuSystem.createWorldName,
-                      ui::kWorldNameFieldRules, nameStyle);
-
-        // 文件夹预览：与 SaveRepository::create 用的是同一个 slug 函数，"预览说的"与
-        // "真正建出来的"因此不可能各自演化。重名时 create() 还会加 `-2` 这类后缀，
-        // 那要摸磁盘，预览不做——26.1 那行提示同样只给基名
-        drawHudText(commandBuffer,
-                    formatTemplate(translated("selectWorld.targetFolder", "Will be saved in: %s"),
-                                   persistence::SaveRepository::slugForDisplayName(
-                                       menuSystem.createWorldName.value)),
-                    form.nameField.x, form.folderLineY, scale, hintColour);
-
-        drawHudText(commandBuffer, translated("selectWorld.enterSeed", "Seed"), form.seedField.x,
-                    form.seedLabelY, scale, labelColour);
-        TextFieldStyle seedStyle;
-        seedStyle.focused = menuSystem.createWorldSeedFocused;
-        // 空框里那行灰字就是 26.1 的 `seedEdit.setHint`。走 style.suggestion 这条
-        // 既有的"光标处灰字"通道，而不是再画一行文本：它已经处理了内边距与滚动
-        if (menuSystem.createWorldSeed.value.empty()) {
-            seedStyle.suggestion =
-                translated("selectWorld.seedInfo", "Leave blank for a random seed");
+        // ★ UI-10：**框本身已经是控件**（`drawPageTextField`），这里只剩它上面那行标签。
+        //   ★ 框下面那行"Will be saved in: …"的灰字**没有了**——26.1 是
+        //     `nameEdit.setTooltip(Tooltip.create(selectWorld.targetFolder))`，也就是
+        //     输入框的**悬停提示框**（偏差 D20）。文案在装配时喂进控件的 tooltip。
+        //
+        // ★ 按当前标签页跳过不属于它的那一组。判据是矩形本身为空
+        //   （`createWorldLayout` 对不属于本页的字段返回空矩形），而不是在这里再判
+        //   一次"现在是哪一页"——那会是同一事实的第二份表述，而症状是种子标签
+        //   画在 y=0（画布顶）上，压着标签栏。
+        static_cast<void>(hintColour);
+        if (form.nameField.width > 0.0F) {
+            drawHudText(commandBuffer, translated("selectWorld.enterName", "World Name"),
+                        form.nameField.x, form.nameLabelY, scale, labelColour);
         }
-        drawTextField(commandBuffer, form.seedField, scale, menuSystem.createWorldSeed,
-                      ui::kWorldNameFieldRules, seedStyle);
+        if (form.seedField.width > 0.0F) {
+            drawHudText(commandBuffer, translated("selectWorld.enterSeed", "Seed"),
+                        form.seedField.x, form.seedLabelY, scale, labelColour);
+        }
     }
 
     void drawWorldNameField(VkCommandBuffer commandBuffer, const ui::HudLayout& layout,
@@ -1568,6 +1572,10 @@ class HudRenderer final {
     void drawMenuWidgets(VkCommandBuffer commandBuffer, const ui::Page& widgets,
                          float scale) const {
         const auto cursor = currentFramebufferCursor();
+        // UI-10 / D20：光标下那个控件的提示框。**整页只有一个**，而且画在所有控件
+        // 之后——它要盖在最上层（26.1 `Screen.render` 把 tooltip 留到最后）。
+        // 26.1 的显示条件是"悬停，或键盘聚焦且上次输入来自键盘"，延迟默认为零。
+        const std::string* hoveredTooltip = nullptr;
         // UI-4：键盘焦点与鼠标悬停共用 highlighted 那张精灵（26.1 `AbstractButton:46`）
         const std::size_t focused = menuSystem.focusFor(menuSystem.pageStack.current());
         for (std::size_t widgetIndex = 0; widgetIndex < widgets.size(); ++widgetIndex) {
@@ -1576,6 +1584,15 @@ class HudRenderer final {
             // 语言与世界列表的行：一块底衬加一行文本，样子对齐 vanilla 的列表项，
             // 而不是完整的按钮边框。
             // （UI-6b 之后按键绑定行不再走这里——它现在是 Label + Button 两个控件。）
+            if (!widget.tooltip.empty() && widget.rect.contains(cursor.x, cursor.y)) {
+                hoveredTooltip = &widget.tooltip;
+            }
+            // UI-10：输入框。它此前不是控件——绘制侧自己画、自己命中，于是
+            // "控件不越界"那条通用护栏抓不住它（README 护栏 28）。
+            if (widget.kind == ui::WidgetKind::TextField) {
+                drawPageTextField(commandBuffer, widget, scale);
+                continue;
+            }
             if (widget.kind == ui::WidgetKind::ListRow) {
                 drawSelectionListRow(commandBuffer, widget, cursor.x, cursor.y, scale);
                 continue;
@@ -1585,6 +1602,11 @@ class HudRenderer final {
             if (widget.kind == ui::WidgetKind::Label) {
                 drawHudText(commandBuffer, widget.label, widget.rect.x, widget.rect.y, scale,
                             {1.0F, 1.0F, 1.0F, 1.0F});
+                continue;
+            }
+            // UI-9：标签页导航栏里的一个页签（26.1 `TabButton`）。
+            if (widget.kind == ui::WidgetKind::Tab) {
+                drawTabButton(commandBuffer, widget, cursor, scale, widgetFocused);
                 continue;
             }
             // UI-4：图标钮 —— 同一张九宫格底，中间一张 15x15 的图标而不是一行标签
@@ -1613,6 +1635,44 @@ class HudRenderer final {
                                     tint);
             }
         }
+        // ★ 提示框最后画：它要盖在所有控件之上。
+        if (hoveredTooltip != nullptr) {
+            drawTooltipBox(commandBuffer, scale,
+                           {{*hoveredTooltip, ui::TooltipStyle::NameCommon}});
+        }
+    }
+
+    // UI-10 / D20：世界名框那句提示框文案。**一处来源**——绘制侧与输入侧都从这里取，
+    // 各拼一遍就是同一事实的两份表述。
+    [[nodiscard]] std::string folderHintForCreateWorld() const {
+        return formatTemplate(
+            translated("selectWorld.targetFolder", "Will be saved in: %s"),
+            persistence::SaveRepository::slugForDisplayName(menuSystem.createWorldName.value));
+    }
+
+    // UI-10：页面里的一个输入框。文字与光标状态仍由 TextFieldState 管（编辑走输入侧
+    // 那条既有路径），这里只按控件的矩形把它画出来。
+    void drawPageTextField(VkCommandBuffer commandBuffer, const ui::Widget& widget,
+                           float scale) const {
+        const auto id = static_cast<ui::WidgetId>(widget.debugId);
+        TextFieldStyle style;
+        if (id == ui::WidgetId::CreateWorldNameField) {
+            style.focused = !menuSystem.createWorldSeedFocused;
+            drawTextField(commandBuffer, widget.rect, scale, menuSystem.createWorldName,
+                          ui::kWorldNameFieldRules, style);
+            return;
+        }
+        if (id == ui::WidgetId::CreateWorldSeedField) {
+            style.focused = menuSystem.createWorldSeedFocused;
+            // 空框里那行灰字就是 26.1 的 `seedEdit.setHint`。
+            if (menuSystem.createWorldSeed.value.empty()) {
+                style.suggestion =
+                    translated("selectWorld.seedInfo", "Leave blank for a random seed");
+            }
+            drawTextField(commandBuffer, widget.rect, scale, menuSystem.createWorldSeed,
+                          ui::kWorldNameFieldRules, style);
+            return;
+        }
     }
 
     // UI-4：图标钮的绘制（26.1 `SpriteIconButton`，iconOnly=true）。
@@ -1620,6 +1680,79 @@ class HudRenderer final {
     // 底是和普通按钮同一张九宫格精灵，因此三种状态、按下色调、禁用灰全都自动一致；
     // 上面居中一张 15x15 的图标。图标按控件 id 查表——**图标是资源，而 ui:: 从不接触资源**，
     // 所以这张表住在绘制侧，不住在控件模型里。
+    // UI-9：一个页签。26.1 `TabButton.extractWidgetRenderState`（:38-53）：
+    //   1) 四态精灵铺满整个页签（选中 × 悬停/聚焦）；
+    //   2) 选中时在 (x+2, y+2)-(right-2, bottom) 内衬一层菜单背景纹理——那是"选中的
+    //      页签与内容区连成一片"的来源；
+    //   3) 选中时再画一条下划线：宽 = min(文字宽, 页签宽-4)，居中，压在底边上方 2；
+    //   4) 标签文字：未选中的**往下挪 3 像素**（选中那张精灵高出一截）。
+    void drawTabButton(VkCommandBuffer commandBuffer, const ui::Widget& widget,
+                       const ui::UiPoint& cursor, float scale, bool focused) const {
+        const bool selected = tabIsSelected(widget);
+        const bool hovered =
+            widget.rect.contains(cursor.x, cursor.y) || focused;
+        const auto sprite = selected ? (hovered ? GuiWidgetSprite::TabSelectedHighlighted
+                                                : GuiWidgetSprite::TabSelected)
+                                     : (hovered ? GuiWidgetSprite::TabHighlighted
+                                                : GuiWidgetSprite::Tab);
+        drawScaledGuiSprite(commandBuffer, widget.rect, kTabWidgetLayer,
+                            guiWidgetSprite(guiWidgetSprites, sprite), scale, glm::vec4{1.0F});
+
+        const float labelWidth = hudTextWidth(widget.label, scale);
+        if (selected) {
+            // ★ 内衬是**必需的**，不是装饰：`tab_selected.png` 的中间是完全透明的
+            //   （实测中心像素 alpha = 0），不铺这一层，选中的页签中间就是个洞，
+            //   背后的世界/全景会直接透出来。未选中那张自带 alpha 219 的底色，
+            //   所以只有选中的需要。
+            //   26.1 `TabButton.extractMenuBackground`：(x+2, y+2) 到 (right-2, bottom)。
+            const ui::UiRect inlay{widget.rect.x + 2.0F * scale, widget.rect.y + 2.0F * scale,
+                                   widget.rect.width - 4.0F * scale,
+                                   widget.rect.height - 2.0F * scale};
+            // ★ 用的是 **menu_background** 那张平铺纹理（26.1 `TabButton` 传的就是
+            //   `Screen.MENU_BACKGROUND` 这个常量），**不是**列表底衬那张——
+            //   两张都叫"背景"，但列表底衬在这个 uv 范围内几乎全透明，画上去等于没画
+            //   （实测：换成纯色能看见，换回列表底衬就只剩背后的全景）。
+            const auto background =
+                titleBackgroundLayer(ui::ScreenBackgroundKind::PanoramaBlur);
+            drawGuiSprite(commandBuffer, inlay, background.guiLayer,
+                          ui::tiledBackgroundSource(inlay.width, inlay.height, scale),
+                          background.tint);
+            const auto underline = ui::tabUnderline(
+                {widget.rect.x / scale, widget.rect.y / scale, widget.rect.width / scale,
+                 widget.rect.height / scale},
+                static_cast<int>(labelWidth / scale));
+            drawHudQuad(commandBuffer,
+                        {underline.x * scale, underline.y * scale, underline.width * scale,
+                         underline.height * scale},
+                        widget.enabled ? glm::vec4{1.0F, 1.0F, 1.0F, 1.0F}
+                                       : glm::vec4{0.63F, 0.63F, 0.63F, 1.0F});
+        }
+        const auto box = ui::tabLabelBox({widget.rect.x / scale, widget.rect.y / scale,
+                                          widget.rect.width / scale, widget.rect.height / scale},
+                                         selected);
+        drawHudText(commandBuffer, widget.label,
+                    box.x * scale + (box.width * scale - labelWidth) * 0.5F,
+                    box.y * scale + (box.height * scale - ui::kFontLineHeight * scale) * 0.5F,
+                    scale, glm::vec4{1.0F});
+    }
+
+    // 这个页签是不是当前选中的那一个。
+    // ★ 判据是**页面里的次序**（第几个 Tab 控件），不是 debugId——三个页签共用一个 id。
+    [[nodiscard]] bool tabIsSelected(const ui::Widget& widget) const {
+        const auto& page = drawPage_;
+        std::size_t ordinal = 0;
+        for (const auto& other : page) {
+            if (other.kind != ui::WidgetKind::Tab) {
+                continue;
+            }
+            if (&other == &widget) {
+                return ordinal == static_cast<std::size_t>(menuSystem.createWorldTab);
+            }
+            ++ordinal;
+        }
+        return false;
+    }
+
     void drawIconButton(VkCommandBuffer commandBuffer, const ui::Widget& widget, float cursorX,
                         float cursorY, float scale, bool focused = false) const {
         const auto id = static_cast<ui::WidgetId>(widget.debugId);
@@ -1926,7 +2059,10 @@ class HudRenderer final {
             // gui/title/edition.png 两张贴图，再配左下的版本行与右下的版权行（spec §6.3）。
             // 从前这里画的是 2 倍缩放的 "MC Rebedrock"，那不是 26.1 的任何一个元素。
             drawTitleBranding(commandBuffer, layout);
-        } else {
+        } else if (page != ui::PageId::CreateWorld) {
+            // ★ UI-9：创建世界**没有标题行**——26.1 `CreateWorldScreen.repositionElements`
+            //   把 `layout.setHeaderHeight(tabNavigationBar.getRectangle().bottom())`，
+            //   也就是**标签栏就是这一屏的页眉**。多画一行标题会压在页签上。
             const std::string title = frontendTitle(page);
             drawHudText(commandBuffer, title,
                         (static_cast<float>(swapchainExtent.width) - hudTextWidth(title, scale)) *

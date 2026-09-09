@@ -18,16 +18,25 @@
 // （`CreateWorldScreen` 用 `HeaderAndFooterLayout` + `TabManager`）。内容**从上往下**排，
 // 所以它永远不会越过页眉；装不下时溢出的是下边，那是可以被断言抓住的。
 //
-// 本作还没有标签页（spec §5 的 L5，归 UI-7），所以 26.1 分在 Game / World 两页的控件
-// 这里摆在同一块内容区里。这条偏差已登记。
+// UI-9：**标签页落地了**（偏差 D21）。26.1 `CreateWorldScreen:254-255` 挂
+// GameTab / WorldTab / MoreTab 三页，而标签栏**同时取代页眉**——
+// `repositionElements` 把 `layout.setHeaderHeight(tabNavigationBar.getRectangle().bottom())`，
+// 这一屏没有另一行标题。所以这里的三段式页眉高是 `kTabBarHeight`（24），不是 33。
 
 #include "ui/HeaderAndFooterLayout.hpp"
 #include "ui/HudLayout.hpp"
+#include "ui/MenuSystem.hpp"
+#include "ui/TabBar.hpp"
 #include "ui/TextMetrics.hpp"
 
 #include <cstddef>
 
 namespace mc::ui {
+
+// UI-9：三个标签页（26.1 GameTab / WorldTab / MoreTab）。
+inline constexpr std::size_t kCreateWorldTabCount = 3U;
+static_assert(kCreateWorldTabCount == static_cast<std::size_t>(CreateWorldTab::Count),
+              "标签页数与 CreateWorldTab 必须一致——两份表述迟早分岔");
 
 // 输入框尺寸（spec §2.4 的常用值，26.1 `CreateWorldScreen` 的两个 EditBox 同尺寸）。
 inline constexpr int kCreateWorldFieldWidth = 200;
@@ -47,8 +56,20 @@ inline constexpr int kCreateWorldHintHeight = kCreateWorldLineHeight;
 inline constexpr int kCreateWorldButtonHeight = 20;
 inline constexpr int kCreateWorldButtonGap = 4;
 
+// UI-9：这一屏的三段式——**页眉就是标签栏**（高 24）。
+[[nodiscard]] constexpr HeaderAndFooterLayout createWorldFrame(int logicalWidth,
+                                                               int logicalHeight) {
+    return HeaderAndFooterLayout{logicalWidth, logicalHeight, kTabBarHeight,
+                                 kHeaderAndFooterHeight};
+}
+
 // 一屏的全部矩形，**逻辑像素**。乘 scale 是调用方最后一步的事（护栏 5）。
+//
+// ★ 哪些字段有意义取决于**当前标签页**：Game 页有名字框与文件夹提示，World 页有种子框，
+//   More 页两样都没有。不属于当前页的矩形是空的（宽高为 0）——绘制侧据此跳过，
+//   而不是各自再判一次"现在是哪一页"。
 struct CreateWorldLayout final {
+    CreateWorldTab tab = CreateWorldTab::Game;
     UiRect nameLabel{};
     UiRect nameField{};
     UiRect folderHint{};
@@ -63,15 +84,15 @@ struct CreateWorldLayout final {
     [[nodiscard]] constexpr bool operator==(const CreateWorldLayout&) const = default;
 };
 
-// 表单部分（两个标签、两个框、一行提示）一共多高。
+// Game 页表单部分（标签 + 框 + 一行提示）多高。
 [[nodiscard]] constexpr int createWorldFormHeight() {
     return kCreateWorldLineHeight + kCreateWorldLabelGap + kCreateWorldFieldHeight +
-           kCreateWorldLabelGap + kCreateWorldHintHeight + kCreateWorldGroupGap +
-           kCreateWorldLineHeight + kCreateWorldLabelGap + kCreateWorldFieldHeight;
+           kCreateWorldLabelGap + kCreateWorldHintHeight;
 }
 
-[[nodiscard]] constexpr CreateWorldLayout createWorldLayout(int logicalWidth, int logicalHeight) {
-    const auto frame = headerAndFooterLayout(logicalWidth, logicalHeight);
+[[nodiscard]] constexpr CreateWorldLayout createWorldLayout(int logicalWidth, int logicalHeight,
+                                                            CreateWorldTab tab) {
+    const auto frame = createWorldFrame(logicalWidth, logicalHeight);
     const auto content = frame.contentBox();
     const int left = logicalWidth / 2 - kCreateWorldFieldWidth / 2;
     const int width = kCreateWorldFieldWidth;
@@ -80,21 +101,28 @@ struct CreateWorldLayout final {
     int y = static_cast<int>(content.y);
 
     CreateWorldLayout out;
-    out.nameLabel = {static_cast<float>(left), static_cast<float>(y),
-                     static_cast<float>(width), static_cast<float>(kCreateWorldLineHeight)};
-    y += kCreateWorldLineHeight + kCreateWorldLabelGap;
-    out.nameField = {static_cast<float>(left), static_cast<float>(y), static_cast<float>(width),
-                     static_cast<float>(kCreateWorldFieldHeight)};
-    y += kCreateWorldFieldHeight + kCreateWorldLabelGap;
-    out.folderHint = {static_cast<float>(left), static_cast<float>(y),
-                      static_cast<float>(width), static_cast<float>(kCreateWorldHintHeight)};
-    y += kCreateWorldHintHeight + kCreateWorldGroupGap;
-    out.seedLabel = {static_cast<float>(left), static_cast<float>(y), static_cast<float>(width),
-                     static_cast<float>(kCreateWorldLineHeight)};
-    y += kCreateWorldLineHeight + kCreateWorldLabelGap;
-    out.seedField = {static_cast<float>(left), static_cast<float>(y), static_cast<float>(width),
-                     static_cast<float>(kCreateWorldFieldHeight)};
-    y += kCreateWorldFieldHeight + kCreateWorldGroupGap;
+    out.tab = tab;
+    // Game 页：世界名输入框 + 文件夹提示（26.1 `GameTab`：labeledElement(nameEdit)）。
+    if (tab == CreateWorldTab::Game) {
+        out.nameLabel = {static_cast<float>(left), static_cast<float>(y),
+                         static_cast<float>(width), static_cast<float>(kCreateWorldLineHeight)};
+        y += kCreateWorldLineHeight + kCreateWorldLabelGap;
+        out.nameField = {static_cast<float>(left), static_cast<float>(y),
+                         static_cast<float>(width), static_cast<float>(kCreateWorldFieldHeight)};
+        y += kCreateWorldFieldHeight + kCreateWorldLabelGap;
+        out.folderHint = {static_cast<float>(left), static_cast<float>(y),
+                          static_cast<float>(width), static_cast<float>(kCreateWorldHintHeight)};
+        y += kCreateWorldHintHeight + kCreateWorldGroupGap;
+    }
+    // World 页：种子框（26.1 `WorldTab`：labeledElement(seedEdit)，跨两列）。
+    if (tab == CreateWorldTab::World) {
+        out.seedLabel = {static_cast<float>(left), static_cast<float>(y),
+                         static_cast<float>(width), static_cast<float>(kCreateWorldLineHeight)};
+        y += kCreateWorldLineHeight + kCreateWorldLabelGap;
+        out.seedField = {static_cast<float>(left), static_cast<float>(y),
+                         static_cast<float>(width), static_cast<float>(kCreateWorldFieldHeight)};
+        y += kCreateWorldFieldHeight + kCreateWorldGroupGap;
+    }
     out.optionButtonsTop = y;
 
     // 页脚两个按钮横排，间距 8（与语言页、绑定列表页的页脚同形：

@@ -301,6 +301,22 @@ std::optional<UiCaptureOptions> parseUiCaptureArguments(
             // 逗号分隔而不是 `x`：坐标可以是负数，而负号会把 `x` 那种写法读歪。
             result->cursorX = parseCoordinate(value.substr(0U, comma), "x");
             result->cursorY = parseCoordinate(value.substr(comma + 1U), "y");
+        } else if (arguments[index] == "--ui-tab") {
+            if (++index >= arguments.size()) {
+                throw std::invalid_argument("--ui-tab requires an index");
+            }
+            if (!result.has_value()) {
+                result = UiCaptureOptions{};
+            }
+            const std::string_view value = arguments[index];
+            std::uint32_t parsed = 0U;
+            const auto [end, error] =
+                std::from_chars(value.data(), value.data() + value.size(), parsed);
+            if (error != std::errc{} || end != value.data() + value.size()) {
+                throw std::invalid_argument("--ui-tab takes a non-negative integer, got: " +
+                                            std::string{value});
+            }
+            result->tabIndex = parsed;
         } else if (arguments[index] == "--ui-carry") {
             if (!result.has_value()) {
                 result = UiCaptureOptions{};

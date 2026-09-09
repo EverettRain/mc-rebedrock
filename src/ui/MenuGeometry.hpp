@@ -8,6 +8,7 @@
 #include "ui/HeaderAndFooterLayout.hpp"
 #include "ui/OptionsList.hpp"
 #include "ui/ScrollList.hpp"
+#include "ui/MenuSystem.hpp"
 #include "ui/PageStack.hpp"
 #include "ui/Widget.hpp"
 
@@ -86,8 +87,11 @@ namespace mc::ui {
 //
 // ★ 这两个滚动位置必须与**装配**用的那一个是同一个值。装配按窗口跳过控件、布局按同一
 //   个 firstRow 折算行号，两边错开一行就是"名字和控件错位"或者"滚动条动了内容不动"。
+// ★ `createWorldTab` 同理：它是**屏幕状态**，而装配与布局必须读同一个值——
+//   装配按当前页造控件、布局按同一页算矩形，两边不同步就是"点 A 触发 B"。
 void layoutPageInto(Page& page, PageId id, const HudLayout& layout,
-                    std::size_t keyBindFirstRow = 0U, std::size_t optionsFirstRow = 0U);
+                    std::size_t keyBindFirstRow = 0U, std::size_t optionsFirstRow = 0U,
+                    CreateWorldTab createWorldTab = CreateWorldTab::Game);
 
 // 一页里有几个**按钮**（不含绑定列表那些行内控件）。布局用它，测试也用它断言页面形状。
 [[nodiscard]] std::size_t countPageButtons(const Page& page);
@@ -109,7 +113,8 @@ void layoutPageInto(Page& page, PageId id, const HudLayout& layout,
 // 存档、编辑、删除与语言页贴底摆放，视频设置页分两列，其余按居中菜单摆放
 [[nodiscard]] UiRect frontendButtonRect(const HudLayout& layout, PageId page, std::size_t index,
                                         std::size_t buttonCount,
-                                        std::size_t optionsFirstRow = 0U);
+                                        std::size_t optionsFirstRow = 0U,
+                                        CreateWorldTab createWorldTab = CreateWorldTab::Game);
 
 // UI-6d：三段式设置页的滚动窗口。装配（PageBuilder）与布局（frontendButtonRect）
 // 必须读同一个窗口，所以它只有这一处来源。

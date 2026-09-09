@@ -24,6 +24,16 @@ namespace mc::ui {
 // 页签下标因此能直接强转成它的内容分类，见 activeCreativeCatalog
 // 末尾额外多一个"背包"伪页签，那是生存背包视图，不是内容分类
 // 两个枚举保持同序，这次强转才是可靠的
+// UI-9：创建世界的三个标签页（26.1 `CreateWorldScreen:254-255` 的
+// GameTab / WorldTab / MoreTab，都是 GridLayoutTab）。
+enum class CreateWorldTab : std::uint8_t {
+    Game,
+    World,
+    More,
+    // 哨兵，值等于页数。**不参与分派**，只给"覆盖了每一页"这类断言用。
+    Count,
+};
+
 enum class CreativeTab : std::uint8_t {
     BuildingBlocks,
     ColoredBlocks,
@@ -246,6 +256,10 @@ class MenuSystem final {
     bool forceUnicodeFont = false;
     std::size_t resolutionIndex = 0;
     CreativeTab creativeTab = CreativeTab::BuildingBlocks;
+    // UI-9：创建世界那一屏开在哪个标签页（26.1 `CreateWorldScreen` 的
+    // GameTab / WorldTab / MoreTab）。它是**屏幕状态**，不是页面内容——与
+    // 绑定列表的滚动位置、创造背包的页签同一类。
+    CreateWorldTab createWorldTab = CreateWorldTab::Game;
     std::size_t creativeScrollRow = 0;
 };
 

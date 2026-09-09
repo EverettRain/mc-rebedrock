@@ -108,6 +108,9 @@ enum class ItemModelKind : std::uint8_t {
     Fence,
     // MDL-2: `block/carpet` — a 1/16 slice, the carpet item's own model.
     Carpet,
+    // MDL-3: `block/snow_height2` — the snow layer's item is a 2/16 slab (a
+    // two-layer slice), not a flat sprite and not the carpet's single layer.
+    SnowLayer,
     Count,
 };
 
@@ -208,6 +211,20 @@ constexpr void putItemFace(ItemModelBox& box, bake::Facing facing, ItemLayerSlot
     }
     for (const bake::Facing side : {bake::Facing::East, bake::Facing::West}) {
         putItemFace(box, side, ItemLayerSlot::Side, itemRect(0, 16.0F - y1, 16, 16.0F - y0));
+    }
+    return box;
+}
+
+// MDL-3: `block/snow_height2` — the whole footprint, two sixteenths tall.
+[[nodiscard]] constexpr ItemModelBox snowLayerItemBox() {
+    ItemModelBox box;
+    box.from16 = {0.0F, 0.0F, 0.0F};
+    box.to16 = {16.0F, 2.0F, 16.0F};
+    putItemFace(box, bake::Facing::Down, ItemLayerSlot::Bottom, itemRect(0, 0, 16, 16));
+    putItemFace(box, bake::Facing::Up, ItemLayerSlot::Top, itemRect(0, 0, 16, 16));
+    for (const bake::Facing side : {bake::Facing::North, bake::Facing::South,
+                                    bake::Facing::East, bake::Facing::West}) {
+        putItemFace(box, side, ItemLayerSlot::Side, itemRect(0, 14, 16, 16));
     }
     return box;
 }
@@ -368,7 +385,7 @@ constexpr void putItemFace(ItemModelBox& box, bake::Facing facing, ItemLayerSlot
 // that order: `cubeItemUvModel(block)` already returns 0/1/2 and both item vertex
 // shaders index their UV table with it, so keeping the cubes at 0..2 is what makes
 // this an extension of that table rather than a replacement for it.
-inline constexpr std::array<ItemModelBox, 24> kItemModelBoxes{{
+inline constexpr std::array<ItemModelBox, 25> kItemModelBoxes{{
     detail::wholeCube(CubeUvModel::Default),        // 0
     detail::wholeCube(CubeUvModel::PistonTemplate), // 1
     detail::wholeCube(CubeUvModel::Observer),       // 2
@@ -397,6 +414,7 @@ inline constexpr std::array<ItemModelBox, 24> kItemModelBoxes{{
     detail::fenceInventoryRailBox(12.0F, 15.0F),              // 21
     detail::fenceInventoryRailBox(6.0F, 9.0F),                // 22
     detail::carpetBox(),                                      // 23
+    detail::snowLayerItemBox(),                               // 24
 }};
 
 // Where each kind's boxes live in the flat array, and how the inventory turns it.
@@ -419,6 +437,7 @@ inline constexpr std::array<ItemModelRange, static_cast<std::size_t>(ItemModelKi
         {18, 1, ItemIconTurn::None},          // TrapDoor
         {19, 4, ItemIconTurn::None},          // Fence (two posts + two rails)
         {23, 1, ItemIconTurn::None},          // Carpet
+        {24, 1, ItemIconTurn::None},          // SnowLayer
     }};
 
 // The single point. Every item surface asks this and nothing else: `None` means
@@ -462,6 +481,8 @@ inline constexpr std::array<ItemModelRange, static_cast<std::size_t>(ItemModelKi
                    : ItemModelKind::None;
     case BlockModel::Carpet:
         return ItemModelKind::Carpet;
+    case BlockModel::Layered:
+        return ItemModelKind::SnowLayer;
     // A door item is a flat sprite in vanilla's `items/` entry
     // (`item/oak_door`); so are the diodes (`item/repeater`), the lever, the
     // torch, the crops and the wire, all of which vanilla draws from an

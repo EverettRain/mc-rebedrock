@@ -51,6 +51,11 @@ inline constexpr int kEnchantingBarSpriteY = 168;
 // into the space its 176x166 panel leaves — same arrangement, same reason.
 inline constexpr float kAnvilGuiLayer = 15.0F;
 
+// UI-9：四张页签精灵所在的层（`TextureManager` 的 images 数组最后一格）。
+// ★ 它们各 130x24，竖排要 96 高，`widgets` 那一层放不下——这是本作少数几次
+//   真的加一层。加层要同步改三处：数组、kGuiLayerCount、这个常量。
+inline constexpr float kTabWidgetLayer = 20.0F;
+
 // A1：容器界面那张面板底图在 GUI 图集里的层号。
 //
 // ★ 从前它是绘制侧一条**四段三元链**（`chestScreen ? 10 : CraftingTable ? 7 : …`），

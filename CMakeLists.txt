@@ -1829,6 +1829,12 @@ if(BUILD_TESTING)
         PRIVATE mc_rebedrock_runtime glm::glm)
     add_test(NAME container_interaction COMMAND mc_rebedrock_container_interaction_test)
 
+    # UI-9：标签页导航栏（spec §5 的 L5）的几何。纯 constexpr，无依赖。
+    add_executable(mc_rebedrock_tab_bar_test tests/tab_bar_test.cpp)
+    target_include_directories(mc_rebedrock_tab_bar_test PRIVATE src)
+    target_link_libraries(mc_rebedrock_tab_bar_test PRIVATE glm::glm)
+    add_test(NAME tab_bar COMMAND mc_rebedrock_tab_bar_test)
+
     add_executable(mc_rebedrock_tooltip_layout_test
         tests/tooltip_layout_test.cpp
         src/ui/HudLayout.cpp

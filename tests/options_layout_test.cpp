@@ -16,6 +16,7 @@
 #include "ui/KeyBindList.hpp"
 #include "ui/MenuGeometry.hpp"
 #include "ui/PageBuilder.hpp"
+#include "ui/TabBar.hpp"
 #include "ui/PageLayoutKind.hpp"
 #include "ui/PageTitles.hpp"
 #include "ui/ScrollingText.hpp"
@@ -42,6 +43,7 @@
 #error "MC_REBEDROCK_HUD_RENDERER_SRC must point at src/render/vulkan/HudRenderer.hpp"
 #endif
 #include <string>
+#include <vector>
 
 namespace {
 
@@ -1273,24 +1275,39 @@ void testNoWidgetEscapesTheCanvas() {
 void testCreateWorldForm() {
     const mc::ui::HudLayout layout{1280.0F, 720.0F, 3};
     const auto form =
-        mc::ui::createWorldLayout(layout.logicalWidth(), layout.logicalHeight());
+        mc::ui::createWorldLayout(layout.logicalWidth(), layout.logicalHeight(),
+                                  mc::ui::CreateWorldTab::Game);
     const auto frame =
-        mc::ui::headerAndFooterLayout(layout.logicalWidth(), layout.logicalHeight());
+        mc::ui::createWorldFrame(layout.logicalWidth(), layout.logicalHeight());
 
-    // ★ 表单从内容区**顶部**往下排，第一行就贴着页眉下沿——不是从按钮往上堆。
+    // ★ 表单从内容区**顶部**往下排，第一行就贴着标签栏下沿——不是从按钮往上堆。
+    //   ★ UI-9：页眉就是标签栏（高 24），所以 contentBox 的顶也随之上移。
     CHECK(form.nameLabel.y == frame.contentBox().y);
+    CHECK(frame.headerHeight == mc::ui::kTabBarHeight);
     // 自上而下严格递增，且互不重叠
     CHECK(form.nameField.y > form.nameLabel.y);
     CHECK(form.folderHint.y >= form.nameField.y + form.nameField.height);
-    CHECK(form.seedLabel.y >= form.folderHint.y + form.folderHint.height);
-    CHECK(form.seedField.y >= form.seedLabel.y + form.seedLabel.height);
     // 按钮带在表单下方
     CHECK(static_cast<float>(form.optionButtonsTop) >=
-          form.seedField.y + form.seedField.height);
+          form.folderHint.y + form.folderHint.height);
+
+    // ★ UI-9：种子框搬到了 **World 页**（26.1 `WorldTab`），Game 页没有它。
+    //   不属于当前页的矩形是空的——绘制侧据此跳过，而不是各自再判一次"现在哪一页"。
+    CHECK(form.seedLabel.width == 0.0F && form.seedField.width == 0.0F);
+    const auto worldForm = mc::ui::createWorldLayout(
+        layout.logicalWidth(), layout.logicalHeight(), mc::ui::CreateWorldTab::World);
+    CHECK(worldForm.nameField.width == 0.0F && worldForm.folderHint.width == 0.0F);
+    CHECK(worldForm.seedLabel.y == frame.contentBox().y);
+    CHECK(worldForm.seedField.y >= worldForm.seedLabel.y + worldForm.seedLabel.height);
+    // More 页两样都没有：内容区从顶部直接排按钮。
+    const auto moreForm = mc::ui::createWorldLayout(
+        layout.logicalWidth(), layout.logicalHeight(), mc::ui::CreateWorldTab::More);
+    CHECK(moreForm.nameField.width == 0.0F && moreForm.seedField.width == 0.0F);
+    CHECK(static_cast<float>(moreForm.optionButtonsTop) == frame.contentBox().y);
 
     // 表单整体不越过页脚
     const auto footer = frame.footerBox();
-    CHECK(form.seedField.y + form.seedField.height <= footer.y);
+    CHECK(worldForm.seedField.y + worldForm.seedField.height <= footer.y);
     // 三个循环按钮也不越过页脚
     const auto lastButton = mc::ui::createWorldOptionButton(form, layout.logicalWidth(), 2U);
     CHECK(lastButton.y + lastButton.height <= footer.y);
@@ -1303,14 +1320,48 @@ void testCreateWorldForm() {
         (form.footerLeft.x + form.footerRight.x + form.footerRight.width) * 0.5F;
     CHECK(std::abs(pairCentre - static_cast<float>(layout.logicalWidth()) * 0.5F) <= 1.0F);
 
-    // 两个输入框等宽且水平居中
-    CHECK(form.nameField.width == form.seedField.width);
-    CHECK(form.nameField.x == form.seedField.x);
+    // 两个输入框等宽且水平居中（各自在自己那一页里）
+    CHECK(form.nameField.width == worldForm.seedField.width);
+    CHECK(form.nameField.x == worldForm.seedField.x);
     CHECK(form.nameField.width == static_cast<float>(mc::ui::kCreateWorldFieldWidth));
 
     // 版式判定走表，不是手写清单
     CHECK(mc::ui::pageLayoutKind(mc::ui::PageId::CreateWorld) ==
           mc::ui::PageLayoutKind::HeaderFooterForm);
+
+    // ★ UI-9：**装配顺序与布局顺序必须一致**——前三个控件是页签，它们的矩形要正好
+    //   是标签栏那三格。错开一位就是"点 Game 却切到 World"，而两边各自都自洽
+    //   （护栏 21 那一族）。这里走**生产路径**：装配一遍、布局一遍，再对矩形。
+    {
+        mc::ui::MenuBuildContext ctx;
+        const mc::ui::MenuCallbacks cb;
+        mc::ui::Page built;
+        mc::ui::buildPageInto(built, mc::ui::PageId::CreateWorld, ctx, cb);
+        mc::ui::layoutPageInto(built, mc::ui::PageId::CreateWorld, layout, 0U, 0U,
+                               mc::ui::CreateWorldTab::Game);
+        const auto bar = mc::ui::tabBarLayout(layout.logicalWidth(),
+                                              mc::ui::kCreateWorldTabCount);
+        std::size_t tabsSeen = 0;
+        for (std::size_t i = 0; i < built.size(); ++i) {
+            if (built[i].kind != mc::ui::WidgetKind::Tab) {
+                continue;
+            }
+            const auto expected = bar.tab(tabsSeen);
+            check(built[i].rect.x == expected.x * 3.0F && built[i].rect.y == expected.y * 3.0F &&
+                      built[i].rect.width == expected.width * 3.0F,
+                  "a tab widget must land on its own slot in the tab bar", __LINE__);
+            check(i == tabsSeen, "the tabs must be the first widgets on the page", __LINE__);
+            ++tabsSeen;
+        }
+        check(tabsSeen == mc::ui::kCreateWorldTabCount, "all three tabs must be laid out",
+              __LINE__);
+        // 页脚两个按钮仍在最后两位，三页都是。
+        check(built[built.size() - 2U].debugId ==
+                  static_cast<std::uint16_t>(mc::ui::WidgetId::CreateConfirm),
+              "Create must be the second-to-last widget", __LINE__);
+        check(built.back().debugId == static_cast<std::uint16_t>(mc::ui::WidgetId::Back),
+              "Back must be the last widget", __LINE__);
+    }
 
     // ★ 走**生产路径**看具体控件落在哪。上面那些只量了几何函数——把布局侧
     //   页脚两个按钮的序号判定写反（Create 跑到右边、Back 跑到左边），或者让内容区的
@@ -1367,11 +1418,23 @@ void testCreateWorldForm() {
         {427, 240}, {640, 360}, {1280, 720}, {320, 240}, {854, 480},
     }};
     for (const Canvas& canvas : kCanvases) {
-        const auto solved = mc::ui::createWorldLayout(canvas.width, canvas.height);
-        const auto solvedFrame = mc::ui::headerAndFooterLayout(canvas.width, canvas.height);
-        const std::array<mc::ui::UiRect, 5> parts{{solved.nameLabel, solved.nameField,
-                                                   solved.folderHint, solved.seedLabel,
-                                                   solved.seedField}};
+        const auto solvedFrame = mc::ui::createWorldFrame(canvas.width, canvas.height);
+        // ★ UI-9：**每一页都要量**。只量 Game 页会漏掉 World 页——而那一页的种子框
+        //   是这次分页里唯一换了位置的东西。
+        std::vector<mc::ui::UiRect> parts;
+        for (const auto tab : {mc::ui::CreateWorldTab::Game, mc::ui::CreateWorldTab::World,
+                               mc::ui::CreateWorldTab::More}) {
+            const auto solvedTab = mc::ui::createWorldLayout(canvas.width, canvas.height, tab);
+            for (const auto& rect : {solvedTab.nameLabel, solvedTab.nameField,
+                                     solvedTab.folderHint, solvedTab.seedLabel,
+                                     solvedTab.seedField}) {
+                if (rect.width > 0.0F) {   // 不属于这一页的矩形是空的
+                    parts.push_back(rect);
+                }
+            }
+        }
+        const auto solved = mc::ui::createWorldLayout(canvas.width, canvas.height,
+                                                      mc::ui::CreateWorldTab::Game);
         for (const auto& rect : parts) {
             check(rect.y >= 0.0F, "a form row escaped the top of the canvas", __LINE__);
             check(rect.x >= 0.0F, "a form row escaped the left of the canvas", __LINE__);

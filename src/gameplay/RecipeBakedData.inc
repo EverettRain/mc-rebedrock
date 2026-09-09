@@ -165,6 +165,13 @@ inline constexpr BakedIngredient kCraftIng_107[] = {{IngredientDefKind::Block, "
 inline constexpr BakedIngredient kCraftIng_108[] = {{IngredientDefKind::Block, "rebedrock:red_wool"}, {IngredientDefKind::Block, "rebedrock:red_wool"}};
 inline constexpr BakedIngredient kCraftIng_109[] = {{IngredientDefKind::Block, "rebedrock:black_wool"}, {IngredientDefKind::Block, "rebedrock:black_wool"}};
 
+// MDL-3: the snow layer's two vanilla recipes — snowballs pack into a block,
+// and a block cuts back into six layers. Without them the snowball a mined
+// layer drops has nowhere to go, and the layer itself is obtainable only by
+// waiting for weather.
+inline constexpr BakedIngredient kCraftIng_110[] = {{IngredientDefKind::Item, "rebedrock:snowball"}, {IngredientDefKind::Item, "rebedrock:snowball"}, {IngredientDefKind::Item, "rebedrock:snowball"}, {IngredientDefKind::Item, "rebedrock:snowball"}};
+inline constexpr BakedIngredient kCraftIng_111[] = {{IngredientDefKind::Block, "rebedrock:snow_block"}, {IngredientDefKind::Block, "rebedrock:snow_block"}, {IngredientDefKind::Block, "rebedrock:snow_block"}, {IngredientDefKind::Block, "rebedrock:snow_block"}, {IngredientDefKind::Block, "rebedrock:snow_block"}, {IngredientDefKind::Block, "rebedrock:snow_block"}};
+
 inline constexpr BakedCraftingRecipe kBakedCraftingRecipes[] = {
     {"minecraft:oak_planks", 1, 1, false, false, kCraftIng_0, "rebedrock:oak_planks", 4},
     {"minecraft:spruce_planks", 1, 1, false, false, kCraftIng_1, "rebedrock:spruce_planks", 4},
@@ -283,6 +290,8 @@ inline constexpr BakedCraftingRecipe kBakedCraftingRecipes[] = {
     {"minecraft:green_carpet", 2, 1, false, false, kCraftIng_107, "rebedrock:green_carpet", 3},
     {"minecraft:red_carpet", 2, 1, false, false, kCraftIng_108, "rebedrock:red_carpet", 3},
     {"minecraft:black_carpet", 2, 1, false, false, kCraftIng_109, "rebedrock:black_carpet", 3},
+    {"minecraft:snow_block", 2, 2, false, false, kCraftIng_110, "rebedrock:snow_block", 1},
+    {"minecraft:snow", 3, 2, false, false, kCraftIng_111, "rebedrock:snow", 6},
 };
 
 inline constexpr BakedFurnaceRecipe kBakedFurnaceRecipes[] = {
