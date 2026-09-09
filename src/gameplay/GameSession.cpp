@@ -447,6 +447,21 @@ void GameSession::tick(world::World& world, SimulationHost& host) {
             }
         }
     }
+    // EXP-3: creepers whose fuse ran out this tick. Raised after the melee pass
+    // above so a creeper that was also mid-swing resolves its hit first, and
+    // before the projectile tick so the blast's own knockback is what a
+    // simultaneously-fired arrow flies through.
+    //
+    // Level.ExplosionInteraction.MOB: unlike the player-lit TNT above, a mob's
+    // blast breaks blocks only while mob_griefing is on. Damage and knockback
+    // are unconditional — turning the rule off makes a creeper harmless to the
+    // terrain, never harmless to you.
+    for (const auto& detonation : entityTick.detonations) {
+        static_cast<void>(explode(
+            world, host,
+            ExplosionSpec{detonation.center, detonation.radius,
+                          gameRules_.get<bool>(GameRuleId::MobGriefing)}));
+    }
     // RW-0: the projectile pool — physics/raycast hit (entity through
     // Damage.hpp above, or block -> stick), landed-arrow pickup, lifetime
     // despawn. Runs after the creature tick above so a hit this same tick

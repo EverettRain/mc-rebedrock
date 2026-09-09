@@ -62,11 +62,45 @@ class MeleeMonsterAi final : public MonsterAi {
 
 const MeleeMonsterAi kMeleeMonsterAi;
 
+// EXP-3: the creeper. The first species in this roster that needed a NEW
+// EntityAi rather than reusing one — the comment above MeleeMonsterAi named it
+// as the example, and here it is. It still acquires and follows a player like
+// any hostile, but instead of a MeleeAttackGoal it runs SwellGoal, which is a
+// state (swelling or not) rather than an action.
+class CreeperAi final : public MonsterAi {
+  public:
+    void configureBrain(MobBrain& brain) const override {
+        MonsterAi::configureBrain(brain);
+        // Priority 2, above the wander/look fallback: once it is close enough to
+        // swell, nothing else may take the move control back.
+        brain.goals().add(2, std::make_unique<SwellGoal>());
+        // It still has to walk to you first: Creeper.java:69 gives it a
+        // MeleeAttackGoal(1.0, false) at priority 4, below the swell. In practice
+        // the swell finishes before the melee cooldown ever lands a hit, which is
+        // why a creeper is remembered as a mob that never punches.
+        brain.goals().add(4, std::make_unique<MeleeAttackGoal>(1.0F));
+        brain.targets().add(2, std::make_unique<ActiveTargetPlayerGoal>());
+    }
+};
+
+const CreeperAi kCreeperAi;
+
 // --- loot ----------------------------------------------------------------
 
 // Pig.json (26.1): one to three raw porkchops. (Vanilla drops the cooked cut
 // when the pig dies on fire; that path is not modelled here — the same
 // simplification every other meat drop in this table makes.)
+// Creeper.json (26.1): zero to two gunpowder. (The music-disc drop needs a
+// skeleton kill to trigger and has no disc item here, so it is absent.)
+EntityDrops rollCreeperLoot(std::uint64_t& rng) {
+    EntityDrops drops;
+    const auto count = static_cast<std::uint8_t>(mc::rng::nextInt(rng, 3U));
+    if (count > 0U) {
+        drops.add({world::Block::Air, count, &items::Gunpowder});
+    }
+    return drops;
+}
+
 EntityDrops rollPigLoot(std::uint64_t& rng) {
     EntityDrops drops;
     const auto count = static_cast<std::uint8_t>(1U + mc::rng::nextInt(rng, 3U));
@@ -151,6 +185,21 @@ constexpr EntityRenderDescriptor kCowRender{
     /*secondaryTexturePath=*/{},
     // CowRenderer.java:22
     /*shadowRadius=*/0.7F,
+};
+
+// EXP-3: creeper. Geometry transcribed from 26.1's CreeperModel (head and body
+// at PartPose.offset(0,6,0), four 4x6x4 legs at y 18) into the Bedrock schema
+// this build's animation library reads; the skin is the vanilla texture out of
+// the player's own resource pack.
+constexpr EntityRenderDescriptor kCreeperRender{
+    /*geometryPath=*/"animation/creeper.geo.json",
+    /*animationPath=*/"animation/creeper.animation.json",
+    /*texturePath=*/"entity/creeper/creeper.png",
+    /*geometryId=*/"geometry.creeper",
+    /*walkAnimation=*/"animation.creeper.walk",
+    /*idleAnimation=*/"animation.creeper.idle",
+    /*scale=*/1.0F,
+    /*secondaryTexturePath=*/{},
 };
 
 constexpr EntityRenderDescriptor kZombieRender{
@@ -239,6 +288,14 @@ constexpr audio::MobSoundProfile kSheepSounds{
     "entity.sheep.ambient", "entity.sheep.hurt", "entity.sheep.death",
     "entity.sheep.step",    1.0F,                0.15F,
 };
+// Creeper (26.1): SoundEvents.CREEPER_HURT / CREEPER_DEATH. Mob#getAmbientSound
+// returns null for a creeper — it is silent until it hisses, and the hiss
+// (entity.creeper.primed) is raised where the fuse starts, not on the ambient
+// timer, so ambientEvent is deliberately empty (playEvent skips an empty name).
+constexpr audio::MobSoundProfile kCreeperSounds{
+    "", "entity.creeper.hurt", "entity.creeper.death", "entity.creeper.step", 1.0F, 0.15F,
+};
+
 constexpr audio::MobSoundProfile kHuskSounds{
     "entity.husk.ambient", "entity.husk.hurt", "entity.husk.death",
     "entity.husk.step",    1.0F,               0.15F,
@@ -260,7 +317,7 @@ constexpr audio::MobSoundProfile kHuskSounds{
 
 // --- the manifest --------------------------------------------------------
 
-const std::array<SpeciesDef, 6> kManifest{{
+const std::array<SpeciesDef, 7> kManifest{{
     // Pig (26.1): 10 health, MOVEMENT_SPEED 0.25, box 0.9 x 0.9, egg tint
     // 0xF0A5A5 / 0xDB635E. Drops 1-3 raw porkchops. Not breedable yet (26.1
     // tempts a pig with a carrot, an item this build does not have).
@@ -364,6 +421,22 @@ const std::array<SpeciesDef, 6> kManifest{{
         /*behaviorFlags=*/static_cast<std::uint16_t>(EntityBehavior::Undead |
                                                        EntityBehavior::SunImmune |
                                                        EntityBehavior::HungerOnHit),
+        /*eggLay=*/EggLayProfile{}, /*xpRewardMin=*/5, /*xpRewardMax=*/5},
+    // Creeper (26.1): Creeper.createAttributes() is
+    // Monster.createMonsterAttributes() plus MOVEMENT_SPEED 0.25 — so 20 health,
+    // attack damage 2 and follow range 16 all come from the shared monster
+    // defaults, not from Creeper itself. Box 0.6 x 1.7 (EntityType.CREEPER),
+    // egg tint 0x0DA70B / 0x000000, xpReward 5 (Mob's DEFAULT_XP_REWARD). Drops
+    // 0-2 gunpowder. Not Undead — a creeper is ARTHROPOD-less, ALIVE, and does
+    // not burn in daylight, so it carries no behaviour bits at all; the whole of
+    // "it explodes" lives in kCreeperAi's SwellGoal and the fuse in
+    // EntitySystem::tick, not in a flag here.
+    SpeciesDef{
+        /*path=*/"creeper", /*vanillaName=*/"creeper", MobCategory::Monster,
+        SpawnPlacement::OnGround, EntityDimensions{0.6F, 1.7F},
+        attributesOf(20.0F, 0.25F, 2.0F, 16.0F), /*hasSpawnEgg=*/true,
+        SpawnEggColors{0x0DA70BU, 0x000000U}, kCreeperRender, kCreeperSounds, &kCreeperAi,
+        &rollCreeperLoot, /*breeding=*/BreedingProfile{}, /*behaviorFlags=*/0U,
         /*eggLay=*/EggLayProfile{}, /*xpRewardMin=*/5, /*xpRewardMax=*/5},
 }};
 

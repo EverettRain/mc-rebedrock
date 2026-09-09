@@ -118,6 +118,16 @@ struct SimpleEntity final {
     // Animal#loveTicks: ticks of the in-love state a feed grants. Two in-love
     // adults of one species breed on contact; ticks down to zero otherwise.
     int loveTicks = 0;
+    // EXP-3: Creeper#swell / #swellDir. The fuse counts up while the goal says
+    // "keep swelling" and back down when it says otherwise; at maxSwell (30)
+    // the creature detonates. Idles at zero for every other species, the same
+    // way `loveTicks` idles for a non-ageable one.
+    int swell = 0;
+    int swellDirection = -1;
+    // Entity#discard: removed without dying — no death animation, no loot, no
+    // experience. A detonating creeper is discarded (vanilla's own wording), so
+    // blowing yourself up is not a way to farm gunpowder.
+    bool discarded = false;
     // AR-A2: SheepEntity#sheared. Only meaningful for the sheep species (any
     // other creature simply never has this flipped), so it lives here rather
     // than on a sheep-only subtype — the same "shared struct, per-species field
@@ -290,6 +300,14 @@ struct EntityTickResult final {
     // damage, difficulty scaling, hurt audio and death handling.
     std::vector<MobAttack> mobAttacks;
     std::vector<GrassEatRequest> grassEats;
+    // EXP-3: a creeper whose fuse ran out. EntitySystem cannot raise a blast
+    // itself for the same reason WorldSimulation cannot — hurting the player and
+    // rolling loot belong to the session — so it reports where and how big.
+    struct DetonationRequest final {
+        glm::vec3 center{0.0F};
+        float radius = 3.0F;
+    };
+    std::vector<DetonationRequest> detonations;
 };
 
 class EntitySystem final {

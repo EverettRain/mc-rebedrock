@@ -325,6 +325,12 @@ class MobBrain final {
     // into EntityTickResult, and GameSession performs the actual setBlock
     // (mirroring how block-drop events already cross from EntitySystem to
     // GameSession's mutation sink).
+    // EXP-3: SwellGoal's output. Unlike the other requests this is a *level*
+    // rather than an event — the goal says "swelling" or "not" every tick and
+    // EntitySystem integrates it into the fuse — so it is read, not taken.
+    void setSwelling(bool swelling) { swelling_ = swelling; }
+    [[nodiscard]] bool swelling() const { return swelling_; }
+
     void requestEatGrass(glm::ivec3 grassBlock);
     [[nodiscard]] std::optional<glm::ivec3> takeEatGrassRequest();
 
@@ -339,6 +345,7 @@ class MobBrain final {
     std::optional<AttackRequest> attackRequest_;
     std::optional<std::uint64_t> breedRequest_;
     std::optional<glm::ivec3> eatGrassRequest_;
+    bool swelling_ = false;
 };
 
 // ActiveTargetGoal<PlayerEntity>: acquires a living non-creative player inside
@@ -388,6 +395,32 @@ class MeleeAttackGoal final : public MobGoal {
     int attackCooldownTicks_ = 0;
     int repathCooldownTicks_ = 0;
     glm::vec3 lastTargetPosition_{0.0F};
+};
+
+// EXP-3: vanilla's SwellGoal. The one goal in this roster whose output is not a
+// movement but a *state*: it says, every tick, whether the creature should be
+// swelling toward its detonation, and EntitySystem integrates that into the
+// fuse. Vanilla's own logic, in its own words:
+//
+//     canUse()  : swellDir > 0 || (target != null && distanceSqr(target) < 9)
+//     tick()    : no target, or further than 49, or no line of sight -> -1
+//                 otherwise -> +1, and hold still while swelling
+//
+// The 3-block start radius and the 7-block give-up radius are why a creeper you
+// back away from stops hissing and follows you again.
+class SwellGoal final : public MobGoal {
+  public:
+    [[nodiscard]] std::string_view name() const override { return "swell"; }
+    [[nodiscard]] GoalControls controls() const override {
+        return entities::controls(GoalControl::Move, GoalControl::Look);
+    }
+    [[nodiscard]] bool canStart(SimpleEntity& self, MobAiContext& context,
+                                MobBrain& brain) override;
+    [[nodiscard]] bool shouldContinue(SimpleEntity& self, MobAiContext& context,
+                                      MobBrain& brain) override;
+    void start(SimpleEntity& self, MobAiContext& context, MobBrain& brain) override;
+    void stop(SimpleEntity& self, MobAiContext& context, MobBrain& brain) override;
+    void tick(SimpleEntity& self, MobAiContext& context, MobBrain& brain) override;
 };
 
 class SwimGoal final : public MobGoal {

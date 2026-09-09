@@ -2234,6 +2234,18 @@ if(BUILD_TESTING)
     )
     add_test(NAME explosion COMMAND mc_rebedrock_explosion_test)
 
+    # EXP-3: the creeper — the integrated fuse, the feet-height blast centre,
+    # the discard-not-death removal, and the mob_griefing gate.
+    add_executable(mc_rebedrock_creeper_test
+        tests/creeper_test.cpp
+    )
+    target_link_libraries(mc_rebedrock_creeper_test PRIVATE mc_rebedrock_runtime)
+    target_include_directories(mc_rebedrock_creeper_test PRIVATE
+        src
+        "${glm_SOURCE_DIR}"
+    )
+    add_test(NAME creeper COMMAND mc_rebedrock_creeper_test)
+
     add_executable(mc_rebedrock_face_occlusion_test
         tests/face_occlusion_test.cpp
     )

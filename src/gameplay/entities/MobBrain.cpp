@@ -713,6 +713,64 @@ float MeleeAttackGoal::squaredAttackRange(const SimpleEntity& self,
     return doubledWidth * doubledWidth + context.player().width;
 }
 
+// EXP-3: SwellGoal. Vanilla's three numbers, unchanged: start swelling inside 3
+// blocks (9 squared), give up beyond 7 (49 squared), and require line of sight.
+//
+// `swelling` is a level, not an event: the goal writes it every tick and
+// EntitySystem integrates it into the fuse, so backing away really does wind the
+// hiss back down instead of merely stopping it.
+namespace {
+inline constexpr float kSwellStartRangeSquared = 9.0F;
+inline constexpr float kSwellGiveUpRangeSquared = 49.0F;
+} // namespace
+
+bool SwellGoal::canStart(SimpleEntity& self, MobAiContext& context, MobBrain& brain) {
+    // Already swelling: keep going even if the target slipped out of the start
+    // radius — that is what `getSwellDir() > 0` means in vanilla's canUse.
+    if (self.swellDirection > 0) {
+        return true;
+    }
+    const auto target = context.actorPosition(brain.combatTarget());
+    if (!target.has_value()) {
+        return false;
+    }
+    const glm::vec3 delta = *target - self.position;
+    return glm::dot(delta, delta) < kSwellStartRangeSquared;
+}
+
+bool SwellGoal::shouldContinue(SimpleEntity& self, MobAiContext& context, MobBrain& brain) {
+    return canStart(self, context, brain);
+}
+
+void SwellGoal::start(SimpleEntity& self, MobAiContext&, MobBrain& brain) {
+    // A swelling creeper stands still (vanilla stops its navigation).
+    brain.navigation().stop(self);
+    brain.setSwelling(true);
+}
+
+void SwellGoal::stop(SimpleEntity&, MobAiContext&, MobBrain& brain) {
+    brain.setSwelling(false);
+}
+
+void SwellGoal::tick(SimpleEntity& self, MobAiContext& context, MobBrain& brain) {
+    const auto target = context.actorPosition(brain.combatTarget());
+    if (!target.has_value()) {
+        brain.setSwelling(false);
+        return;
+    }
+    const glm::vec3 delta = *target - self.position;
+    if (glm::dot(delta, delta) > kSwellGiveUpRangeSquared) {
+        brain.setSwelling(false);
+        return;
+    }
+    if (!context.canSee(self, brain.combatTarget())) {
+        brain.setSwelling(false);
+        return;
+    }
+    brain.navigation().stop(self);
+    brain.setSwelling(true);
+}
+
 bool MeleeAttackGoal::canStart(SimpleEntity& self, MobAiContext& context, MobBrain& brain) {
     // Vanilla's MeleeAttackGoal does not attempt an initial path every tick:
     // after one start check it waits 20 ticks before trying again. This bounds

@@ -191,6 +191,10 @@ inline constexpr BakedIngredient kCraftIng_125[] = {{IngredientDefKind::Block, "
 inline constexpr BakedIngredient kCraftIng_126[] = {{IngredientDefKind::Block, "rebedrock:red_wool"}, {IngredientDefKind::Block, "rebedrock:red_wool"}, {IngredientDefKind::Block, "rebedrock:red_wool"}, {IngredientDefKind::Planks, ""}, {IngredientDefKind::Planks, ""}, {IngredientDefKind::Planks, ""}};
 inline constexpr BakedIngredient kCraftIng_127[] = {{IngredientDefKind::Block, "rebedrock:black_wool"}, {IngredientDefKind::Block, "rebedrock:black_wool"}, {IngredientDefKind::Block, "rebedrock:black_wool"}, {IngredientDefKind::Planks, ""}, {IngredientDefKind::Planks, ""}, {IngredientDefKind::Planks, ""}};
 
+// EXP-3: TNT itself. Five gunpowder and four sand, vanilla's checkerboard —
+// without it the creeper's drop has nowhere to go and TNT is creative-only.
+inline constexpr BakedIngredient kCraftIng_128[] = {{IngredientDefKind::Item, "rebedrock:gunpowder"}, {IngredientDefKind::Block, "rebedrock:sand"}, {IngredientDefKind::Item, "rebedrock:gunpowder"}, {IngredientDefKind::Block, "rebedrock:sand"}, {IngredientDefKind::Item, "rebedrock:gunpowder"}, {IngredientDefKind::Block, "rebedrock:sand"}, {IngredientDefKind::Item, "rebedrock:gunpowder"}, {IngredientDefKind::Block, "rebedrock:sand"}, {IngredientDefKind::Item, "rebedrock:gunpowder"}};
+
 inline constexpr BakedCraftingRecipe kBakedCraftingRecipes[] = {
     {"minecraft:oak_planks", 1, 1, false, false, kCraftIng_0, "rebedrock:oak_planks", 4},
     {"minecraft:spruce_planks", 1, 1, false, false, kCraftIng_1, "rebedrock:spruce_planks", 4},
@@ -327,6 +331,7 @@ inline constexpr BakedCraftingRecipe kBakedCraftingRecipes[] = {
     {"minecraft:green_bed", 3, 2, false, false, kCraftIng_125, "rebedrock:green_bed", 1},
     {"minecraft:red_bed", 3, 2, false, false, kCraftIng_126, "rebedrock:red_bed", 1},
     {"minecraft:black_bed", 3, 2, false, false, kCraftIng_127, "rebedrock:black_bed", 1},
+    {"minecraft:tnt", 3, 3, false, false, kCraftIng_128, "rebedrock:tnt", 1},
 };
 
 inline constexpr BakedFurnaceRecipe kBakedFurnaceRecipes[] = {
