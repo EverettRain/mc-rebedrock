@@ -3472,6 +3472,15 @@ if(BUILD_TESTING)
     target_include_directories(mc_rebedrock_data_codec_test PRIVATE src tests "${glm_SOURCE_DIR}")
     add_test(NAME data_codec COMMAND mc_rebedrock_data_codec_test)
 
+    # ADV-0a: 数据包目录名必须逐字对上真 26.1 的布局（单数 recipe/loot_table/
+    # function/advancement）。用错名字时 list() 只是返回空表，静默失效。
+    add_executable(mc_rebedrock_datapack_paths_test
+        tests/datapack_paths_test.cpp
+    )
+    target_link_libraries(mc_rebedrock_datapack_paths_test PRIVATE mc_rebedrock_runtime)
+    target_include_directories(mc_rebedrock_datapack_paths_test PRIVATE src "${glm_SOURCE_DIR}")
+    add_test(NAME datapack_paths COMMAND mc_rebedrock_datapack_paths_test)
+
     # D-3: recipes resolved from the baked floor + datapack overlay.
     add_executable(mc_rebedrock_recipe_data_test
         tests/recipe_data_test.cpp

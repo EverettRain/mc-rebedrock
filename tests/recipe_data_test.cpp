@@ -345,16 +345,16 @@ void testOverlayMerges() {
     RecipeTable table;
     MemoryProvider pack;
     // A brand-new shapeless recipe.
-    pack.add("recipes/demo_combo.json",
+    pack.add("recipe/demo_combo.json",
              R"({"width":1,"height":2,"shapeless":true,
                  "ingredients":[{"item":"minecraft:coal"},{"item":"minecraft:coal"}],
                  "output":"minecraft:diamond","count":1})");
     // Replace the built-in oak_planks to yield 8 rather than 4.
-    pack.add("recipes/oak_planks.json",
+    pack.add("recipe/oak_planks.json",
              R"({"width":1,"height":1,"ingredients":[{"block":"minecraft:oak_log"}],
                  "output":"minecraft:oak_planks","count":8})");
     // A smelting override/addition.
-    pack.add("recipes/demo_smelt.json",
+    pack.add("recipe/demo_smelt.json",
              R"({"type":"smelting","input":{"block":"minecraft:cobblestone"},
                  "output":"minecraft:stone","count":1,"cookTicks":123,"experience":0.5})");
 
@@ -384,10 +384,10 @@ void testNoDataFallback() {
 void testUnknownIdentifierSkipped() {
     RecipeTable table;
     MemoryProvider pack;
-    pack.add("recipes/bad_item.json",
+    pack.add("recipe/bad_item.json",
              R"({"width":1,"height":1,"ingredients":[{"item":"minecraft:no_such_item"}],
                  "output":"minecraft:oak_planks","count":1})");
-    pack.add("recipes/bad_output.json",
+    pack.add("recipe/bad_output.json",
              R"({"width":1,"height":1,"ingredients":[{"item":"minecraft:coal"}],
                  "output":"minecraft:no_such_block","count":1})");
     table.load(pack);

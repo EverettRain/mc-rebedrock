@@ -126,13 +126,13 @@ void testOverlayMerges() {
     LootTable table;
     MemoryProvider pack;
     // Change stone to drop a diamond.
-    pack.add("loot_tables/blocks/stone.json",
+    pack.add("loot_table/blocks/stone.json",
              R"({"drops":[{"id":"minecraft:diamond","count":1}]})");
     // Give a self-dropping block (dirt) an explicit table.
-    pack.add("loot_tables/blocks/dirt.json",
+    pack.add("loot_table/blocks/dirt.json",
              R"({"drops":[{"id":"minecraft:coal","count":2}]})");
     // Make bookshelf drop nothing.
-    pack.add("loot_tables/blocks/bookshelf.json", R"({"drops":[]})");
+    pack.add("loot_table/blocks/bookshelf.json", R"({"drops":[]})");
 
     table.load(pack);
     assert(table.find(Block::Stone)->stacks[0].item == &mc::gameplay::items::Diamond);
@@ -162,10 +162,10 @@ void testUnknownSkipped() {
     LootTable table;
     MemoryProvider pack;
     // A drop item that does not exist: the whole table is skipped, floor kept.
-    pack.add("loot_tables/blocks/stone.json",
+    pack.add("loot_table/blocks/stone.json",
              R"({"drops":[{"id":"minecraft:no_such_item"}]})");
     // A table for a block that does not exist: skipped entirely.
-    pack.add("loot_tables/blocks/no_such_block.json",
+    pack.add("loot_table/blocks/no_such_block.json",
              R"({"drops":[{"id":"minecraft:stone"}]})");
     table.load(pack);
     assert(table.find(Block::Stone)->stacks[0].block == Block::Cobblestone); // floor kept

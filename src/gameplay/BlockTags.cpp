@@ -1,6 +1,7 @@
 #include "gameplay/BlockTags.hpp"
 
 #include "core/Json.hpp"
+#include "data/DataPackPaths.hpp"
 #include "data/TagFile.hpp"
 #include "world/BlockRegistry.hpp"
 
@@ -119,7 +120,8 @@ constexpr int kMaximumTagDepth = 16;
     const std::string_view name = separator == std::string_view::npos
                                       ? reference
                                       : reference.substr(separator + 1U);
-    return assets::data("tags/block/" + std::string{name} + ".json", space);
+    return assets::data(std::string{data::pack::kBlockTagDir} + "/" + std::string{name} + ".json",
+                        space);
 }
 
 // Accumulates the blocks a tag names, following `#tag` references. `visited`

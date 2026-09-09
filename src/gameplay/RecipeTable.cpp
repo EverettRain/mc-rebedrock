@@ -1,6 +1,7 @@
 #include "gameplay/RecipeTable.hpp"
 
 #include "core/Json.hpp"
+#include "data/DataPackPaths.hpp"
 #include "data/RecipeFile.hpp"
 #include "gameplay/Item.hpp"
 #include "gameplay/ItemRegistry.hpp"
@@ -147,12 +148,14 @@ void RecipeTable::load(const assets::ResourceProvider& resources) {
 }
 
 void RecipeTable::applyOverlay(const assets::ResourceProvider& resources) {
-    // Recipes live under a pack's `data/` half (JE layout: data/<ns>/recipes/),
+    // Recipes live under a pack's `data/` half (JE layout: data/<ns>/recipe/ —
+    // singular, see data/DataPackPaths.hpp; this call site read "recipes" until
+    // ADV-0 and therefore matched nothing in a real 26.1 pack),
     // never `assets/` — PACK-1's on-disk per-save datapacks are the first real
     // caller to scan a directory for these, which is what surfaced list()'s
     // default-to-assets root as a bug fixed alongside this card.
     for (const auto& location :
-        resources.list("minecraft", "recipes", assets::PackType::ServerData)) {
+        resources.list("minecraft", data::pack::kRecipeDir, assets::PackType::ServerData)) {
         const auto bytes = resources.readBytes(location);
         if (bytes.empty()) {
             continue;
@@ -164,7 +167,7 @@ void RecipeTable::applyOverlay(const assets::ResourceProvider& resources) {
         } catch (const std::exception&) {
             continue; // a malformed recipe must not take the rest of the pack down
         }
-        const std::string name = keyFor(location, "recipes");
+        const std::string name = keyFor(location, data::pack::kRecipeDir);
 
         // A `type` of "smelting" selects the furnace shape; anything else (and the
         // default) is a crafting recipe.

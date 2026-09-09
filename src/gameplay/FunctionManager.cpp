@@ -2,6 +2,7 @@
 
 #include "assets/ResourceProvider.hpp"
 #include "core/Json.hpp"
+#include "data/DataPackPaths.hpp"
 #include "data/TagFile.hpp"
 
 #include <algorithm>
@@ -16,9 +17,12 @@ namespace {
 // prefix, then the file extension.
 [[nodiscard]] std::string functionIdFromLocation(const assets::ResourceLocation& location) {
     std::string_view path = location.path;
-    constexpr std::string_view kPrefix = "functions/";
-    if (path.size() >= kPrefix.size() && path.substr(0, kPrefix.size()) == kPrefix) {
-        path.remove_prefix(kPrefix.size());
+    // `function/<id>.mcfunction` -> `<id>`; the directory name is the one in
+    // data/DataPackPaths.hpp, never a second copy of the literal.
+    constexpr std::string_view kDir = data::pack::kFunctionDir;
+    if (path.size() > kDir.size() && path.substr(0, kDir.size()) == kDir &&
+        path[kDir.size()] == '/') {
+        path.remove_prefix(kDir.size() + 1U);
     }
     constexpr std::string_view kSuffix = ".mcfunction";
     if (path.size() >= kSuffix.size() && path.substr(path.size() - kSuffix.size()) == kSuffix) {
@@ -60,7 +64,7 @@ void forEachLine(std::string_view text, Visit&& visit) {
 
 // Turns a tag reference (`#minecraft:tick`, or a bare `tick` defaulting to
 // `minecraft`) into the tag file's content path — functions/ tags live under
-// `tags/functions/`, block tags under `tags/block/`, the only difference from
+// `tags/function/`, block tags under `tags/block/`, the only difference from
 // BlockTags.cpp's tagLocation.
 [[nodiscard]] assets::ResourceLocation functionTagLocation(std::string_view reference) {
     const auto separator = reference.find(':');
@@ -68,7 +72,8 @@ void forEachLine(std::string_view text, Visit&& visit) {
         separator == std::string_view::npos ? std::string_view{"minecraft"} : reference.substr(0, separator);
     const std::string_view name =
         separator == std::string_view::npos ? reference : reference.substr(separator + 1U);
-    return assets::data("tags/functions/" + std::string{name} + ".json", space);
+    return assets::data(std::string{data::pack::kFunctionTagDir} + "/" + std::string{name} + ".json",
+                        space);
 }
 
 // How deep a chain of `#tag` references inside a function tag may go —
@@ -143,7 +148,7 @@ void FunctionManager::load(const command::CommandDispatcher& dispatcher,
     reset();
 
     for (const auto& location :
-        resources.list("minecraft", "functions", assets::PackType::ServerData)) {
+        resources.list("minecraft", data::pack::kFunctionDir, assets::PackType::ServerData)) {
         if (location.path.size() < 11U ||
             location.path.substr(location.path.size() - 11U) != ".mcfunction") {
             continue; // functions/ may hold nothing else, but a stray file must not crash discovery
@@ -180,7 +185,7 @@ void FunctionManager::load(const command::CommandDispatcher& dispatcher,
 
     // Function tags: #minecraft:tick and #minecraft:load are just two
     // conventionally-named tags among however many a pack defines — expand
-    // every tags/functions/*.json this stack carries, but only the two this
+    // every tags/function/*.json this stack carries, but only the two this
     // card actually schedules (tick every authoritative tick, load once) are
     // kept as named lists; an arbitrary third-party tag a datapack defines
     // purely so /function can target a group via # is discoverable through the
@@ -188,7 +193,9 @@ void FunctionManager::load(const command::CommandDispatcher& dispatcher,
     // has no reader for it yet (noted as a deferred gap, not a silent one).
     const auto expand = [&](const char* tagName, std::vector<std::string>& out) {
         std::unordered_set<std::string> visited;
-        collectFunctionTag(resources, assets::data(std::string{"tags/functions/"} + tagName + ".json"),
+        collectFunctionTag(resources,
+                           assets::data(std::string{data::pack::kFunctionTagDir} + "/" + tagName +
+                                        ".json"),
                            0, visited, functions_, out);
         // Deterministic order (REGULAR §3 / the card's #2): sorted, not
         // discovery/hash order, so two runs (or two members inserted in a

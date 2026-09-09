@@ -67,7 +67,7 @@ struct NullHost final : mc::gameplay::SimulationHost {
     void onEatingCancelled() override {}
 };
 
-// Writes a minimal per-save datapack with a `functions/` tree + tags/functions
+// Writes a minimal per-save datapack with a `function/` tree + tags/function
 // tick/load tags under `<save>/datapacks/<name>/`.
 void writeFunctionPack(const std::filesystem::path& packRoot) {
     writeFile(packRoot / "pack.mcmeta",
@@ -75,7 +75,7 @@ void writeFunctionPack(const std::filesystem::path& packRoot) {
     // A simple function: two gamerule flips, a comment, and a blank line — both
     // must be skipped at compile time (never counted against the command
     // budget or replayed).
-    writeFile(packRoot / "data" / "minecraft" / "functions" / "hello.mcfunction",
+    writeFile(packRoot / "data" / "minecraft" / "function" / "hello.mcfunction",
               "# a comment line, skipped entirely\n"
               "\n"
               "gamerule advance_time false\n"
@@ -84,20 +84,20 @@ void writeFunctionPack(const std::filesystem::path& packRoot) {
     // order-sensitive way — two members, "a" and "b", so a stable sort is
     // provable (b runs, then a, if the ids were iterated in reverse/hash order
     // the net gamerule value would tell the two orders apart).
-    writeFile(packRoot / "data" / "minecraft" / "functions" / "tick_a.mcfunction",
+    writeFile(packRoot / "data" / "minecraft" / "function" / "tick_a.mcfunction",
               "gamerule advance_time false\n");
-    writeFile(packRoot / "data" / "minecraft" / "functions" / "tick_b.mcfunction",
+    writeFile(packRoot / "data" / "minecraft" / "function" / "tick_b.mcfunction",
               "gamerule advance_time true\n");
-    writeFile(packRoot / "data" / "minecraft" / "tags" / "functions" / "tick.json",
+    writeFile(packRoot / "data" / "minecraft" / "tags" / "function" / "tick.json",
               R"({"values": ["minecraft:tick_b", "minecraft:tick_a"]})");
     // A #load function: sets a distinguishable gamerule value once.
-    writeFile(packRoot / "data" / "minecraft" / "functions" / "on_load.mcfunction",
+    writeFile(packRoot / "data" / "minecraft" / "function" / "on_load.mcfunction",
               "gamerule keep_inventory false\n");
-    writeFile(packRoot / "data" / "minecraft" / "tags" / "functions" / "load.json",
+    writeFile(packRoot / "data" / "minecraft" / "tags" / "function" / "load.json",
               R"({"values": ["minecraft:on_load"]})");
     // A self-recursive function: proves the guardrail halts it instead of
     // hanging.
-    writeFile(packRoot / "data" / "minecraft" / "functions" / "loop.mcfunction",
+    writeFile(packRoot / "data" / "minecraft" / "function" / "loop.mcfunction",
               "function minecraft:loop\n");
 }
 
@@ -203,7 +203,7 @@ int main() {
         const auto sabotageSave = tmp / "saves" / "counting-world";
         writeFile(sabotageSave / "datapacks" / "pack" / "pack.mcmeta",
                   R"({"pack": {"pack_format": 84, "description": "d"}})");
-        writeFile(sabotageSave / "datapacks" / "pack" / "data" / "minecraft" / "functions" / "say.mcfunction",
+        writeFile(sabotageSave / "datapacks" / "pack" / "data" / "minecraft" / "function" / "say.mcfunction",
                   "say hi\n");
 
         gameplay::PerSaveDataStack stack;
