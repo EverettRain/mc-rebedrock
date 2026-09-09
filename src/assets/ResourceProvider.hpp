@@ -124,14 +124,24 @@ class StandardPackResourceProvider final : public ResourceProvider {
     [[nodiscard]] std::vector<ResourceLocation> list(
         std::string_view space, std::string_view pathPrefix,
         PackType type = PackType::ClientResources) const override;
-    [[nodiscard]] std::vector<PackLanguage> languages() const override { return languages_; }
+    [[nodiscard]] std::vector<PackLanguage> languages() const override {
+        return metadata_.languages;
+    }
     [[nodiscard]] std::filesystem::path resourceRoot() const override { return packRoot_; }
 
     [[nodiscard]] const std::filesystem::path& packRoot() const { return packRoot_; }
 
+    // 这个包自己的 pack.mcmeta，构造时读一次。语言目录以外还有两个消费者：
+    // 资源包选择界面要 description 与格式范围，栈装配要 overlays。它们从前各自
+    // 再打开一次同一个文件重新解析（Application 里那个 readMetadata lambda），
+    // 于是同一份元数据在进程里有两种可能不一致的形态。
+    // 解析失败或没有 pack.mcmeta 时是一份默认值（格式范围 0-0，PackMetadata
+    // 文档化的「没表态」形态），不是抛异常——诊断归包发现流程。
+    [[nodiscard]] const PackMetadata& metadata() const { return metadata_; }
+
   private:
     std::filesystem::path packRoot_;
-    std::vector<PackLanguage> languages_;
+    PackMetadata metadata_;
 };
 
 // A priority stack of providers, the way a client layers enabled packs over the

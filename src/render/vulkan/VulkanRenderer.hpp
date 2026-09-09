@@ -1,6 +1,6 @@
 #pragma once
 
-#include "assets/ResourceProvider.hpp"
+#include "assets/ResourcePackLibrary.hpp"
 #include "config/GameOptions.hpp"
 #include "render/MeshData.hpp"
 #include "render/TestScene.hpp"
@@ -19,7 +19,11 @@ class VulkanRenderer final {
   public:
     VulkanRenderer(
         std::filesystem::path shaderRoot,
-        const assets::ResourceProvider& resourceProvider,
+        // 资源包库，而不是一个已经叠好的 provider：渲染器除了读资源，还要让前端
+        // 的资源包选择界面列出包、启停、调序、提交。传 const ResourceProvider&
+        // 时那些操作一个都够不着——PackManager 是 Application::run() 的局部变量，
+        // 渲染器既看不见它，也换不掉手里这个 provider
+        assets::ResourcePackLibrary& packLibrary,
         world::ChunkStreamer& chunkStreamer,
         config::GameOptions options,
         std::filesystem::path optionsPath,

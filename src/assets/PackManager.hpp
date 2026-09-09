@@ -56,6 +56,16 @@ enum class PackStackKind : std::uint8_t {
 // PACK REGULAR #9 "记账 + 拒/降级，不静默乱载" is satisfied by *recording* the
 // mismatch (PackCompatibility::compatible == false) so a caller can choose to
 // warn, refuse to enable, or load anyway; PackManager itself never hides it.
+// 本 build 对标的 **Java** 资源包/数据包格式号（26.1 的 version.json：
+// resource_major 84 / data_major 101）。
+//
+// ★ 这不是 core::kVersion.packVersion。那一对是 ReBedrock 自己的世代号（1/1），
+//   和 JE 的 pack_format 不是同一把尺子——玩家放进 resourcepacks/ 的是 JE 形态的包，
+//   它 pack.mcmeta 里写的 84 要和这里的 84 比。拿自家世代号去量，结果是每一个真包
+//   都被判成"不兼容"，而资源包选择界面正要把这个判定显示给玩家看。
+//   pack.mcmeta 里 overlay 的版本门控用的也是同一个数。
+inline constexpr core::PackVersion kTargetJavaPackVersion{.resource = 84U, .data = 101U};
+
 struct PackCompatibility final {
     int packFormatMin = 0;
     int packFormatMax = 0;
