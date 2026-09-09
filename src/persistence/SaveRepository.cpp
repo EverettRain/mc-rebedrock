@@ -2930,13 +2930,29 @@ constexpr std::array<SaveBlockOwner, 14> kSaveBlockOwners{{
     {kDataPackBlockTag, kDataPackBlockVersion, &writeDataPackOwner, &readDataPackOwner},
 }};
 
-// META-2b: read only the version header from a save's world.dat, without loading
-// any region chunk. world.dat itself is small since M-3 moved edits/creatures to
+// Everything a *listing* needs out of a save's world.dat: which build wrote it
+// (VERS) and which game mode it is in (WRLD's first field). Two blocks, one
+// walk — see readListingFacts.
+struct ListingFacts final {
+    SaveVersionHeader versionHeader;
+    // Absent when the save carries no WRLD block at all. A pre-block-registry
+    // format (< kFirstOwnerDrivenFormatVersion) keeps its game mode at a fixed
+    // header offset that only loadLegacy knows how to reach, and re-deriving
+    // that layout here would be a second copy of it; the caller leaves
+    // SaveSummary::gameMode at its default instead of inventing a mode.
+    std::optional<gameplay::GameMode> gameMode;
+};
+
+// META-2b: read the listing facts from a save's world.dat, without loading any
+// region chunk. world.dat itself is small since M-3 moved edits/creatures to
 // region files, so reading it whole is cheap; the point of "lazy" is that the
-// region/ directory is never touched. Reconstructs a minimal header from the
-// format number when the save predates the VERS block (mirrors load()); throws
-// on a corrupt or unreadable file so the caller can skip that world.
-[[nodiscard]] SaveVersionHeader readVersionHeaderOnly(const std::filesystem::path& worldDat) {
+// region/ directory is never touched. Both blocks are picked up in the same
+// single pass over the block frames — the file is already in memory, so a
+// second pass (or a second open) would be paying twice for it. Reconstructs a
+// minimal version header from the format number when the save predates the VERS
+// block (mirrors load()); throws on a corrupt or unreadable file so the caller
+// can skip that world.
+[[nodiscard]] ListingFacts readListingFacts(const std::filesystem::path& worldDat) {
     std::ifstream input{worldDat, std::ios::binary | std::ios::ate};
     if (!input) throw std::runtime_error("Unable to open world.dat");
     const auto length = input.tellg();
@@ -2957,14 +2973,17 @@ constexpr std::array<SaveBlockOwner, 14> kSaveBlockOwners{{
 
     // The reconstructed default, replaced below if a VERS block is present. Same
     // rule as load(): worldVersion is the save's own format number, name unknown.
-    SaveVersionHeader header{formatVersion, {}, 0U, {}, {}, false, /*derived=*/true};
+    ListingFacts facts;
+    facts.versionHeader = SaveVersionHeader{formatVersion, {}, 0U, {}, {}, false,
+                                            /*derived=*/true};
     if (formatVersion < kFirstOwnerDrivenFormatVersion) {
-        // Pre-owner-block saves have no VERS block at all; the reconstruction is
-        // the whole answer.
-        return header;
+        // Pre-owner-block saves have no block sequence at all: no VERS, and no
+        // WRLD either. The reconstruction is the whole answer.
+        return facts;
     }
     // Skip the seed and the two palettes to reach the flat block sequence, then
-    // walk the frames looking for VERS, skipping every other owner by its size.
+    // walk the frames looking for VERS and WRLD, skipping every other owner by
+    // its size.
     cursor += sizeof(std::uint64_t);  // seed
     const auto skipPalette = [&] {
         const auto count = readInteger<std::uint16_t>(payload, cursor);
@@ -2974,16 +2993,41 @@ constexpr std::array<SaveBlockOwner, 14> kSaveBlockOwners{{
     };
     skipPalette();  // block palette
     skipPalette();  // item palette
-    while (cursor < payload.size()) {
+    bool sawVersion = false;
+    while (cursor < payload.size() && !(sawVersion && facts.gameMode.has_value())) {
         std::size_t peek = cursor;
         const auto blockHeader = readBlockHeader(payload, peek, "summary");
         if (blockHeader.tag == kVersionBlockTag && blockHeader.version <= kVersionBlockVersion) {
             std::size_t bodyCursor = blockHeader.bodyStart;
-            return parseVersionBlockBody(payload, bodyCursor);
+            facts.versionHeader = parseVersionBlockBody(payload, bodyCursor);
+            sawVersion = true;
+        } else if (blockHeader.tag == kWorldBlockTag &&
+                   blockHeader.version <= kWorldBlockVersion) {
+            // Decoded by the real reader rather than by a hand-copied field
+            // order: a scratch SaveGame absorbs the whole block (mode,
+            // difficulty, allowCommands) and the listing keeps the one field it
+            // came for. readWorldBlock's validation — an out-of-range mode byte
+            // is a corrupt save — travels with it, so a damaged world is thrown
+            // out of the listing exactly as it would be out of a load().
+            SaveGame scratch;
+            SaveReadContext context{scratch, {}, {}};
+            std::size_t bodyCursor = blockHeader.bodyStart;
+            readWorldBlock(payload, bodyCursor, blockHeader, context);
+            facts.gameMode = scratch.gameMode;
         }
-        cursor = blockHeader.end;  // not VERS: skip by size, never load its content
+        cursor = blockHeader.end;  // skip by size, never load an unwanted block's content
     }
-    return header;  // no VERS block: the reconstructed header stands
+    return facts;  // no VERS block: the reconstructed header stands
+}
+
+// The one place SaveSummary's two world.dat-sourced fields get filled, so the
+// plain listing and the version-aware one cannot come to disagree about what a
+// world's third line says.
+void applyListingFacts(SaveSummary& summary, const ListingFacts& facts) {
+    summary.versionName = facts.versionHeader.versionName;
+    // A save with no WRLD block reports no mode; leaving the default in place is
+    // the honest answer, not GameMode::Survival dressed up as one.
+    if (facts.gameMode.has_value()) summary.gameMode = *facts.gameMode;
 }
 
 [[nodiscard]] WorldCompatibility classifyCompatibility(std::uint32_t worldVersion) {
@@ -3030,6 +3074,17 @@ std::vector<SaveSummary> SaveRepository::list() const {
             std::error_code iconError;
             summary.hasIcon =
                 std::filesystem::is_regular_file(entry.path() / kIconFileName, iconError);
+            // The list's third line (game mode + version name), read out of
+            // world.dat by the same one-pass walk the version-aware listing
+            // uses. Tolerantly: level.properties alone is what makes a world
+            // listable, so a world.dat that is absent, damaged, or in a format
+            // this walk cannot follow must not delete the entry — it leaves
+            // those two fields at their documented defaults instead.
+            try {
+                applyListingFacts(summary, readListingFacts(entry.path() / "world.dat"));
+            } catch (const std::exception&) {
+                // Unreadable self-description, still a listable world.
+            }
             saves.push_back(std::move(summary));
         } catch (const std::exception&) {
             // A damaged world remains isolated and does not hide healthy saves.
@@ -3061,7 +3116,11 @@ std::vector<WorldSummary> SaveRepository::worldSummaries() const {
             summary.summary.hasIcon =
                 std::filesystem::is_regular_file(entry.path() / kIconFileName, iconError);
             // Lazy: only world.dat's header, never the region chunks.
-            summary.versionHeader = readVersionHeaderOnly(entry.path() / "world.dat");
+            const auto facts = readListingFacts(entry.path() / "world.dat");
+            summary.versionHeader = facts.versionHeader;
+            // summary.summary.versionName is assigned from that same header, so
+            // the two copies of the name in a WorldSummary cannot drift.
+            applyListingFacts(summary.summary, facts);
             summary.compatibility = classifyCompatibility(summary.versionHeader.worldVersion);
             std::error_code sizeError;
             summary.sizeBytes = std::filesystem::file_size(entry.path() / "world.dat", sizeError);
@@ -3871,6 +3930,14 @@ SaveGame SaveRepository::load(const std::string& identifier) const {
     } else {
         loadLegacy(payload, cursor, formatVersion, game);
     }
+    // An opened world's summary agrees with the world it came from, the same way
+    // hasIcon above does. Both fields are *derived* here from the values the
+    // blocks just produced, never parsed a second time — game.gameMode and
+    // game.versionHeader stay the authority, and summary is their listing-shaped
+    // view, so a list entry and the SaveGame behind it cannot say different
+    // things about the same world.
+    game.summary.gameMode = game.gameMode;
+    game.summary.versionName = game.versionHeader.versionName;
     return game;
 }
 

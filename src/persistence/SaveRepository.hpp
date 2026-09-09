@@ -38,6 +38,35 @@ struct SaveSummary final {
     // throw away) all of them just to draw a screen that may show none. The
     // consumer loads the pixels from iconPath() only for the entries it draws.
     bool hasIcon = false;
+    // The two facts the world-selection list's third line is made of. 26.1 draws
+    // it in WorldSelectionList.WorldListEntry.extractContent (line 443) from
+    // LevelSummary.getInfo(), and that string is built in
+    // LevelSummary.createInfo() lines 166-186: the game mode's name, then
+    // ", Version: " and the version that wrote the world.
+    //
+    // Neither is in level.properties, and neither gets a copy there: both are
+    // lifted out of world.dat's block sequence by the *same single walk* that
+    // already produces the version header (readListingFacts), so world.dat stays
+    // the one place either fact is written down.
+    //
+    // gameMode is the WRLD block's first byte — the one appendWorldBlock writes
+    // and readWorldBlock validates. A world whose world.dat cannot be read, and
+    // one old enough to predate the block registry (format < 17, where the mode
+    // sits at a fixed offset only loadLegacy knows how to find), keep this
+    // default rather than have a mode invented for them; it is deliberately the
+    // same value a freshly constructed SaveGame carries, below.
+    gameplay::GameMode gameMode = gameplay::GameMode::Creative;
+    // SaveVersionHeader::versionName for this world, i.e. the name the VERS
+    // block recorded at *write* time. Empty when that header had to be
+    // reconstructed from the format number (SaveVersionHeader::derived) — a
+    // pre-VERS world genuinely does not record which build wrote it, so the
+    // listing shows no version rather than guessing one.
+    //
+    // In a WorldSummary this is the same string as versionHeader.versionName:
+    // SaveSummary is the subset handed to callers of list(), which never see the
+    // full header. They cannot drift, because worldSummaries() assigns this one
+    // from that one — a single read of a single block feeds both.
+    std::string versionName;
 };
 
 // A save's self-description: which build wrote it (META-1, the equivalent of
