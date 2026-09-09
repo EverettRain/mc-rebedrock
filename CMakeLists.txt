@@ -298,6 +298,9 @@ set(MC_REBEDROCK_RUNTIME_SOURCES
     src/gameplay/CustomNames.cpp
     src/gameplay/CraftingSystem.cpp
     src/gameplay/RecipeTable.cpp
+    src/gameplay/RecipeBook.cpp
+    src/gameplay/RecipeBookCategory.cpp
+    src/gameplay/StackedItemContents.cpp
     src/gameplay/EntitySystem.cpp
     src/gameplay/Explosion.cpp
     src/gameplay/EntityRenderSnapshot.cpp
@@ -3874,6 +3877,16 @@ if(BUILD_TESTING)
         "${glm_SOURCE_DIR}"
     )
     add_test(NAME anvil COMMAND mc_rebedrock_anvil_test)
+
+    add_executable(mc_rebedrock_recipe_book_test
+        tests/recipe_book_test.cpp
+    )
+    target_link_libraries(mc_rebedrock_recipe_book_test PRIVATE mc_rebedrock_runtime)
+    target_include_directories(mc_rebedrock_recipe_book_test PRIVATE
+        src
+        "${glm_SOURCE_DIR}"
+    )
+    add_test(NAME recipe_book COMMAND mc_rebedrock_recipe_book_test)
 
     # RN-11b 的双配置验收暴露：RelWithDebInfo 的 NDEBUG 会删掉 assert 内的夹具操作，
     # block_entity_store/ticker 因此崩溃，其他 assert 测试则可能空跑。仅测试目标保留断言，

@@ -1323,6 +1323,88 @@ void readDataPackBlock(std::span<const std::uint8_t> payload, std::size_t& curso
     }
 }
 
+// The RCPB block carries the player's recipe book: which recipes are unlocked
+// and which of those are still highlighted ("new, not looked at yet"). Same flat
+// two-list shape ServerRecipeBook.Packed has (ServerRecipeBook.java:150-159:
+// `recipes` + `toBeDisplayed`), and the same framing DPKS uses:
+//
+//   u32 blockTag          // 'R','C','P','B'
+//   u32 blockSizeBytes    // whole block length incl. this field
+//   u16 blockVersion      // 1
+//   u16 unlockedCount
+//   unlocked[]: string    // u16 length-prefixed recipe identifier
+//   u16 highlightCount
+//   highlight[]: string
+//
+// Identifiers, never dense indices: the recipe table is data-driven (a datapack
+// overlay may append or replace entries), so an index is a per-run value that
+// would silently point at a different recipe next load.
+//
+// A pre-recipe-book world has no RCPB block at all; the reader never finds the
+// tag and both lists load empty — "nothing unlocked yet", exactly what a fresh
+// world starts with. Appending an owner block needs no format bump (the same
+// shape XPOB/PJTL/DPKS used).
+constexpr std::uint32_t kRecipeBookBlockTag =
+    'R' | ('C' << 8) | ('P' << 16) | ('B' << 24);
+constexpr std::uint16_t kRecipeBookBlockVersion = 1U;
+
+void appendRecipeBookBlock(std::vector<std::uint8_t>& bytes, const SaveGame& game) {
+    const std::size_t blockStart = bytes.size();
+    appendInteger(bytes, kRecipeBookBlockTag);
+    appendInteger(bytes, 0U);  // blockSizeBytes, patched below
+    appendInteger(bytes, kRecipeBookBlockVersion);
+    const auto appendList = [&bytes](const std::vector<std::string>& ids) {
+        appendInteger(bytes, static_cast<std::uint16_t>(ids.size()));
+        for (const auto& id : ids) {
+            appendString(bytes, id);
+        }
+    };
+    appendList(game.unlockedRecipes);
+    appendList(game.highlightedRecipes);
+    const auto blockSize = static_cast<std::uint32_t>(bytes.size() - blockStart);
+    for (std::size_t offset = 0; offset < sizeof(std::uint32_t); ++offset) {
+        bytes[blockStart + 4U + offset] =
+            static_cast<std::uint8_t>(blockSize >> (offset * 8U));
+    }
+}
+
+void readRecipeBookBlock(std::span<const std::uint8_t> payload, std::size_t& cursor,
+                         SaveGame& game) {
+    const std::size_t blockStart = cursor;
+    if (blockStart + 12U > payload.size()) {
+        throw std::runtime_error("world.dat recipe book block is truncated");
+    }
+    const auto tag = readInteger<std::uint32_t>(payload, cursor);
+    if (tag != kRecipeBookBlockTag) {
+        throw std::runtime_error("world.dat has an invalid recipe book block");
+    }
+    const auto blockSize = readInteger<std::uint32_t>(payload, cursor);
+    if (blockSize < 12U || static_cast<std::size_t>(blockSize) > payload.size() - blockStart) {
+        throw std::runtime_error("world.dat recipe book block is malformed");
+    }
+    const auto blockVersion = readInteger<std::uint16_t>(payload, cursor);
+    if (blockVersion > kRecipeBookBlockVersion) {
+        cursor = blockStart + blockSize;
+        return;
+    }
+    const std::size_t blockEnd = blockStart + blockSize;
+    const auto readList = [&](std::vector<std::string>& ids) {
+        const auto count = readInteger<std::uint16_t>(payload, cursor);
+        ids.reserve(static_cast<std::size_t>(count));
+        for (std::uint16_t index = 0; index < count; ++index) {
+            if (cursor >= blockEnd) {
+                throw std::runtime_error("world.dat recipe book block is truncated");
+            }
+            ids.push_back(readString(payload, cursor));
+        }
+    };
+    readList(game.unlockedRecipes);
+    readList(game.highlightedRecipes);
+    if (cursor != blockEnd) {
+        throw std::runtime_error("world.dat recipe book block has trailing data");
+    }
+}
+
 // The CLOCK block is the self-describing region format 13 appends after the
 // entity block, mirroring the GameRules framing:
 //
@@ -2909,7 +2991,16 @@ void readDataPackOwner(std::span<const std::uint8_t> payload, std::size_t& curso
     readDataPackBlock(payload, cursor, context.game.enabledDataPacks);
 }
 
-constexpr std::array<SaveBlockOwner, 14> kSaveBlockOwners{{
+void writeRecipeBookOwner(std::vector<std::uint8_t>& bytes, const SaveWriteContext& context) {
+    appendRecipeBookBlock(bytes, context.game);
+}
+void readRecipeBookOwner(std::span<const std::uint8_t> payload, std::size_t& cursor,
+                         const SaveBlockHeader& header, SaveReadContext& context) {
+    cursor = header.bodyStart - kBlockHeaderBytes;
+    readRecipeBookBlock(payload, cursor, context.game);
+}
+
+constexpr std::array<SaveBlockOwner, 15> kSaveBlockOwners{{
     {kVersionBlockTag, kVersionBlockVersion, &appendVersionBlock, &readVersionBlock},
     {kWorldBlockTag, kWorldBlockVersion, &appendWorldBlock, &readWorldBlock},
     {kPlayerBlockTag, kPlayerBlockVersion, &appendPlayerBlock, &readPlayerBlock},
@@ -2928,6 +3019,8 @@ constexpr std::array<SaveBlockOwner, 14> kSaveBlockOwners{{
      &readExperienceOrbOwner},
     {kProjectileBlockTag, kProjectileBlockVersion, &writeProjectileOwner, &readProjectileOwner},
     {kDataPackBlockTag, kDataPackBlockVersion, &writeDataPackOwner, &readDataPackOwner},
+    {kRecipeBookBlockTag, kRecipeBookBlockVersion, &writeRecipeBookOwner,
+     &readRecipeBookOwner},
 }};
 
 // Everything a *listing* needs out of a save's world.dat: which build wrote it

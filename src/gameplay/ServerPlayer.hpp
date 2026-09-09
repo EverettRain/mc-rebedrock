@@ -21,6 +21,7 @@
 #include "gameplay/PlayerController.hpp"
 #include "gameplay/PlayerExperience.hpp"
 #include "gameplay/PlayerVitals.hpp"
+#include "gameplay/RecipeBook.hpp"
 
 #include <glm/vec3.hpp>
 
@@ -51,6 +52,10 @@ struct ServerPlayer final {
     // Mainhand stays inventory.selectedStack() — not duplicated here.
     EquipmentSlots equipment;
     CraftingSystem crafting;
+    // 配方书：已解锁 / 待高亮两个集合。26.1 里 `ServerRecipeBook` 也是挂在
+    // ServerPlayer 上的（ServerPlayer.java:1485-1488 的 `this.recipeBook`），
+    // 因为它是**每个玩家一份**的进度，不是世界状态。
+    RecipeBook recipeBook;
     // ENCH-2: the open enchanting screen's two input slots and derived offers.
     // A sibling of `crafting` for the same reason: vanilla's EnchantmentMenu,
     // like the crafting grid, is menu-scoped state the PLAYER carries and hands

@@ -27,7 +27,9 @@ namespace {
         blockIs(stack, AcaciaPlanks) || blockIs(stack, DarkOakPlanks);
 }
 
-[[nodiscard]] bool ingredientMatches(
+} // namespace
+
+bool ingredientMatches(
     const RecipeIngredient& ingredient,
     const ItemStack& stack) {
     switch (ingredient.kind) {
@@ -43,14 +45,14 @@ namespace {
     return false;
 }
 
+namespace {
 
-template <std::size_t Size>
 [[nodiscard]] bool shapedRecipeMatches(
     const CraftingRecipe& recipe,
-    const std::array<ItemStack, Size>& grid,
+    std::span<const ItemStack> grid,
     std::size_t gridWidth,
     bool mirrored) {
-    const std::size_t gridHeight = Size / gridWidth;
+    const std::size_t gridHeight = grid.size() / gridWidth;
     if (recipe.width > gridWidth || recipe.height > gridHeight) return false;
     for (std::size_t offsetY = 0; offsetY + recipe.height <= gridHeight; ++offsetY) {
         for (std::size_t offsetX = 0; offsetX + recipe.width <= gridWidth; ++offsetX) {
@@ -78,10 +80,9 @@ template <std::size_t Size>
     return false;
 }
 
-template <std::size_t Size>
 [[nodiscard]] bool shapelessRecipeMatches(
     const CraftingRecipe& recipe,
-    const std::array<ItemStack, Size>& grid) {
+    std::span<const ItemStack> grid) {
     const auto occupied = std::ranges::count_if(
         grid, [](const ItemStack& stack) { return !stack.empty(); });
     if (static_cast<std::size_t>(occupied) != recipe.ingredients.size()) return false;
@@ -101,21 +102,36 @@ template <std::size_t Size>
     return true;
 }
 
-template <std::size_t Size>
-[[nodiscard]] const CraftingRecipe* matchedCraftingRecipe(
-    const std::array<ItemStack, Size>& grid) {
-    const std::size_t gridWidth = Size == 4U ? 2U : 3U;
+} // namespace
+
+bool craftingRecipeMatches(const CraftingRecipe& recipe, std::span<const ItemStack> grid,
+                           std::size_t gridWidth) {
+    const std::size_t gridHeight = grid.size() / gridWidth;
+    if (recipe.width > gridWidth || recipe.height > gridHeight) return false;
+    if (recipe.shapeless) {
+        return shapelessRecipeMatches(recipe, grid);
+    }
+    return shapedRecipeMatches(recipe, grid, gridWidth, false) ||
+        (recipe.allowMirror && shapedRecipeMatches(recipe, grid, gridWidth, true));
+}
+
+const CraftingRecipe* matchedCraftingRecipe(std::span<const ItemStack> grid,
+                                            std::size_t gridWidth) {
     for (const auto& recipe : recipeTable().crafting()) {
-        if (recipe.width > gridWidth || recipe.height > gridWidth) continue;
-        if (recipe.shapeless) {
-            if (shapelessRecipeMatches(recipe, grid)) return &recipe;
-        } else if (shapedRecipeMatches(recipe, grid, gridWidth, false) ||
-                   (recipe.allowMirror &&
-                    shapedRecipeMatches(recipe, grid, gridWidth, true))) {
-            return &recipe;
-        }
+        if (craftingRecipeMatches(recipe, grid, gridWidth)) return &recipe;
     }
     return nullptr;
+}
+
+namespace {
+
+// 玩家格是 2x2、工作台是 3x3；网格的边长由它的格数定，不再各写一遍。
+template <std::size_t Size>
+[[nodiscard]] const CraftingRecipe* matchedRecipeForGrid(
+    const std::array<ItemStack, Size>& grid) {
+    static_assert(Size == 4U || Size == 9U, "合成网格只有 2x2 与 3x3 两种");
+    return matchedCraftingRecipe(std::span<const ItemStack>{grid},
+                                 Size == 4U ? 2U : 3U);
 }
 
 } // namespace
@@ -245,7 +261,7 @@ bool CraftingSystem::moveTableInto(ItemStack& stack) {
 
 template <std::size_t Size>
 ItemStack CraftingSystem::recipeOutput(const std::array<ItemStack, Size>& grid) {
-    const auto* recipe = matchedCraftingRecipe(grid);
+    const auto* recipe = matchedRecipeForGrid(grid);
     return recipe != nullptr ? recipe->output : ItemStack{};
 }
 

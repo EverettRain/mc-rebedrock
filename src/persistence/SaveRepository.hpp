@@ -320,6 +320,16 @@ struct SaveGame final {
     // discovered pack starts disabled" — the all-built-in default the sparse-
     // persistence rule requires, not a crash.
     std::vector<std::string> enabledDataPacks;
+    // 配方书：玩家已解锁的配方标识符，和其中「新解锁、还没被看过」的那些
+    // （26.1 `ServerRecipeBook.Packed`（ServerRecipeBook.java:150-159）的
+    // `recipes` 与 `toBeDisplayed` 两个列表）。自描述块 RCPB，跟 XPOB/PJTL/DPKS
+    // 一样是**追加一个块、不动格式号**——旧存档根本没有这个块，读进来就是两个空
+    // 集合，也就是「一条配方都还没解锁」，与新开一个世界完全一致。
+    //
+    // 存的是**标识符字符串**不是稠密下标：配方表是数据驱动的（datapack overlay
+    // 可以追加/覆盖），下标是一次运行内的值，落进存档就会在下次加载时错位。
+    std::vector<std::string> unlockedRecipes;
+    std::vector<std::string> highlightedRecipes;
 };
 
 // How a stored world's save format relates to this build's (META-2b), decided by
