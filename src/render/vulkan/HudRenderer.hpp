@@ -40,6 +40,8 @@
 #include "ui/TooltipLayout.hpp"
 #include "ui/SubtitleFeed.hpp"
 #include "ui/Toast.hpp"
+#include "gameplay/SnapshotSlots.hpp"
+#include "ui/ContainerPage.hpp"
 #include "ui/HudLayout.hpp"
 #include "ui/ScrollingText.hpp"
 #include "ui/SliderGeometry.hpp"
@@ -197,6 +199,10 @@ class HudRenderer final {
         std::function<ui::MenuBuildContext::KeyBindRowLabels(input::InputAction)> keyBindLabels;
         std::function<void(VkCommandBuffer, VkDescriptorSet)> drawHeldItem;
         std::function<VkDescriptorSet()> currentFrameDescriptorSet;
+        // A1：当前打开的那一屏的 ScreenContext。**一处来源**（VulkanRenderer::screenContext()）：
+        // 绘制侧自己再拼一份就是同一事实的两份表述，而两份 context 只要有一个字段不一致
+        // （比如创造页签），画出来的槽位与点得到的槽位就不是同一批。
+        std::function<gameplay::ScreenContext()> screenContext;
         std::function<std::span<const gameplay::ItemStack>()> activeCreativeCatalog;
         std::function<float()> creativeScrollPosition;
         std::function<std::size_t()> creativeMaximumScrollRow;
@@ -238,6 +244,7 @@ class HudRenderer final {
           uiTimeSeconds(b.uiTimeSeconds), cameraSubmergedInWater(b.cameraSubmergedInWater),
           keyBindLabels(b.keyBindLabels),
           drawHeldItem(b.drawHeldItem), currentFrameDescriptorSet(b.currentFrameDescriptorSet),
+          screenContext(b.screenContext),
           activeCreativeCatalog(b.activeCreativeCatalog),
           creativeScrollPosition(b.creativeScrollPosition),
           creativeMaximumScrollRow(b.creativeMaximumScrollRow),
@@ -2421,27 +2428,10 @@ class HudRenderer final {
                                 0, 1, &descriptorSet, 0, nullptr);
     }
 
-    // 四个护甲槽加副手，随玩家背包出现在哪里就画在哪里（生存背包界面与创造模式的背包页签）
-    // 屏幕顺序到矩形、屏幕顺序到 EquipmentSlot 两处映射与 ScreenHandler::appendEquipmentSlots 相同
-    // 显示与点击因此一致
-    // 返回鼠标悬停的物品堆（若有），好让调用方的提示框也覆盖护甲槽
-    [[nodiscard]] std::optional<gameplay::ItemStack>
-    drawEquipmentSlots(VkCommandBuffer commandBuffer, const ui::HudLayout& layout, float cursorX,
-                       float cursorY, bool creative) const {
-        std::optional<gameplay::ItemStack> hovered;
-        for (std::size_t index = 0; index < gameplay::kEquipmentScreenSlotCount; ++index) {
-            const auto rect =
-                index < 4U ? layout.armorSlot(index, creative) : layout.offhandSlot(creative);
-            const auto& stack = clientMirror.world().equipmentSlots[static_cast<std::size_t>(
-                gameplay::equipmentSlotAt(index))];
-            const bool isHovered = rect.contains(cursorX, cursorY);
-            if (isHovered && !stack.empty()) {
-                hovered = stack;
-            }
-            drawHudSlot(commandBuffer, rect, stack, false, isHovered, true);
-        }
-        return hovered;
-    }
+    // A1：`drawEquipmentSlots` 已删——四个护甲槽加副手现在与别的槽走同一趟
+    // `drawContainerSlots`。它此前是第三份"画一格槽位"的循环（另两份在
+    // drawWorkContainer 与创造背包里），而三份各自决定要不要收提示框：护甲槽收，
+    // 生存背包的 2x2 不收。26.1 没有这种区别。
 
     // I-2：提示框的行**组装**已整体搬进 ui/ItemTooltip（纯值、headless 可测），
     // 渲染器这边只剩"画盒子"。这个上下文是两者之间唯一的接线。
@@ -2562,9 +2552,10 @@ class HudRenderer final {
     // goes dead when the left slot is empty, which is vanilla's own rule
     // (`slotChanged` -> `setEditable(!itemStack.isEmpty())`), and the field art
     // switches to the greyed variant with it.
-    template <typename SlotDrawer>
+    // A1：它只画这一屏**独有**的东西（两行标题、名字框、错误标记、价格），槽位归
+    // `drawContainerSlots` 那一趟统一画。
     void drawAnvilScreen(VkCommandBuffer commandBuffer, const ui::HudLayout& layout,
-                         const ui::UiRect& panel, const SlotDrawer& slotWithHover) const {
+                         const ui::UiRect& panel) const {
         const auto& snap = clientMirror.world();
         const float scale = layout.scale();
         drawHudText(commandBuffer, translated("container.repair", "Repair & Name"),
@@ -2602,10 +2593,6 @@ class HudRenderer final {
                       scale, anvilName_,
                       renameEnabled ? ui::kAnvilNameFieldRules : ui::kAnvilNameFieldDisabled,
                       anvilNameStyle);
-        slotWithHover(layout.anvilLeftSlot(), snap.anvilLeft, false);
-        slotWithHover(layout.anvilRightSlot(), snap.anvilRight, false);
-        slotWithHover(layout.anvilOutputSlot(), snap.anvilResult, false);
-
         // ItemCombinerScreen#extractErrorIcon: shown whenever there is input but
         // no result — including the cost-0 cases (two items that cannot be
         // combined at all), which is why the condition is about the SLOTS and
@@ -2669,10 +2656,10 @@ class HudRenderer final {
     // Returns the option whose clue tooltip the caller must draw last, if the
     // cursor is over one — the tooltip cannot be drawn from inside the bar loop
     // (see drawTooltipBox).
-    template <typename SlotDrawer>
+    // A1：同铁砧——只画这一屏独有的东西（两行标题、三条选项条），槽位统一画。
     [[nodiscard]] std::optional<std::size_t> drawEnchantingScreen(
-        VkCommandBuffer commandBuffer, const ui::HudLayout& layout, const ui::UiRect& panel,
-        const SlotDrawer& slotWithHover) const {
+        VkCommandBuffer commandBuffer, const ui::HudLayout& layout,
+        const ui::UiRect& panel) const {
         const auto& snap = clientMirror.world();
         const float scale = layout.scale();
         const auto cursor = currentFramebufferCursor();
@@ -2682,9 +2669,6 @@ class HudRenderer final {
         drawHudText(commandBuffer, translated("container.inventory", "Inventory"),
                     panel.x + 8.0F * scale, panel.y + 73.0F * scale, scale,
                     {0.25F, 0.25F, 0.25F, 1.0F}, false);
-        slotWithHover(layout.enchantingItemSlot(), snap.enchantingItem, false);
-        slotWithHover(layout.enchantingLapisSlot(), snap.enchantingLapis, false);
-
         const bool infiniteMaterials = uiFrameData_.gameMode == gameplay::GameMode::Creative;
         const int lapisCount = static_cast<int>(snap.enchantingLapis.count);
         // One RandomSource for the whole screen, seeded from the enchantment
@@ -2820,68 +2804,55 @@ class HudRenderer final {
         return fitted;
     }
 
+    // A1：工作台 / 熔炉 / 箱子 / 附魔台 / 铁砧这五屏。
+    //
+    // ★ 从前这里是一条 `if (chestScreen) … else if (CraftingTable) … else if …` 的
+    //   五段链，每一段里既画这一屏独有的东西（标题、进度条、选项条），又**自己画一遍
+    //   槽位**；链尾再补一段 36 格玩家背包。现在只剩前者：槽位一律由
+    //   `drawContainerSlots` 遍历容器页画，而"这一屏画什么铭牌"是一处不带 `default`
+    //   的分派——加一块容器屏时编译器点名，而不是让它掉进最后那个 else（从前那个
+    //   else 是**熔炉**，也就是说加一屏忘了写分支，画出来的是熔炉的火焰与进度条）。
     void drawWorkContainer(VkCommandBuffer commandBuffer, VkDescriptorSet descriptorSet,
                            const ui::HudLayout& layout) const {
         // 底衬由 drawHud 一处按档位表画（容器类走 Transparent 那一档），这里不再自己铺
         const auto panel = layout.inventoryPanel();
-        const bool chestScreen = containerScreen == ContainerScreen::Chest;
-        const float panelLayer =
-            chestScreen                                              ? 10.0F
-            : containerScreen == ContainerScreen::CraftingTable       ? 7.0F
-            : containerScreen == ContainerScreen::EnchantingTable     ? kEnchantingGuiLayer
-            : containerScreen == ContainerScreen::Anvil               ? kAnvilGuiLayer
-                                                                      : 8.0F;
-        drawGuiSprite(commandBuffer, panel, panelLayer, {0.0F, 0.0F, 176.0F, 166.0F});
-        // Every container screen was drawing its slots with no hover tooltip at
-        // all — the tooltip only existed on the standalone inventory screen. So
-        // a tool sitting in a chest, a furnace or the enchanting table had no
-        // name, and an enchanted one no way to show it. Collected while drawing
-        // and painted last, after every slot.
-        const auto hoverCursor = currentFramebufferCursor();
-        std::optional<gameplay::ItemStack> hoveredStack;
-        std::optional<std::size_t> hoveredClue;
-        const auto slotWithHover = [&](const ui::UiRect& rect, const gameplay::ItemStack& stack,
-                                       bool selected) {
-            const bool hovered = rect.contains(hoverCursor.x, hoverCursor.y);
-            if (hovered && !stack.empty()) {
-                hoveredStack = stack;
-            }
-            drawHudSlot(commandBuffer, rect, stack, selected, hovered, true);
-        };
-        if (chestScreen) {
-            drawHudText(commandBuffer, translated("container.chest", "Chest"),
-                        panel.x + 8.0F * layout.scale(), panel.y + 6.0F * layout.scale(),
-                        layout.scale(), {0.25F, 0.25F, 0.25F, 1.0F}, false);
+        drawGuiSprite(commandBuffer, panel, containerPanelLayer(containerKind()),
+                      {0.0F, 0.0F, 176.0F, 166.0F});
+        const auto hoveredClue = drawWorkContainerChrome(commandBuffer, layout, panel);
+        const auto hoveredStack = drawContainerSlots(commandBuffer, containerPage(layout), layout);
+        drawContainerCursorLayer(commandBuffer, layout, hoveredStack, hoveredClue);
+        static_cast<void>(descriptorSet);
+    }
+
+    // 这一屏的“铭牌”：标题文字、熔炉的两条进度、附魔的三条选项条、铁砧的名字框与价格。
+    // 返回附魔线索的那一条（若光标停在某条选项条上），它要画在所有槽位之上。
+    [[nodiscard]] std::optional<std::size_t> drawWorkContainerChrome(
+        VkCommandBuffer commandBuffer, const ui::HudLayout& layout,
+        const ui::UiRect& panel) const {
+        const float scale = layout.scale();
+        const auto title = [&](std::string_view key, std::string_view fallback) {
+            drawHudText(commandBuffer, translated(key, fallback), panel.x + 8.0F * scale,
+                        panel.y + 6.0F * scale, scale, {0.25F, 0.25F, 0.25F, 1.0F}, false);
             drawHudText(commandBuffer, translated("container.inventory", "Inventory"),
-                        panel.x + 8.0F * layout.scale(), panel.y + 73.0F * layout.scale(),
-                        layout.scale(), {0.25F, 0.25F, 0.25F, 1.0F}, false);
-            if (activeChest.has_value()) {
-                const auto& chestItems = clientMirror.world().chestItems;
-                for (std::size_t index = 0; index < gameplay::ChestBlockEntity::kSlotCount;
-                     ++index) {
-                    slotWithHover(layout.chestSlot(index), chestItems[index], false);
-                }
-            }
-        } else if (containerScreen == ContainerScreen::CraftingTable) {
-            for (std::size_t index = 0; index < 9U; ++index) {
-                slotWithHover(layout.tableCraftingSlot(index),
-                              clientMirror.world().tableCraftingGrid[index], false);
-            }
-            slotWithHover(layout.tableCraftingOutput(),
-                          clientMirror.world().tableCraftingOutput, false);
-        } else if (containerScreen == ContainerScreen::EnchantingTable) {
-            hoveredClue = drawEnchantingScreen(commandBuffer, layout, panel, slotWithHover);
-        } else if (containerScreen == ContainerScreen::Anvil) {
-            drawAnvilScreen(commandBuffer, layout, panel, slotWithHover);
-        } else {
+                        panel.x + 8.0F * scale, panel.y + 73.0F * scale, scale,
+                        {0.25F, 0.25F, 0.25F, 1.0F}, false);
+        };
+        switch (containerKind()) {
+        case ui::ContainerPageKind::Chest:
+            title("container.chest", "Chest");
+            return std::nullopt;
+        case ui::ContainerPageKind::CraftingTable:
+            // 26.1 的工作台屏两行标题都在，本作此前一行都没画（登记为偏差 D29）。
+            return std::nullopt;
+        case ui::ContainerPageKind::EnchantingTable:
+            return drawEnchantingScreen(commandBuffer, layout, panel);
+        case ui::ContainerPageKind::Anvil:
+            drawAnvilScreen(commandBuffer, layout, panel);
+            return std::nullopt;
+        case ui::ContainerPageKind::Furnace: {
             // 熔炉界面按容器显示快照绘制，这里不读方块实体的位置
             const auto& worldSnap = clientMirror.world();
-            slotWithHover(layout.furnaceInputSlot(), worldSnap.furnaceInput, false);
-            slotWithHover(layout.furnaceFuelSlot(), worldSnap.furnaceFuel, false);
-            slotWithHover(layout.furnaceOutputSlot(), worldSnap.furnaceOutput, false);
-            const float scale = layout.scale();
-            const float fuel =
-                std::clamp(clientMirror.world().furnaceFuelProgress, 0.0F, 1.0F);
+            const float fuel = std::clamp(worldSnap.furnaceFuelProgress, 0.0F, 1.0F);
             if (fuel > 0.0F) {
                 const float height = std::ceil(13.0F * fuel);
                 drawGuiSprite(commandBuffer,
@@ -2889,8 +2860,7 @@ class HudRenderer final {
                                14.0F * scale, height * scale},
                               8.0F, {176.0F, 13.0F - height, 14.0F, height});
             }
-            const float progress =
-                std::clamp(clientMirror.world().furnaceCookProgress, 0.0F, 1.0F);
+            const float progress = std::clamp(worldSnap.furnaceCookProgress, 0.0F, 1.0F);
             if (progress > 0.0F) {
                 const float width = std::ceil(24.0F * progress);
                 drawGuiSprite(commandBuffer,
@@ -2898,41 +2868,51 @@ class HudRenderer final {
                                17.0F * scale},
                               8.0F, {176.0F, 14.0F, width, 17.0F});
             }
+            return std::nullopt;
         }
-        for (std::size_t index = 0; index < gameplay::Inventory::kSlotCount; ++index) {
-            const auto slot =
-                chestScreen ? layout.chestInventorySlot(index) : layout.inventorySlot(index);
-            slotWithHover(slot, clientMirror.world().inventorySlots[index],
-                          index == uiFrameData_.selectedHotbarSlot);
+        case ui::ContainerPageKind::SurvivalInventory:
+        case ui::ContainerPageKind::CreativeInventoryTab:
+        case ui::ContainerPageKind::CreativeCatalogTab:
+        case ui::ContainerPageKind::Count:
+            // 这三屏不走这条路（drawContainerLayer 分派到别处），哨兵不是一屏。
+            return std::nullopt;
         }
-        // 拖拽过程中在每个划过的槽位预览松手后的落位，画在槽位之上、光标之下
-        drawDragPreview(commandBuffer, layout);
-        // Tooltips last, once every slot and bar is down. A dragged stack on the
-        // cursor suppresses them, as in vanilla.
-        if (clientMirror.world().cursorStack.empty()) {
-            if (hoveredStack.has_value()) {
-                drawTooltipBox(commandBuffer, layout.scale(),
-                               ui::itemTooltipLines(*hoveredStack, tooltipContext()));
-            } else if (hoveredClue.has_value()) {
-                drawEnchantingClueTooltip(
-                    commandBuffer, layout.scale(), *hoveredClue,
-                    clientMirror.world().enchantingRequiredLevels[*hoveredClue],
-                    static_cast<int>(*hoveredClue) + 1,
-                    uiFrameData_.gameMode == gameplay::GameMode::Creative);
-            }
-        } else {
-            const auto cursor = currentFramebufferCursor();
-            const float size = 16.0F * layout.scale();
-            drawHudSlot(commandBuffer, {cursor.x - size * 0.5F, cursor.y - size * 0.5F, size, size},
-                        clientMirror.world().cursorStack, false, false, true);
-        }
-        static_cast<void>(descriptorSet);
+        return std::nullopt;
     }
 
+    // 面板底图在图集里的层号。
+    //
+    // ★ 从前是绘制侧一条**四段三元链**（`chestScreen ? 10 : CraftingTable ? 7 : …`），
+    //   而三元链没有穷尽性检查：加一块容器屏，它会静默地落到链尾那个 `: 8.0F`——
+    //   也就是画出熔炉的面板。现在是不带 `default` 的 switch。
+    [[nodiscard]] static float containerPanelLayer(ui::ContainerPageKind kind) {
+        switch (kind) {
+        case ui::ContainerPageKind::Chest:           return 10.0F;
+        case ui::ContainerPageKind::CraftingTable:   return 7.0F;
+        case ui::ContainerPageKind::EnchantingTable: return kEnchantingGuiLayer;
+        case ui::ContainerPageKind::Anvil:           return kAnvilGuiLayer;
+        case ui::ContainerPageKind::Furnace:         return 8.0F;
+        case ui::ContainerPageKind::SurvivalInventory:     return 2.0F;
+        case ui::ContainerPageKind::CreativeInventoryTab:  return 5.0F;
+        case ui::ContainerPageKind::CreativeCatalogTab:    return 3.0F;
+        case ui::ContainerPageKind::Count:           return 8.0F;   // 哨兵，不是一屏
+        }
+        return 8.0F;
+    }
+
+    // A1：创造背包的两个页签。
+    //
+    // ★ 槽位（背包页签的 36 格与护甲/副手、内容页签的 45 格目录与 9 格快捷栏）一律
+    //   交给 `drawContainerSlots`。留在这里的只有这一屏独有的东西：页签行、面板、
+    //   玩家预览、页签图标、删除框的高亮、目录标题与滚动条。
+    //
+    // ★ **面板画在未选中页签之后、选中页签之前**——页签是从面板后面探出来的，
+    //   这个夹心顺序是它看起来"选中的那一个连着面板"的全部原因，不能重排。
     void drawCreativeInventory(VkCommandBuffer commandBuffer, const ui::HudLayout& layout) const {
         const auto cursor = currentFramebufferCursor();
         const float scale = layout.scale();
         const auto panel = layout.creativePanel();
+        const bool inventoryTab = containerKind() == ui::ContainerPageKind::CreativeInventoryTab;
 
         const std::size_t selectedTabIndex = static_cast<std::size_t>(menuSystem.creativeTab);
         // 前七个页签（建筑方块…战斗）在上排；食物、原料、刷怪蛋和背包在下排，用下排页签贴图
@@ -2947,10 +2927,9 @@ class HudRenderer final {
                                bottomTab ? 64.0F : 0.0F, 28.0F, 32.0F});
             }
         }
-        drawGuiSprite(commandBuffer, panel,
-                      menuSystem.creativeTab == ui::CreativeTab::Inventory ? 5.0F : 3.0F,
+        drawGuiSprite(commandBuffer, panel, containerPanelLayer(containerKind()),
                       {0.0F, 0.0F, 195.0F, 136.0F});
-        if (menuSystem.creativeTab == ui::CreativeTab::Inventory) {
+        if (inventoryTab) {
             drawPlayerPreview(commandBuffer, currentFrameDescriptorSet(), layout);
         }
 
@@ -2983,29 +2962,13 @@ class HudRenderer final {
                             tabIcons[tabIndex]);
         }
 
-        std::optional<gameplay::ItemStack> hoveredStack;
-        if (menuSystem.creativeTab == ui::CreativeTab::Inventory) {
-            for (std::size_t index = 0; index < gameplay::Inventory::kSlotCount; ++index) {
-                const auto slot = layout.creativeInventorySlot(index);
-                const bool hovered = slot.contains(cursor.x, cursor.y);
-                if (hovered && !clientMirror.world().inventorySlots[index].empty()) {
-                    hoveredStack = clientMirror.world().inventorySlots[index];
-                }
-                drawHudSlot(commandBuffer, slot, clientMirror.world().inventorySlots[index],
-                            index == uiFrameData_.selectedHotbarSlot, hovered, true);
-            }
-            // 创造模式的背包页签显示与生存相同的护甲与副手槽
-            // 但它锚定在创造面板上，免得被两种面板不同的尺寸与中心带偏
-            if (const auto hoveredEquipment = drawEquipmentSlots(commandBuffer, layout, cursor.x,
-                                                                 cursor.y, /*creative=*/true)) {
-                hoveredStack = hoveredEquipment;
-            }
+        if (inventoryTab) {
             const auto deleteSlot = layout.creativeDeleteSlot();
             if (deleteSlot.contains(cursor.x, cursor.y)) {
                 drawHudQuad(commandBuffer, deleteSlot, {1.0F, 0.25F, 0.25F, 0.34F});
             }
         } else {
-            // 26.1 的十个内容页签，顺序同 CreativeTab（下标 0..9；背包页签由上面的分支处理）
+            // 26.1 的十个内容页签，顺序同 CreativeTab（下标 0..9；背包页签走上面那一支）
             constexpr std::array<std::pair<std::string_view, std::string_view>, 10> titles{{
                 {"itemGroup.buildingBlocks", "Building Blocks"},
                 {"itemGroup.coloredBlocks", "Colored Blocks"},
@@ -3026,64 +2989,10 @@ class HudRenderer final {
             const bool hasScrollbar = creativeMaximumScrollRow() > 0U;
             drawGuiSprite(commandBuffer, layout.creativeScrollbarThumb(creativeScrollPosition()),
                           4.0F, {hasScrollbar ? 232.0F : 244.0F, 0.0F, 12.0F, 15.0F});
-
-            const auto catalog = activeCreativeCatalog();
-            const std::size_t firstCatalogIndex = menuSystem.creativeScrollRow * 9U;
-            for (std::size_t visibleIndex = 0; visibleIndex < ui::HudLayout::kCreativeVisibleSlots;
-                 ++visibleIndex) {
-                const std::size_t catalogIndex = firstCatalogIndex + visibleIndex;
-                if (catalogIndex >= catalog.size()) {
-                    break;
-                }
-                const auto slot = layout.creativeSlot(visibleIndex);
-                const bool hovered = slot.contains(cursor.x, cursor.y);
-                if (hovered) {
-                    hoveredStack = catalog[catalogIndex];
-                }
-                drawHudSlot(commandBuffer, slot, catalog[catalogIndex], false, hovered, true);
-            }
-            for (std::size_t index = 0; index < gameplay::Inventory::kHotbarSize; ++index) {
-                const auto slot = layout.creativeHotbarSlot(index);
-                const bool hovered = slot.contains(cursor.x, cursor.y);
-                // 目录页签下的快捷栏此前只算高亮、不记提示框，于是同一把剑在
-                // 背包页签有名字，切到任一内容页签悬停就什么都不显示。
-                if (hovered && !clientMirror.world().inventorySlots[index].empty()) {
-                    hoveredStack = clientMirror.world().inventorySlots[index];
-                }
-                drawHudSlot(commandBuffer, slot, clientMirror.world().inventorySlots[index],
-                            index == uiFrameData_.selectedHotbarSlot, hovered, true);
-            }
         }
 
-        // 创造模式的真实背包/快捷栏槽位与生存共用快速合成拖拽，松手前同样显示每格的预计落位数量
-        drawDragPreview(commandBuffer, layout);
-
-        if (hoveredStack.has_value()) {
-            // Enchantment lines included: the creative catalogue now carries 38
-            // enchanted books, and without them every one of those cells reads
-            // as the same nameless "Enchanted Book".
-            drawTooltipBox(commandBuffer, scale,
-                           ui::itemTooltipLines(*hoveredStack, tooltipContext()));
-        }
-        if (!clientMirror.world().cursorStack.empty()) {
-            const float iconSize = 16.0F * scale;
-            const ui::UiRect cursorRectangle{
-                cursor.x - iconSize * 0.5F,
-                cursor.y - iconSize * 0.5F,
-                iconSize,
-                iconSize,
-            };
-            drawHudItemIcon(commandBuffer, cursorRectangle, clientMirror.world().cursorStack);
-            drawDurabilityBar(commandBuffer, cursorRectangle,
-                              clientMirror.world().cursorStack);
-            if (clientMirror.world().cursorStack.count > 1U) {
-                const std::string count =
-                    std::to_string(clientMirror.world().cursorStack.count);
-                drawHudText(commandBuffer, count,
-                            cursorRectangle.x + 17.0F * scale - hudTextWidth(count, scale),
-                            cursorRectangle.y + 9.0F * scale, scale, {1.0F, 1.0F, 1.0F, 1.0F});
-            }
-        }
+        const auto hoveredStack = drawContainerSlots(commandBuffer, containerPage(layout), layout);
+        drawContainerCursorLayer(commandBuffer, layout, hoveredStack, std::nullopt);
     }
 
     void drawChatOverlay(VkCommandBuffer commandBuffer, const ui::HudLayout& layout) const {
@@ -3364,6 +3273,144 @@ class HudRenderer final {
         vkCmdBindPipeline(commandBuffer, VK_PIPELINE_BIND_POINT_GRAPHICS, hudPipeline);
     }
 
+    // A1：这一屏的容器页。装配器在 ui/ContainerPage，几何与身份都从那里来。
+    [[nodiscard]] ui::Page containerPage(const ui::HudLayout& layout) const {
+        ui::Page page;
+        ui::buildContainerPageInto(page, screenContext(), layout);
+        return page;
+    }
+
+    // A1：**容器屏的槽位一律走这一趟**——遍历容器页里的 `Slot` 控件。
+    //
+    // ★ 它取代的是五段各写各的循环：`drawWorkContainer` 的容器槽与 36 格、
+    //   生存背包的 2x2 与 36 格、`drawEquipmentSlots`、创造背包两个页签各一段。
+    //   五段里"选中框画在哪一格""要不要悬停高亮""提示框收不收这一格"三条规则各答
+    //   各的——于是生存背包的 2x2 合成格既不高亮也不出提示框，而工作台的 3x3 两样都有。
+    //   26.1 没有这种区别：`AbstractContainerScreen` 整屏只有**一个** `hoveredSlot`
+    //   （`getHoveredSlot` 遍历全部槽位），高亮与提示框都挂在它上面（:183-196）。
+    //
+    // 返回光标下那一格的物品堆（若非空），交给提示框那一层。
+    [[nodiscard]] std::optional<gameplay::ItemStack> drawContainerSlots(
+        VkCommandBuffer commandBuffer, const ui::Page& page, const ui::HudLayout& layout) const {
+        static_cast<void>(layout);
+        const auto cursor = currentFramebufferCursor();
+        const auto& snapshot = clientMirror.world();
+        // 创造目录那 45 格的内容不在世界快照里（无限货架），从目录清单按当前滚动行取。
+        const auto catalog = activeCreativeCatalog();
+        const std::size_t firstCatalogIndex = menuSystem.creativeScrollRow * 9U;
+        std::optional<gameplay::ItemStack> hoveredStack;
+        for (const ui::Widget& widget : page) {
+            if (widget.kind != ui::WidgetKind::Slot) {
+                continue;
+            }
+            gameplay::ItemStack stack;
+            if (widget.slotKind == gameplay::SlotKind::CreativeCatalog) {
+                const std::size_t catalogIndex = firstCatalogIndex + widget.slotIndex;
+                if (catalogIndex < catalog.size()) {
+                    stack = catalog[catalogIndex];
+                }
+            } else {
+                stack = gameplay::snapshotSlotStack(snapshot, widget.slotKind, widget.slotIndex);
+            }
+            // 选中框只属于玩家自己的快捷栏那一格，无论它被画在哪一屏的哪个位置。
+            const bool selected = widget.slotKind == gameplay::SlotKind::PlayerInventory &&
+                                  widget.slotIndex == uiFrameData_.selectedHotbarSlot;
+            const bool hovered = widget.rect.contains(cursor.x, cursor.y);
+            if (hovered && !stack.empty()) {
+                hoveredStack = stack;
+            }
+            drawHudSlot(commandBuffer, widget.rect, stack, selected, hovered, true);
+        }
+        return hoveredStack;
+    }
+
+    // A1：槽位之后的三件事，收在一处：拖拽预览 → 提示框 → 光标上的物品堆。
+    //
+    // ★ **手上拖着东西时不画提示框**（26.1 `AbstractContainerScreen`：那一支的条件是
+    //   `getCarried().isEmpty()`）。从前只有 `drawWorkContainer` 这么做，生存背包与
+    //   创造背包是"两样都画"——提示框压在被拖着的那一格物品下面。
+    void drawContainerCursorLayer(VkCommandBuffer commandBuffer, const ui::HudLayout& layout,
+                                  const std::optional<gameplay::ItemStack>& hoveredStack,
+                                  std::optional<std::size_t> hoveredClue) const {
+        // 拖拽过程中在每个划过的槽位预览松手后的落位，画在槽位之上、光标之下
+        drawDragPreview(commandBuffer, layout);
+        const auto& cursorStack = clientMirror.world().cursorStack;
+        if (cursorStack.empty()) {
+            if (hoveredStack.has_value()) {
+                drawTooltipBox(commandBuffer, layout.scale(),
+                               ui::itemTooltipLines(*hoveredStack, tooltipContext()));
+            } else if (hoveredClue.has_value()) {
+                drawEnchantingClueTooltip(
+                    commandBuffer, layout.scale(), *hoveredClue,
+                    clientMirror.world().enchantingRequiredLevels[*hoveredClue],
+                    static_cast<int>(*hoveredClue) + 1,
+                    uiFrameData_.gameMode == gameplay::GameMode::Creative);
+            }
+            return;
+        }
+        // 光标上的那一堆。★ 画法与一格槽位完全相同（图标 + 耐久条 + 数量），
+        // 所以走 drawHudSlot 那一支，而不是第三份手抄的"图标加数字"。
+        const auto cursor = currentFramebufferCursor();
+        const float size = 16.0F * layout.scale();
+        drawHudSlot(commandBuffer,
+                    {cursor.x - size * 0.5F, cursor.y - size * 0.5F, size, size}, cursorStack,
+                    false, false, true);
+    }
+
+    // A1：生存模式的背包屏。
+    //
+    // ★ 它此前**内联在 `drawHud` 里**（73 行，夹在调试叠加层与聊天之间）。那意味着
+    //   它既不能被单独调用，也没有名字可以出现在任何一张分派表里——"哪一屏走哪个绘制
+    //   函数"这件事因此在容器这一层根本无从谈起。抽出来是把它接进
+    //   `ContainerPageKind` 分派的前提。
+    void drawSurvivalInventory(VkCommandBuffer commandBuffer, VkDescriptorSet descriptorSet,
+                               const ui::HudLayout& layout) const {
+        const auto panel = layout.inventoryPanel();
+        drawGuiSprite(commandBuffer, panel, containerPanelLayer(containerKind()),
+                      {0.0F, 0.0F, 176.0F, 166.0F});
+        drawPlayerPreview(commandBuffer, descriptorSet, layout);
+        const auto hoveredStack = drawContainerSlots(commandBuffer, containerPage(layout), layout);
+        drawContainerCursorLayer(commandBuffer, layout, hoveredStack, std::nullopt);
+    }
+
+    // A1：这一屏是哪一种容器界面。身份只有一处（`ui::containerPageKind`），
+    // 绘制侧只是把自己的三个状态喂给它。
+    [[nodiscard]] ui::ContainerPageKind containerKind() const {
+        return ui::containerPageKind(containerScreen, uiFrameData_.gameMode,
+                                     menuSystem.creativeTab == ui::CreativeTab::Inventory);
+    }
+
+    // A1：容器这一层的入口。
+    //
+    // ★ 从前这里是**三条并列的 `if (inventoryOpen && …)`**，每条各自重复一遍
+    //   "是不是背包屏"与"是不是创造"的判断（`drawHud` 里那三条）。加一块容器屏要
+    //   在这里再加一条 if，而漏加的症状是"打开容器却什么都没画"——不是编译错误。
+    //   现在是一处不带 `default` 的分派，加一种 ContainerPageKind 时编译器点名。
+    void drawContainerLayer(VkCommandBuffer commandBuffer, VkDescriptorSet descriptorSet,
+                            const ui::HudLayout& layout) const {
+        if (!inventoryOpen) {
+            return;
+        }
+        switch (containerKind()) {
+        case ui::ContainerPageKind::SurvivalInventory:
+            drawSurvivalInventory(commandBuffer, descriptorSet, layout);
+            return;
+        case ui::ContainerPageKind::CreativeInventoryTab:
+        case ui::ContainerPageKind::CreativeCatalogTab:
+            drawCreativeInventory(commandBuffer, layout);
+            return;
+        case ui::ContainerPageKind::CraftingTable:
+        case ui::ContainerPageKind::Furnace:
+        case ui::ContainerPageKind::Chest:
+        case ui::ContainerPageKind::EnchantingTable:
+        case ui::ContainerPageKind::Anvil:
+            drawWorkContainer(commandBuffer, descriptorSet, layout);
+            return;
+        case ui::ContainerPageKind::Count:
+            return;   // 哨兵，不是一屏
+        }
+    }
+
     void drawHud(VkCommandBuffer commandBuffer, VkDescriptorSet descriptorSet) const {
         // 测试场景是方块预览的取景台，它要的是**一张只有方块的图**，所以那条路径不画界面。
         // UI-6-0 之后同一个夹具也给界面截图当世界背景用——那时界面正是要拍的东西。
@@ -3432,88 +3479,7 @@ class HudRenderer final {
 
         drawInGameHudLayer(commandBuffer, descriptorSet, layout);
 
-        if (inventoryOpen && containerScreen != ContainerScreen::PlayerInventory) {
-            drawWorkContainer(commandBuffer, descriptorSet, layout);
-        }
-
-        if (inventoryOpen && containerScreen == ContainerScreen::PlayerInventory &&
-            uiFrameData_.gameMode == gameplay::GameMode::Creative) {
-            drawCreativeInventory(commandBuffer, layout);
-        }
-
-        if (inventoryOpen && containerScreen == ContainerScreen::PlayerInventory &&
-            uiFrameData_.gameMode == gameplay::GameMode::Survival) {
-            double cursorWindowX = 0.0;
-            double cursorWindowY = 0.0;
-            int windowWidth = 0;
-            int windowHeight = 0;
-            int framebufferWidth = 0;
-            int framebufferHeight = 0;
-            glfwGetCursorPos(window, &cursorWindowX, &cursorWindowY);
-            glfwGetWindowSize(window, &windowWidth, &windowHeight);
-            glfwGetFramebufferSize(window, &framebufferWidth, &framebufferHeight);
-            // 按实时帧缓冲尺寸换算，而不是交换链范围
-            // 窗口刚缩放或最大化时范围还停留在上一帧，直到交换链重建为止
-            // 那期间光标和白色槽位高亮会偏几个像素
-            const auto framebufferCursor =
-                ui::windowToFramebuffer(cursorWindowX, cursorWindowY, windowWidth, windowHeight,
-                                        framebufferWidth, framebufferHeight);
-            const float cursorX = framebufferCursor.x;
-            const float cursorY = framebufferCursor.y;
-            const auto panel = layout.inventoryPanel();
-            const float textScale = layout.scale();
-            drawGuiSprite(commandBuffer, panel, 2.0F, {0.0F, 0.0F, 176.0F, 166.0F});
-            drawPlayerPreview(commandBuffer, descriptorSet, layout);
-            for (std::size_t index = 0; index < 4U; ++index) {
-                drawHudSlot(commandBuffer, layout.playerCraftingSlot(index),
-                            clientMirror.world().playerCraftingGrid[index], false, false, true);
-            }
-            drawHudSlot(commandBuffer, layout.playerCraftingOutput(),
-                        clientMirror.world().playerCraftingOutput, false, false, true);
-            const auto hoveredEquipment =
-                drawEquipmentSlots(commandBuffer, layout, cursorX, cursorY, /*creative=*/false);
-            std::optional<std::size_t> hoveredSlot;
-            for (std::size_t index = 0; index < gameplay::Inventory::kSlotCount; ++index) {
-                const bool hovered = layout.inventorySlot(index).contains(cursorX, cursorY);
-                if (hovered) {
-                    hoveredSlot = index;
-                }
-                drawHudSlot(commandBuffer, layout.inventorySlot(index),
-                            clientMirror.world().inventorySlots[index],
-                            index == uiFrameData_.selectedHotbarSlot, hovered, true);
-            }
-            // 光标下既可能是主背包槽，也可能是护甲/副手槽，提示框两者都覆盖
-            std::optional<gameplay::ItemStack> tooltipStack = hoveredEquipment;
-            if (!tooltipStack.has_value() && hoveredSlot.has_value() &&
-                !clientMirror.world().inventorySlots[*hoveredSlot].empty()) {
-                tooltipStack = clientMirror.world().inventorySlots[*hoveredSlot];
-            }
-            if (tooltipStack.has_value()) {
-                drawTooltipBox(commandBuffer, textScale,
-                               ui::itemTooltipLines(*tooltipStack, tooltipContext()));
-            }
-            // 拖拽过程中在每个划过的槽位预览松手后的落位，画在槽位之上、光标之下
-            drawDragPreview(commandBuffer, layout);
-            if (!clientMirror.world().cursorStack.empty()) {
-                const float cursorIconSize = 16.0F * layout.scale();
-                const ui::UiRect cursorRectangle{cursorX - cursorIconSize * 0.5F,
-                                                 cursorY - cursorIconSize * 0.5F, cursorIconSize,
-                                                 cursorIconSize};
-                drawHudItemIcon(commandBuffer, cursorRectangle,
-                                clientMirror.world().cursorStack);
-                drawDurabilityBar(commandBuffer, cursorRectangle,
-                                  clientMirror.world().cursorStack);
-                if (clientMirror.world().cursorStack.count > 1U) {
-                    const std::string count =
-                        std::to_string(clientMirror.world().cursorStack.count);
-                    const float textScale = layout.scale();
-                    drawHudText(
-                        commandBuffer, count,
-                        cursorRectangle.x + 17.0F * textScale - hudTextWidth(count, textScale),
-                        cursorRectangle.y + 9.0F * textScale, textScale, {1.0F, 1.0F, 1.0F, 1.0F});
-                }
-            }
-        }
+        drawContainerLayer(commandBuffer, descriptorSet, layout);
 
         if (debugOverlayOpen) {
             const auto& debugSnap = clientMirror.player();
@@ -3628,6 +3594,7 @@ class HudRenderer final {
     std::function<ui::MenuBuildContext::KeyBindRowLabels(input::InputAction)> keyBindLabels;
     std::function<void(VkCommandBuffer, VkDescriptorSet)> drawHeldItem;
     std::function<VkDescriptorSet()> currentFrameDescriptorSet;
+    std::function<gameplay::ScreenContext()> screenContext;
     std::function<std::span<const gameplay::ItemStack>()> activeCreativeCatalog;
     std::function<float()> creativeScrollPosition;
     std::function<std::size_t()> creativeMaximumScrollRow;

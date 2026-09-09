@@ -6,6 +6,8 @@
 
 #include "gameplay/ScreenHandler.hpp"
 #include "gameplay/ScreenTypes.hpp"
+#include "gameplay/SnapshotSlots.hpp"
+#include "world/Block.hpp"
 #include "ui/ContainerPage.hpp"
 #include "ui/HudLayout.hpp"
 #include "ui/MenuInteraction.hpp"
@@ -384,7 +386,86 @@ void testSlotsStayInsideThePanel() {
     }
 }
 
-// --- 11. 源码护栏：生产路径真的走了这一页 ------------------------------------
+// --- 11. 「这个槽里是什么」只有一处 ------------------------------------------
+//
+// ★ A1 把这个问题收成一个纯函数（`gameplay::snapshotSlotStack`）。它此前在三处各答
+//   一遍：拖拽预览、drawWorkContainer 的 if/else 链、内联的生存背包与创造背包。
+//   三份表述不会让任何东西编译不过，只会让"拖拽预览显示的东西"与"槽位画出来的东西"
+//   在某一格上不一致。
+void testSnapshotSlotStack() {
+    mc::gameplay::WorldSnapshot snapshot;
+    // 每一格都填**不同**的东西：填同一个值的夹具分不开"取对了"和"取错了"。
+    for (std::size_t i = 0; i < snapshot.inventorySlots.size(); ++i) {
+        snapshot.inventorySlots[i] = {mc::world::Block::Stone, static_cast<std::uint8_t>(i + 1U)};
+    }
+    for (std::size_t i = 0; i < snapshot.chestItems.size(); ++i) {
+        snapshot.chestItems[i] = {mc::world::Block::Dirt, static_cast<std::uint8_t>(i + 1U)};
+    }
+    for (std::size_t i = 0; i < snapshot.tableCraftingGrid.size(); ++i) {
+        snapshot.tableCraftingGrid[i] = {mc::world::Block::OakPlanks,
+                                         static_cast<std::uint8_t>(i + 1U)};
+    }
+    for (std::size_t i = 0; i < snapshot.playerCraftingGrid.size(); ++i) {
+        snapshot.playerCraftingGrid[i] = {mc::world::Block::Bricks,
+                                          static_cast<std::uint8_t>(i + 1U)};
+    }
+    snapshot.tableCraftingOutput = {mc::world::Block::CraftingTable, 1U};
+    snapshot.playerCraftingOutput = {mc::world::Block::Chest, 1U};
+    snapshot.furnaceInput = {mc::world::Block::IronOre, 3U};
+    snapshot.furnaceFuel = {mc::world::Block::OakLog, 4U};
+    snapshot.furnaceOutput = {mc::world::Block::Cobblestone, 5U};
+    snapshot.enchantingItem = {mc::world::Block::Torch, 6U};
+    snapshot.enchantingLapis = {mc::world::Block::Bricks, 7U};
+    snapshot.anvilLeft = {mc::world::Block::Stone, 8U};
+    snapshot.anvilRight = {mc::world::Block::Dirt, 9U};
+    snapshot.anvilResult = {mc::world::Block::OakLog, 10U};
+    // 装备按 **EquipmentSlot 的底层值**存（Offhand=0 … Head=4）。
+    for (std::size_t i = 0; i < snapshot.equipmentSlots.size(); ++i) {
+        snapshot.equipmentSlots[i] = {mc::world::Block::WhiteWool,
+                                      static_cast<std::uint8_t>(i + 1U)};
+    }
+
+    const auto at = [&](SlotKind kind, std::uint16_t index) {
+        return mc::gameplay::snapshotSlotStack(snapshot, kind, index);
+    };
+    CHECK(at(SlotKind::PlayerInventory, 5U).count == 6U);
+    CHECK(at(SlotKind::ChestStorage, 26U).count == 27U);
+    CHECK(at(SlotKind::TableCraftingGrid, 8U).count == 9U);
+    CHECK(at(SlotKind::PlayerCraftingGrid, 3U).count == 4U);
+    // ★ 输出槽给的是**真值**，不是空堆。它们不是拖拽目标，但它们是要画出来的。
+    CHECK(!at(SlotKind::TableCraftingOutput, 0U).empty());
+    CHECK(!at(SlotKind::PlayerCraftingOutput, 0U).empty());
+    CHECK(at(SlotKind::FurnaceInput, 0U).count == 3U);
+    CHECK(at(SlotKind::FurnaceFuel, 0U).count == 4U);
+    CHECK(at(SlotKind::FurnaceOutput, 0U).count == 5U);
+    CHECK(at(SlotKind::EnchantingItem, 0U).count == 6U);
+    CHECK(at(SlotKind::EnchantingLapis, 0U).count == 7U);
+    CHECK(at(SlotKind::AnvilLeft, 0U).count == 8U);
+    CHECK(at(SlotKind::AnvilRight, 0U).count == 9U);
+    CHECK(at(SlotKind::AnvilOutput, 0U).count == 10U);
+
+    // ★ 装备那条转换是最容易错的一格：`index` 是**界面绘制顺序**（0 = 头 … 4 = 副手），
+    //   而数组按 EquipmentSlot 的底层值排（Head = 4 … Offhand = 0）。拿绘制序号直接
+    //   索引，四件护甲会上下颠倒——而那种缺陷在截图上看着"每格都有东西"，很难发现。
+    for (std::size_t screenIndex = 0; screenIndex < mc::gameplay::kEquipmentScreenSlotCount;
+         ++screenIndex) {
+        const auto expected = static_cast<std::uint8_t>(
+            static_cast<std::size_t>(mc::gameplay::equipmentSlotAt(screenIndex)) + 1U);
+        check(at(SlotKind::Equipment, static_cast<std::uint16_t>(screenIndex)).count == expected,
+              "the equipment index must go through equipmentSlotAt", __LINE__);
+    }
+    // 头盔在绘制序号 0，副手在 4——这两个数是 GUI spec §10 的版面顺序，不是枚举顺序。
+    CHECK(at(SlotKind::Equipment, 0U).count == 5U);   // Head = 底层值 4
+    CHECK(at(SlotKind::Equipment, 4U).count == 1U);   // Offhand = 底层值 0
+
+    // 目录格不在快照里；越界一律回空堆而不是读相邻字段。
+    CHECK(at(SlotKind::CreativeCatalog, 0U).empty());
+    CHECK(at(SlotKind::PlayerInventory, 36U).empty());
+    CHECK(at(SlotKind::ChestStorage, 27U).empty());
+    CHECK(at(SlotKind::Equipment, 5U).empty());
+}
+
+// --- 12. 源码护栏：生产路径真的走了这一页 ------------------------------------
 //
 // ★ README 护栏 29：「抽了一个纯函数」和「生产路径真的调了它」是两件事。把
 //   `dragSlotRectangle` 改回自己遍历 `buildSlotLayout`，**上面十条断言一条都不会红**
@@ -450,6 +531,7 @@ int main() {
     testFindSlotWidget();
     testHitTest();
     testSlotsStayInsideThePanel();
+    testSnapshotSlotStack();
     testTheRendererUsesThePage();
     if (failures != 0) {
         std::printf("container_page_test: %d checks failed\n", failures);

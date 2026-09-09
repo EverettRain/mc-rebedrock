@@ -488,6 +488,32 @@ void testFixtureSourceGuards() {
         CHECK(publish.find("target.creative") == std::string::npos);
     }
 
+    // ★ A1 抓到的一条：**绘制侧只准有一处读光标**。
+    //
+    //   生存背包屏此前自抄了一份 `glfwGetCursorPos + windowToFramebuffer`（十三行），
+    //   而那一份**不认 `pinnedCursor`**——截图通道钉光标那颗钉子对整个背包屏不生效，
+    //   于是基线图里有一格槽位被 Xvfb 的屏幕中心指针 (640,512) 常年点亮。
+    //
+    //   ★ 两遍比对**发现不了它**：两遍读到的是同一个真实指针位置，图当然一样。
+    //     这正是"两遍比对证不了每个 knob 都还在"那句话的实证，不是它的理论。
+    //   护栏写成"整个文件里 glfwGetCursorPos 只出现一次"，因为那一次必须是
+    //   `currentFramebufferCursor`——它是唯一认钉子的那一处。
+    {
+        const std::string hudSource = readSource(MC_REBEDROCK_HUD_RENDERER_SRC);
+        std::size_t reads = 0;
+        for (std::size_t at = hudSource.find("glfwGetCursorPos"); at != std::string::npos;
+             at = hudSource.find("glfwGetCursorPos", at + 1U)) {
+            ++reads;
+        }
+        check(reads == 1U,
+              "the HUD must read the cursor in exactly one place (currentFramebufferCursor)",
+              __LINE__);
+        const std::string cursor =
+            functionBody(hudSource, "ui::UiPoint currentFramebufferCursor(");
+        CHECK(cursor.find("glfwGetCursorPos") != std::string::npos);
+        CHECK(cursor.find("pinnedCursor") != std::string::npos);
+    }
+
     const std::string hud = readSource(MC_REBEDROCK_HUD_RENDERER_SRC);
     const std::string drawHud = functionBody(hud, "void drawHud(VkCommandBuffer");
     if (!drawHud.empty()) {

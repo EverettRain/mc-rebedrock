@@ -15,6 +15,9 @@
 //   `openContainerScreen`、`GameEvents.hpp` 的开容器事件）。所以新值**只能追加在
 //   `Count` 之前的尾部**，插入会让一个正在运行的客户端把 ChestStorage 认成别的屏。
 
+#include "gameplay/EquipmentSlot.hpp"
+
+#include <cstddef>
 #include <cstdint>
 
 namespace mc::gameplay {
@@ -94,5 +97,22 @@ enum class SlotKind : std::uint8_t {
     // 这类编译期与测试断言用。追加新槽放在它**之前**。
     Count,
 };
+
+// EQ-1: the screen's armor-slot draw order (0..3 = Head/Chest/Legs/Feet, the
+// GUI spec §10 top-to-bottom layout) plus offhand at 4, mapped to the
+// gameplay::EquipmentSlot each index addresses. A SlotKind::Equipment index
+// outside 0..4 has no slot; callers guard with the count below first.
+inline constexpr std::size_t kEquipmentScreenSlotCount = 5U;
+
+[[nodiscard]] constexpr EquipmentSlot equipmentSlotAt(std::size_t screenIndex) {
+    switch (screenIndex) {
+    case 0U: return EquipmentSlot::Head;
+    case 1U: return EquipmentSlot::Chest;
+    case 2U: return EquipmentSlot::Legs;
+    case 3U: return EquipmentSlot::Feet;
+    case 4U: return EquipmentSlot::Offhand;
+    default: return EquipmentSlot::Offhand;
+    }
+}
 
 } // namespace mc::gameplay
