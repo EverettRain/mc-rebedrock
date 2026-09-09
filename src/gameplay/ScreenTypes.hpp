@@ -41,4 +41,58 @@ enum class ContainerScreen : std::uint8_t {
     Count,
 };
 
+// What a slot is, which is all the click router needs to know. 26.1 expresses
+// the same thing by subclassing Slot (ResultSlot, FurnaceFuelSlot, …) and
+// overriding mayPlace/onTake; a Kind plus a flag covers every distinction the
+// screens in this game actually make, without a virtual call per slot per
+// frame.
+enum class SlotKind : std::uint8_t {
+    // The player's own 36 slots, wherever they are drawn.
+    PlayerInventory,
+    // A crafting grid cell — the 2x2 in the player screen or the 3x3 in a table.
+    PlayerCraftingGrid,
+    TableCraftingGrid,
+    // A crafting result. Never accepts items: clicking takes the craft.
+    PlayerCraftingOutput,
+    TableCraftingOutput,
+    FurnaceInput,
+    FurnaceFuel,
+    // The smelted result. Like a crafting output, it only ever gives.
+    FurnaceOutput,
+    ChestStorage,
+    // ENCH-2: the enchanting table's two inputs. Neither has a block entity
+    // behind it — both live on the player's own EnchantingMenu, which is why
+    // they are their own kinds rather than a reuse of the furnace's.
+    EnchantingItem,
+    EnchantingLapis,
+    // ENCH-3: the anvil's two inputs and its output. Like the enchanting
+    // table's, they live on the player's own menu, not a block entity. The
+    // output never accepts an item — taking it is what pays the levels.
+    AnvilLeft,
+    AnvilRight,
+    AnvilOutput,
+    // EQ-1: one of the player's five equipment slots. `index` is the screen's
+    // own draw order (0..3 = Head/Chest/Legs/Feet, 4 = Offhand — see
+    // equipmentSlotAt below), not gameplay::EquipmentSlot's underlying value;
+    // the click router converts.
+    Equipment,
+    // A0：创造目录那 45 格（9 列 x 5 行）。★ 它们背后**没有存储**——玩家格背后是
+    // `Inventory::mutableSlot`、箱子格背后是方块实体，而目录格是一张**无限货架**。
+    // 所以点它发的是 `ClickCreativeItem`（命令自带物品堆，因为服务端并不知道客户端
+    // 滚到第几行、开着哪个页签），不是 `ClickSlot`；`resolveSlotStorage` 对它显式返回
+    // nullptr，而它也**不进** `buildSlots`（有存储的那一版）——真进去了 `click()`
+    // 会把货架当成真槽位。
+    //
+    // A0 之前它们不是任何一种 SlotKind：绘制侧自己一段循环画、交互侧自己另一段循环
+    // 命中，两段都在 Widget 模型之外，所以菜单侧攒下的护栏对那 45 格一条都不生效。
+    //
+    // 追加在尾部：这个枚举**过线**（`ClickSlot.kind`），插入会让运行中的客户端把
+    // ChestStorage 认成别的。
+    CreativeCatalog,
+
+    // 哨兵，值等于 SlotKind 的个数。**不过线**、不许被序列化——只给"覆盖了每一种槽"
+    // 这类编译期与测试断言用。追加新槽放在它**之前**。
+    Count,
+};
+
 } // namespace mc::gameplay

@@ -91,6 +91,12 @@ enum class WidgetId : std::uint16_t {
     // 打开 resourcepacks/ 目录。本作没有"用默认程序打开路径"这条能力，置灰。
     PackOpenFolder,
 
+    // A0：容器界面的非槽位控件。**槽位本身不用 id**——它的身份是 Widget 上的
+    // `slotKind + slotIndex`（`gameplay::SlotRef` 那两个字段），而不是又一套编号。
+    // ★ 一行里的第几个（三条选项条、十一个页签）由页面里的**次序**决定，与按键
+    //   绑定行、资源包行同一个做法，不给每一条各开一个 id。
+    EnchantOption, CreativeTab, CreativeDeleteSlot, CreativeScrollbar,
+
     // 哨兵，值等于 id 的个数，表因此能断言自己覆盖了每一个 id，ui/WidgetLabels.hpp 就是这么做的
     // 它永远不是一个控件，也永远排在最后
     Count,

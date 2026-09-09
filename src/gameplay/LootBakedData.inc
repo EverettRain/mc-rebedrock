@@ -63,6 +63,28 @@ inline constexpr BakedLootTable kBakedLootTables[] = {
     // item (there is no wall-variant item to hold).
     {"rebedrock:redstone_wall_torch", kDrop_redstone_torch},
     {"rebedrock:glass", {}}, // silk-touch only: breaks into nothing
+    // MDL-1: panes follow the block they are cut from — glass and stained
+    // glass break into nothing without silk touch, so their panes do too
+    // (26.1 loot_table/blocks/glass_pane.json is a silk-touch-only pool).
+    // Iron bars and the fences are absent from this table on purpose: they
+    // drop themselves, which is the default for any block with dropsItem.
+    {"rebedrock:glass_pane", {}},
+    {"rebedrock:white_stained_glass_pane", {}},
+    {"rebedrock:orange_stained_glass_pane", {}},
+    {"rebedrock:magenta_stained_glass_pane", {}},
+    {"rebedrock:light_blue_stained_glass_pane", {}},
+    {"rebedrock:yellow_stained_glass_pane", {}},
+    {"rebedrock:lime_stained_glass_pane", {}},
+    {"rebedrock:pink_stained_glass_pane", {}},
+    {"rebedrock:gray_stained_glass_pane", {}},
+    {"rebedrock:light_gray_stained_glass_pane", {}},
+    {"rebedrock:cyan_stained_glass_pane", {}},
+    {"rebedrock:purple_stained_glass_pane", {}},
+    {"rebedrock:blue_stained_glass_pane", {}},
+    {"rebedrock:brown_stained_glass_pane", {}},
+    {"rebedrock:green_stained_glass_pane", {}},
+    {"rebedrock:red_stained_glass_pane", {}},
+    {"rebedrock:black_stained_glass_pane", {}},
 };
 
 } // namespace mc::data::loot

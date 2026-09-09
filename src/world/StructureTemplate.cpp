@@ -85,6 +85,39 @@ BlockOrientation jigsawFrontFromOrientation(std::string_view orientation) {
     return facingFromString(front).value_or(BlockOrientation::North);
 }
 
+// MDL-1: the vanilla-named boolean properties a template's palette carries that
+// this build also stores. Before this, `readPaletteEntry` folded exactly one
+// property — `facing` — and skipped every other; and since `StructurePlacer`
+// writes the palette state straight into the cell (no placement path, no
+// neighbour notification: a generating chunk must not fire mutations), a fence
+// or a wall stamped from a template came out as a row of unconnected posts.
+//
+// A table rather than an if-chain because the next few members are already
+// known (`layers` for MDL-3's snow, `part`/`occupied` for SLP's bed), and each
+// should be a row, not another branch. Only same-named booleans live here: a
+// property whose rebedrock name or value domain differs from vanilla's belongs
+// in the JC override table (compat/VanillaMapping.hpp), not in a parser.
+struct PaletteBoolProperty final {
+    std::string_view vanillaName;
+    BlockOrientation connectionSide;
+};
+constexpr std::array<PaletteBoolProperty, 4> kPaletteConnectionProperties{{
+    {"north", BlockOrientation::North},
+    {"east", BlockOrientation::East},
+    {"south", BlockOrientation::South},
+    {"west", BlockOrientation::West},
+}};
+
+// The palette table's index for a vanilla property name, or nullopt.
+[[nodiscard]] constexpr std::optional<std::size_t> paletteConnectionIndex(std::string_view name) {
+    for (std::size_t index = 0; index < kPaletteConnectionProperties.size(); ++index) {
+        if (kPaletteConnectionProperties[index].vanillaName == name) {
+            return index;
+        }
+    }
+    return std::nullopt;
+}
+
 // One palette compound: `{Name: string, Properties?: {key: string}}`. Resolves to
 // a Block + packed state. Unknown blocks and unmodelled properties fall back the
 // tolerant way: an unknown Name leaves the entry unresolved; a `facing` property
@@ -97,6 +130,12 @@ StructurePaletteEntry readPaletteEntry(NbtReader& reader) {
     std::string name;
     std::optional<BlockOrientation> facing;
     std::string orientation; // FrontAndTop, for a jigsaw block
+    // MDL-1: the four CrossCollision/Wall connection bits and waterlogged, as
+    // the template spells them. Left at "not stated" when the palette entry
+    // does not carry them, which is every block that has no such axis.
+    std::array<bool, 4> connections{};
+    bool anyConnection = false;
+    bool waterlogged = false;
     for (;;) {
         const auto member = reader.readNamed();
         if (reader.failed() || member.tag == NbtTag::End) break;
@@ -110,6 +149,13 @@ StructurePaletteEntry readPaletteEntry(NbtReader& reader) {
                     facing = facingFromString(reader.readString());
                 } else if (property.tag == NbtTag::String && property.name == "orientation") {
                     orientation = reader.readString();
+                } else if (property.tag == NbtTag::String && property.name == "waterlogged") {
+                    waterlogged = reader.readString() == "true";
+                } else if (property.tag == NbtTag::String &&
+                           paletteConnectionIndex(property.name).has_value()) {
+                    const auto side = *paletteConnectionIndex(property.name);
+                    connections[side] = reader.readString() == "true";
+                    anyConnection = anyConnection || connections[side];
                 } else {
                     reader.skipPayload(property.tag);
                 }
@@ -129,6 +175,18 @@ StructurePaletteEntry readPaletteEntry(NbtReader& reader) {
         BlockState state{*block};
         if (facing.has_value()) {
             state = state.with(*facing);
+        }
+        // Only write an axis the block actually declares: a template may name a
+        // property this build models differently (or not at all), and a state
+        // write for an undeclared axis is meaningless.
+        if (anyConnection && state.has(StateProperty::WallNorth)) {
+            for (std::size_t index = 0; index < kPaletteConnectionProperties.size(); ++index) {
+                state = state.withWallConnected(
+                    kPaletteConnectionProperties[index].connectionSide, connections[index]);
+            }
+        }
+        if (waterlogged && state.has(StateProperty::SubmergedFluid)) {
+            state = state.withSubmergedFluid(SubmergedFluid::Water);
         }
         entry.block = *block;
         entry.stateIndex = state.rawId();

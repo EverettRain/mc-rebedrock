@@ -152,7 +152,7 @@ inline constexpr std::array<WidgetId, 19> kRuntimeWidgetLabels{{
 // 不经 widgetLabel 取标签的 id
 // 三种列表行的文本各自在页面装配时给出，分别是世界名、语言名与按键行
 // None 则根本不是一个按钮
-inline constexpr std::array<WidgetId, 8> kUnlabelledWidgets{{
+inline constexpr std::array<WidgetId, 12> kUnlabelledWidgets{{
     WidgetId::None,
     WidgetId::WorldRow,
     WidgetId::LanguageRow,
@@ -164,6 +164,13 @@ inline constexpr std::array<WidgetId, 8> kUnlabelledWidgets{{
     // 按钮上只有 15x15 的图标，没有文字（图标本身归 UI-4 的 IconButton）
     WidgetId::TitleLanguage,
     WidgetId::TitleAccessibility,
+    // A0：容器界面的四个非槽位控件。三条附魔选项条上的字是**乱码名 + 等级数字**，
+    // 由绘制侧按附魔种子现算（`EnchantmentNames`）；页签、删除框与滚动条上根本
+    // 没有文字，画的是精灵。都不经 widgetLabel。
+    WidgetId::EnchantOption,
+    WidgetId::CreativeTab,
+    WidgetId::CreativeDeleteSlot,
+    WidgetId::CreativeScrollbar,
 }};
 
 [[nodiscard]] constexpr const StaticWidgetLabel* findStaticLabel(WidgetId id) {

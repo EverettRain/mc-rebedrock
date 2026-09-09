@@ -166,6 +166,85 @@ std::vector<std::uint8_t> buildTemplate(std::int32_t dataVersion) {
     return w.bytes;
 }
 
+// MDL-1: a template whose palette carries the properties a CrossCollision block
+// is stamped with — the four connection booleans and waterlogged.
+//
+// This is the case that made village fences come out as a row of unconnected
+// posts: `readPaletteEntry` folded `facing` and skipped everything else, and
+// `StructurePlacer` writes the palette state straight into the cell (a
+// generating chunk must not fire neighbour notifications), so nothing ever
+// recomputed the bits afterwards. The template is the only place those bits can
+// come from.
+//   palette 0 = oak_fence[north=true, east=true, south=false, west=false,
+//                         waterlogged=true]  — an L corner, NOT a straight run:
+//     a north/south run is symmetric in east/west, so swapping those two rows of
+//     the property table would still pass. The corner is the fixture that pins
+//     each side to its own name ([[lesson-assertion-fixture-shape]]).
+//   palette 1 = oak_fence with no Properties at all (every bit default false)
+std::vector<std::uint8_t> buildConnectedFenceTemplate() {
+    NbtWriter w;
+    w.u8(kCompound);
+    w.str("");
+
+    w.named(kList, "size");
+    w.u8(kInt);
+    w.i32(3);
+    w.i32(1);
+    w.i32(1);
+    w.i32(2);
+
+    w.named(kList, "palette");
+    w.u8(kCompound);
+    w.i32(2);
+    // 0: connected north+south, waterlogged
+    w.named(kString, "Name");
+    w.str("minecraft:oak_fence");
+    w.named(kCompound, "Properties");
+    w.named(kString, "north");
+    w.str("true");
+    w.named(kString, "east");
+    w.str("true");
+    w.named(kString, "south");
+    w.str("false");
+    w.named(kString, "west");
+    w.str("false");
+    w.named(kString, "waterlogged");
+    w.str("true");
+    w.end(); // Properties
+    w.end(); // palette 0
+    // 1: bare
+    w.named(kString, "Name");
+    w.str("minecraft:oak_fence");
+    w.end(); // palette 1
+
+    w.named(kList, "blocks");
+    w.u8(kCompound);
+    w.i32(2);
+    w.named(kList, "pos");
+    w.u8(kInt);
+    w.i32(3);
+    w.i32(0);
+    w.i32(0);
+    w.i32(0);
+    w.named(kInt, "state");
+    w.i32(0);
+    w.end();
+    w.named(kList, "pos");
+    w.u8(kInt);
+    w.i32(3);
+    w.i32(0);
+    w.i32(0);
+    w.i32(1);
+    w.named(kInt, "state");
+    w.i32(1);
+    w.end();
+
+    w.named(kInt, "DataVersion");
+    w.i32(kStructureDataVersion);
+    w.end();
+    return w.bytes;
+}
+
 // Wraps raw bytes in a minimal gzip container so the reader's inflate path runs.
 std::vector<std::uint8_t> gzip(const std::vector<std::uint8_t>& raw) {
     // deflate the payload (raw deflate; miniz level default).
@@ -282,6 +361,37 @@ int main() {
         std::span<const std::uint8_t> bytes;
         spanOf(raw, bytes);
         assert(!parseStructureTemplate(bytes).has_value());
+    }
+
+    // 4b) MDL-1: the palette's connection booleans and waterlogged reach the
+    //     stamped state. A straight run must come out straight — with the sides
+    //     asserted individually, since "all four true" would pass even if the
+    //     parser wrote them in the wrong order.
+    {
+        const auto raw = buildConnectedFenceTemplate();
+        std::span<const std::uint8_t> bytes;
+        spanOf(raw, bytes);
+        const auto def = parseStructureTemplate(bytes);
+        assert(def.has_value());
+        assert(def->palette.size() == 2U);
+        assert(def->palette[0].resolved && def->palette[1].resolved);
+
+        const auto connected = mc::world::BlockState::fromRawId(def->palette[0].stateIndex);
+        assert(connected.block() == mc::world::Block::OakFence);
+        assert(connected.wallConnected(mc::world::BlockOrientation::North));
+        assert(connected.wallConnected(mc::world::BlockOrientation::East));
+        assert(!connected.wallConnected(mc::world::BlockOrientation::South));
+        assert(!connected.wallConnected(mc::world::BlockOrientation::West));
+        assert(connected.submergedFluid() == mc::world::SubmergedFluid::Water);
+
+        // A palette entry with no Properties keeps every bit at its default.
+        const auto bare = mc::world::BlockState::fromRawId(def->palette[1].stateIndex);
+        assert(bare.block() == mc::world::Block::OakFence);
+        assert(!bare.wallConnected(mc::world::BlockOrientation::North));
+        assert(!bare.wallConnected(mc::world::BlockOrientation::East));
+        assert(!bare.wallConnected(mc::world::BlockOrientation::South));
+        assert(!bare.wallConnected(mc::world::BlockOrientation::West));
+        assert(bare.submergedFluid() == mc::world::SubmergedFluid::None);
     }
 
     // 5) Not a compound root -> not a structure template.

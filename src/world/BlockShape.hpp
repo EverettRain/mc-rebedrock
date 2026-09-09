@@ -384,6 +384,140 @@ inline constexpr std::array<WallBoxSet, 16> kWallBoxTable = [] {
     return table;
 }();
 
+// MDL-1: CrossCollisionBlock's five geometry numbers, one row per family.
+// 26.1 spells them at the constructor call sites:
+//     FenceBlock     : super(4, 16, 4, 16, 24)   — collision 1.5 cells
+//     IronBarsBlock  : super(2, 16, 2, 16, 16)   — GlassPaneBlock extends it
+// Units are vanilla's sixteenths, converted once here rather than at each use.
+struct CrossCollisionParams final {
+    float postWidth = 4.0F;
+    float postHeight = 16.0F;
+    float wallWidth = 4.0F;
+    float wallHeight = 16.0F;
+    float collisionHeight = 24.0F;
+};
+inline constexpr std::array<CrossCollisionParams, 2> kCrossCollisionParams{{
+    {4.0F, 16.0F, 4.0F, 16.0F, 24.0F}, // CrossCollisionFamily::Fence
+    {2.0F, 16.0F, 2.0F, 16.0F, 16.0F}, // CrossCollisionFamily::PaneOrBars
+}};
+
+// `Block.column(width, 0, height)` — the centre post.
+[[nodiscard]] constexpr ShapeBox crossPostBox(float width, float height) {
+    const float half = width / 32.0F; // (width/16) / 2, centred on 0.5
+    return {0.5F - half, 0.0F, 0.5F - half, 0.5F + half, height / 16.0F, 0.5F + half};
+}
+// `Block.boxZ(width, 0, top, 0, 8)` — the north arm, reaching from the cell's
+// north face (z = 0) to its centre (z = 0.5). The other three are this one
+// rotated, exactly as the wall's are.
+[[nodiscard]] constexpr ShapeBox crossArmNorth(float width, float top) {
+    const float half = width / 32.0F;
+    return {0.5F - half, 0.0F, 0.0F, 0.5F + half, top / 16.0F, 0.5F};
+}
+struct CrossBoxSet final {
+    std::array<ShapeBox, 5> boxes{}; // post + up to 4 arms
+    std::uint8_t count = 0U;
+};
+// `collision` picks the collision heights over the visual ones. The two differ
+// only for the fence (24 vs 16) — and that difference is the entire reason a
+// fence line cannot be jumped, so it is a second table, never a scaled first.
+[[nodiscard]] constexpr CrossBoxSet buildCrossBoxSet(const CrossCollisionParams& params,
+                                                     unsigned mask, bool collision) {
+    const float postTop = collision ? params.collisionHeight : params.postHeight;
+    const float armTop = collision ? params.collisionHeight : params.wallHeight;
+    CrossBoxSet set;
+    set.boxes[set.count++] = crossPostBox(params.postWidth, postTop);
+    const ShapeBox north = crossArmNorth(params.wallWidth, armTop);
+    if ((mask & 1U) != 0U) { // North
+        set.boxes[set.count++] = north;
+    }
+    if ((mask & 2U) != 0U) { // East
+        set.boxes[set.count++] = rotatedClockwise(north);
+    }
+    if ((mask & 4U) != 0U) { // South
+        set.boxes[set.count++] = rotatedClockwise(rotatedClockwise(north));
+    }
+    if ((mask & 8U) != 0U) { // West
+        set.boxes[set.count++] = rotatedClockwise(rotatedClockwise(rotatedClockwise(north)));
+    }
+    return set;
+}
+[[nodiscard]] constexpr std::array<std::array<CrossBoxSet, 16>, 2> buildCrossBoxTable(
+    bool collision) {
+    std::array<std::array<CrossBoxSet, 16>, 2> table{};
+    for (std::size_t family = 0; family < kCrossCollisionParams.size(); ++family) {
+        for (unsigned mask = 0; mask < 16U; ++mask) {
+            table[family][mask] = buildCrossBoxSet(kCrossCollisionParams[family], mask, collision);
+        }
+    }
+    return table;
+}
+inline constexpr auto kCrossVisualBoxTable = buildCrossBoxTable(false);
+inline constexpr auto kCrossCollisionBoxTable = buildCrossBoxTable(true);
+
+// MDL-1: the MESH boxes, which are not the shape boxes.
+//
+// 26.1 draws a fence from `block/fence_post` + one `block/fence_side` per
+// connection, and a fence_side is TWO BARS — [7,12,0]..[9,15,9] and
+// [7,6,0]..[9,9,9] — while the VoxelShape's arm is a solid full-height slab.
+// The shape is right for collision and occlusion and wrong for the eye: meshing
+// a fence from it draws a solid wooden wall, which is exactly what the first
+// preview export of this family showed. So the mesh reads its own table.
+//
+// The panes are nearly the shape (`template_glass_pane_post` [7,0,7]..[9,16,9],
+// `template_glass_pane_side` [7,0,0]..[9,16,7]) — a pane really is a full-height
+// sheet — but they go through the same table so there is one answer to "what
+// does a CrossCollision block look like", not two mechanisms.
+[[nodiscard]] constexpr ShapeBox box16(float x0, float y0, float z0, float x1, float y1,
+                                       float z1) {
+    return {x0 / 16.0F, y0 / 16.0F, z0 / 16.0F, x1 / 16.0F, y1 / 16.0F, z1 / 16.0F};
+}
+struct CrossMeshTemplate final {
+    ShapeBox post{};
+    std::array<ShapeBox, 2> side{};
+    std::uint8_t sideCount = 0U;
+};
+inline constexpr std::array<CrossMeshTemplate, 2> kCrossMeshTemplates{{
+    // Fence: block/fence_post + block/fence_side (top bar, lower bar).
+    {box16(6.0F, 0.0F, 6.0F, 10.0F, 16.0F, 10.0F),
+     {box16(7.0F, 12.0F, 0.0F, 9.0F, 15.0F, 9.0F), box16(7.0F, 6.0F, 0.0F, 9.0F, 9.0F, 9.0F)},
+     2U},
+    // Panes and bars: template_glass_pane_post + template_glass_pane_side.
+    {box16(7.0F, 0.0F, 7.0F, 9.0F, 16.0F, 9.0F),
+     {box16(7.0F, 0.0F, 0.0F, 9.0F, 16.0F, 7.0F), ShapeBox{}},
+     1U},
+}};
+struct CrossMeshBoxSet final {
+    std::array<ShapeBox, 9> boxes{}; // post + up to 4 sides x 2 bars
+    std::uint8_t count = 0U;
+};
+[[nodiscard]] constexpr CrossMeshBoxSet buildCrossMeshBoxSet(const CrossMeshTemplate& tmpl,
+                                                             unsigned mask) {
+    CrossMeshBoxSet set;
+    set.boxes[set.count++] = tmpl.post;
+    for (unsigned side = 0; side < 4U; ++side) {
+        if ((mask & (1U << side)) == 0U) {
+            continue;
+        }
+        for (std::uint8_t bar = 0; bar < tmpl.sideCount; ++bar) {
+            ShapeBox box = tmpl.side[bar];
+            for (unsigned turn = 0; turn < side; ++turn) {
+                box = rotatedClockwise(box);
+            }
+            set.boxes[set.count++] = box;
+        }
+    }
+    return set;
+}
+inline constexpr std::array<std::array<CrossMeshBoxSet, 16>, 2> kCrossMeshBoxTable = [] {
+    std::array<std::array<CrossMeshBoxSet, 16>, 2> table{};
+    for (std::size_t family = 0; family < kCrossMeshTemplates.size(); ++family) {
+        for (unsigned mask = 0; mask < 16U; ++mask) {
+            table[family][mask] = buildCrossMeshBoxSet(kCrossMeshTemplates[family], mask);
+        }
+    }
+    return table;
+}();
+
 // FenceGateBlock's post-pair box (26.1's `Block.cube(16,16,4)`: full X/Y, z
 // 6/16..10/16 at the Z axis key — a gate spanning the cell on the axis
 // perpendicular to travel), rotated by facing when closed and empty when open
@@ -549,6 +683,29 @@ inline constexpr std::array<ShapeBox, 4> kFenceGateCollisionByFacing = [] {
     return {ShapeKind::Boxes, 0.0F, 0.0F, {set.boxes.data(), set.count}};
 }
 
+// MDL-1: CrossCollisionBlock's visual/pick shape — the same "connection mask ->
+// interned box set" subscript shapeWall makes, with one more dimension because
+// the family picks the box widths. The collision shape is a different table
+// (kCrossCollisionBoxTable, read by `collisionShape`): a fence's collision is
+// 1.5 cells tall while its visual box is one, and folding the two together is
+// exactly the bug AR-B4-1 fixed for the fence gate.
+[[nodiscard]] constexpr BlockShape shapeCrossCollision(BlockState state) {
+    const auto family = static_cast<std::size_t>(blockDefinition(state.block()).crossFamily);
+    const auto mask = wallConnectionMask(state.wallConnected(BlockOrientation::North),
+                                         state.wallConnected(BlockOrientation::East),
+                                         state.wallConnected(BlockOrientation::South),
+                                         state.wallConnected(BlockOrientation::West));
+    const auto& set =
+        kCrossVisualBoxTable[family < kCrossCollisionParams.size() ? family : 0U][mask];
+    return {ShapeKind::Boxes, 0.0F, 0.0F, {set.boxes.data(), set.count}};
+}
+
+// MDL-2: CarpetBlock#getShape — `Block.column(16, 0, 1)`. A Column, so it goes
+// down the same mesh/pick/collision path a pressure plate does.
+[[nodiscard]] constexpr BlockShape shapeCarpet(BlockState) {
+    return {ShapeKind::Column, 0.0F, 1.0F / 16.0F, {}};
+}
+
 // RN-4a-2: the pick-ray / selection-outline shape of an ElementModel block. The
 // diodes (repeater/comparator) are a thin full-footprint slab — 2/16 tall, the
 // same as vanilla's collision — while the lever is a small centred nub. All three
@@ -616,7 +773,7 @@ using BlockShapeFn = BlockShape (*)(BlockState);
 // The per-model shape handlers indexed by BlockModel ordinal — shape dispatch as
 // data. `blockShape` loads the block's model and calls through this, so the shape
 // stays a single source with no switch(block...) to drift.
-inline constexpr std::array<BlockShapeFn, 17> kShapeByModel{{
+inline constexpr std::array<BlockShapeFn, 19> kShapeByModel{{
     &shapeCube,          // BlockModel::Cube
     &shapeCross,         // BlockModel::Cross
     &shapeCrop,          // BlockModel::Crop
@@ -634,6 +791,8 @@ inline constexpr std::array<BlockShapeFn, 17> kShapeByModel{{
     &shapeElementModel,  // BlockModel::ElementModel (RN-4a-2: diode slab / lever nub)
     &shapeRedstoneWire,  // BlockModel::RedstoneWire (RN-6: flat 1/16 floor box)
     &shapeFire,          // BlockModel::Fire (RN-7: empty — no interaction box)
+    &shapeCrossCollision, // BlockModel::CrossCollision (MDL-1: fence / bars / pane)
+    &shapeCarpet,        // BlockModel::Carpet (MDL-2: the 1/16 floor slice)
 }};
 static_assert(static_cast<std::size_t>(BlockModel::Cube) == 0U);
 static_assert(static_cast<std::size_t>(BlockModel::Cross) == 1U);
@@ -652,9 +811,11 @@ static_assert(static_cast<std::size_t>(BlockModel::DirectionalCube) == 13U);
 static_assert(static_cast<std::size_t>(BlockModel::ElementModel) == 14U);
 static_assert(static_cast<std::size_t>(BlockModel::RedstoneWire) == 15U);
 static_assert(static_cast<std::size_t>(BlockModel::Fire) == 16U);
+static_assert(static_cast<std::size_t>(BlockModel::CrossCollision) == 17U);
+static_assert(static_cast<std::size_t>(BlockModel::Carpet) == 18U);
 // Every BlockModel ordinal must have a shape handler; a missing entry is the
 // out-of-bounds function-pointer read (a SIGBUS) that a new model would cause.
-static_assert(kShapeByModel.size() == static_cast<std::size_t>(BlockModel::Fire) + 1U);
+static_assert(kShapeByModel.size() == static_cast<std::size_t>(BlockModel::Carpet) + 1U);
 
 } // namespace detail
 
@@ -662,6 +823,20 @@ static_assert(kShapeByModel.size() == static_cast<std::size_t>(BlockModel::Fire)
 // per-stage box) fill their whole 1x1 footprint and differ only in height; the
 // torch, chest and cross-plant are explicit Boxes; air and fluids are Empty (a
 // fluid is not a solid the pick ray tests here, and neither collides).
+// MDL-1: the boxes the MESHER draws a CrossCollision block from — vanilla's
+// model, not its VoxelShape (see detail::kCrossMeshBoxTable for why they differ).
+// Pick, outline and collision all keep reading `blockShape`/`collisionShape`.
+[[nodiscard]] constexpr BlockShape crossCollisionMeshShape(BlockState state) {
+    const auto family = static_cast<std::size_t>(blockDefinition(state.block()).crossFamily);
+    const auto mask = detail::wallConnectionMask(state.wallConnected(BlockOrientation::North),
+                                                 state.wallConnected(BlockOrientation::East),
+                                                 state.wallConnected(BlockOrientation::South),
+                                                 state.wallConnected(BlockOrientation::West));
+    const auto& set =
+        detail::kCrossMeshBoxTable[family < detail::kCrossMeshTemplates.size() ? family : 0U][mask];
+    return {ShapeKind::Boxes, 0.0F, 0.0F, {set.boxes.data(), set.count}};
+}
+
 [[nodiscard]] constexpr BlockShape blockShape(BlockState state) {
     const auto model = static_cast<std::size_t>(blockDefinition(state.block()).model);
     return detail::kShapeByModel[model](state);
@@ -867,6 +1042,24 @@ struct BlockCollisionSpan final {
     // and then asking the definition again for the closed case measured as a
     // real cost on the shape path — the open/closed split belongs inside the
     // single lookup, not across two.
+    // MDL-1: a fence collides 1.5 cells tall (26.1 FenceBlock's collisionHeight
+    // 24) while it draws one cell tall — the same visual/collision split the
+    // closed gate below makes, and the reason a fence line holds animals in.
+    // Panes and iron bars share the code path with collisionHeight == 16, so
+    // their two tables agree and the extra subscript costs nothing.
+    if (blockDefinition(state.block()).model == BlockModel::CrossCollision) {
+        const auto family = static_cast<std::size_t>(blockDefinition(state.block()).crossFamily);
+        const auto mask = detail::wallConnectionMask(
+            state.wallConnected(BlockOrientation::North),
+            state.wallConnected(BlockOrientation::East),
+            state.wallConnected(BlockOrientation::South),
+            state.wallConnected(BlockOrientation::West));
+        const auto& set =
+            detail::kCrossCollisionBoxTable[family < detail::kCrossCollisionParams.size() ? family
+                                                                                         : 0U]
+                                           [mask];
+        return {ShapeKind::Boxes, 0.0F, 0.0F, {set.boxes.data(), set.count}};
+    }
     if (blockDefinition(state.block()).model == BlockModel::FenceGate) {
         // An open fence gate collides with nothing (entities pass through) even
         // though its outline / visual shape (blockShape, above) stays the post
@@ -1016,11 +1209,25 @@ static_assert(kMaximumCollisionOverhang <= 1.0F,
     }
     return count;
 }
-static_assert(tallCollisionBlockCount() == 1U,
-              "exactly one block in the roster collides above its own cell; adding a second "
-              "(a wall's 1.5 post, iron bars) is a deliberate widening of the row scan's cost");
+// MDL-1 widened this set from one block to seven, deliberately: the six wooden
+// fences collide 1.5 cells tall for the same reason the gate does (26.1
+// FenceBlock's collisionHeight is 24), and a gate in a fence line that could be
+// jumped while the fence beside it could not would be the worse outcome. The
+// overhang is unchanged at 0.5, so the walk still scans exactly one row below —
+// the cost is more cells hitting the byte table, not a wider scan.
+static_assert(tallCollisionBlockCount() == 7U,
+              "the fence gate plus the six wooden fences collide above their own cell; adding "
+              "another (a wall's 1.5 post) is a deliberate widening of the row scan's cost");
 static_assert(hasTallCollision(Block::OakFenceGate),
-              "and that block is the fence gate, whose SHAPE_COLLISION is 24px tall");
+              "the fence gate, whose SHAPE_COLLISION is 24px tall");
+static_assert(hasTallCollision(Block::OakFence) && hasTallCollision(Block::DarkOakFence),
+              "every wooden fence, whose collisionHeight is likewise 24px");
+// The other half of the family must stay OUT of the set: iron bars and glass
+// panes are collisionHeight 16. If the parameter rows were ever crossed, this
+// is what says so — the count above would still be seven-ish and look fine.
+static_assert(!hasTallCollision(Block::IronBars) && !hasTallCollision(Block::GlassPane) &&
+                  !hasTallCollision(Block::WhiteStainedGlassPane),
+              "panes and bars collide exactly one cell tall (26.1 IronBarsBlock: 16)");
 
 // Whether an axis-aligned query box overlaps a shape whose cell origin is
 // (ox,oy,oz), all in world coordinates. A Column is tested on Y only — it fills

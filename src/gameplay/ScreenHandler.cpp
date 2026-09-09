@@ -241,6 +241,12 @@ ItemStack* ScreenHandler::resolveSlotStorage(GameSession& session,
     case SlotKind::TableCraftingOutput:
     case SlotKind::FurnaceOutput:
         return nullptr;
+    case SlotKind::CreativeCatalog:
+        // A0：创造目录格背后没有任何存储，它是一张无限货架。点它走的是
+        // ClickCreativeItem 那条路，永远不会走到这里来要一块存储。
+        return nullptr;
+    case SlotKind::Count:
+        return nullptr;   // 哨兵，不是一种槽
     }
     return nullptr;
 }
@@ -249,17 +255,6 @@ const SlotView* ScreenHandler::slotAt(const std::vector<SlotView>& slots, ui::Ui
     const auto found = std::ranges::find_if(slots, [&](const SlotView& slot) {
         return slot.rect.contains(cursor.x, cursor.y);
     });
-    return found == slots.end() ? nullptr : &*found;
-}
-
-const SlotView* ScreenHandler::slotForStorage(
-    const std::vector<SlotView>& slots,
-    const ItemStack* storage) {
-    if (storage == nullptr) {
-        return nullptr;
-    }
-    const auto found = std::ranges::find_if(
-        slots, [&](const SlotView& slot) { return slot.storage == storage; });
     return found == slots.end() ? nullptr : &*found;
 }
 
@@ -457,6 +452,14 @@ void ScreenHandler::click(
             session.inventory().clickSlot(slot.index, button, false);
         }
         break;
+    case SlotKind::CreativeCatalog:
+        // A0：目录格永远不会走到这条路由上来。它背后没有存储，点它由客户端发
+        // ClickCreativeItem（命令自带物品堆），而这个函数只处理 ClickSlot。
+        // ★ 它更**不进** buildSlots：真进去了，一次 shift 点击就会把无限货架
+        //   当成一块真存储去搬。
+        break;
+    case SlotKind::Count:
+        break;   // 哨兵，不是一种槽
     }
 }
 

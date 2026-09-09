@@ -147,6 +147,7 @@ void testPrefilterParity() {
                 definition.model == mc::world::BlockModel::Stairs ||
                 definition.model == mc::world::BlockModel::Door ||
                 definition.model == mc::world::BlockModel::Wall ||
+                   definition.model == mc::world::BlockModel::CrossCollision ||
                 definition.model == mc::world::BlockModel::FenceGate ||
                 definition.states.has(mc::world::StateProperty::Locked)));
         assert(runtime.has(BlockBehaviorBit::HasRandomTick) ==
@@ -310,7 +311,8 @@ void testDispatchMechanism() {
     }
 
     // The slots later tasks own are null for every block, except AR-B2's
-    // stair/door, AR-B3's wall and AR-B4-4's fence-gate/repeater updateShape
+    // stair/door, AR-B3's wall, MDL-1's CrossCollision family (fence / iron bars
+    // / glass panes) and AR-B4-4's fence-gate/repeater updateShape
     // (see testPrefilterParity above for why the repeater is keyed on its
     // declared LOCKED property rather than on its shared model).
     for (std::size_t i = 0; i < mc::world::kBuiltinBlockCount; ++i) {
@@ -321,6 +323,7 @@ void testDispatchMechanism() {
         const auto model = definition.model;
         if (model == mc::world::BlockModel::Stairs || model == mc::world::BlockModel::Door ||
             model == mc::world::BlockModel::Wall ||
+            model == mc::world::BlockModel::CrossCollision ||
             model == mc::world::BlockModel::FenceGate ||
             definition.states.has(mc::world::StateProperty::Locked)) {
             assert(behavior.updateShape != nullptr);

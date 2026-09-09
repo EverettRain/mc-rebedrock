@@ -306,6 +306,7 @@ set(MC_REBEDROCK_RUNTIME_SOURCES
     src/gameplay/PlayerActionState.cpp
     src/gameplay/ScreenHandler.cpp
     src/ui/HudLayout.cpp
+    src/ui/ContainerPage.cpp
     src/gameplay/GameplayMutationSink.cpp
     src/gameplay/SimulationHostBridge.cpp
     src/gameplay/Inventory.cpp
@@ -1801,6 +1802,19 @@ if(BUILD_TESTING)
     target_include_directories(mc_rebedrock_gui_sprite_scaling_test PRIVATE src)
     add_test(NAME gui_sprite_scaling COMMAND mc_rebedrock_gui_sprite_scaling_test)
 
+    # A0：容器界面并入 ui::Page 之后的护栏。链 mc_rebedrock_runtime 而不是重列源文件——
+    # 容器页要 ScreenHandler（点击路由那张槽位表）与 HudLayout，两者都在库里。
+    add_executable(mc_rebedrock_container_page_test
+        tests/container_page_test.cpp
+    )
+    target_include_directories(mc_rebedrock_container_page_test PRIVATE src)
+    target_link_libraries(mc_rebedrock_container_page_test PRIVATE mc_rebedrock_runtime glm::glm)
+    # 源码护栏读渲染器：「抽了装配器」与「生产路径真的调了它」是两件事，而后者
+    # 不改变任何函数的返回值——只能读源码守。
+    target_compile_definitions(mc_rebedrock_container_page_test PRIVATE
+        "MC_REBEDROCK_RENDERER_SRC=\"${CMAKE_CURRENT_SOURCE_DIR}/src/render/vulkan/VulkanRenderer.cpp\"")
+    add_test(NAME container_page COMMAND mc_rebedrock_container_page_test)
+
     add_executable(mc_rebedrock_tooltip_layout_test
         tests/tooltip_layout_test.cpp
         src/ui/HudLayout.cpp
@@ -2098,6 +2112,20 @@ if(BUILD_TESTING)
         "${glm_SOURCE_DIR}"
     )
     add_test(NAME block_shape COMMAND mc_rebedrock_block_shape_test)
+
+    # MDL-1/MDL-2: the CrossCollision family (fence / iron bars / glass pane) and
+    # the carpet. Links the runtime because the connection derivation reads a
+    # real World, which is the only way to check that a fence's four bits are
+    # right the instant it is placed.
+    add_executable(mc_rebedrock_cross_collision_family_test
+        tests/cross_collision_family_test.cpp
+    )
+    target_link_libraries(mc_rebedrock_cross_collision_family_test PRIVATE mc_rebedrock_runtime)
+    target_include_directories(mc_rebedrock_cross_collision_family_test PRIVATE
+        src
+        "${glm_SOURCE_DIR}"
+    )
+    add_test(NAME cross_collision_family COMMAND mc_rebedrock_cross_collision_family_test)
 
     add_executable(mc_rebedrock_face_occlusion_test
         tests/face_occlusion_test.cpp
