@@ -205,8 +205,12 @@ struct NeighborUpdateContext final {
     world::BlockState neighborState;  // that neighbour's new state
 };
 
+// MDL-3: the trailing `int` is the broken block's LAYERS (a snow layer drops one
+// snowball per layer). It is the third state projection in this signature — see
+// MiningSystem.hpp's note about passing the BlockState instead once a fourth
+// one shows up.
 using GetDropsFn =
-    MinedDrops (*)(world::Block, const ItemStack&, std::uint64_t&, int, bool);
+    MinedDrops (*)(world::Block, const ItemStack&, std::uint64_t&, int, bool, int);
 using GetShapeFn = world::BlockShape (*)(world::BlockState);
 using GetStateForPlacementFn = std::optional<world::BlockState> (*)(const PlacementBehaviorContext&);
 using UseItemOnFn = void (*)(const InteractionBehaviorContext&);
@@ -496,7 +500,7 @@ template <class Fn>
 // parity harness asserts across every block and tool.
 [[nodiscard]] inline MinedDrops dispatchBlockDrops(core::BlockId id, const ItemStack& tool,
                                                    std::uint64_t& randomState, int age = 0,
-                                                   bool doubledSlab = false) {
+                                                   bool doubledSlab = false, int layers = 1) {
     const auto& behavior = behaviorFor(id);
     if (!behavior.prefilter.has(BlockBehaviorBit::HasDrops) || behavior.getDrops == nullptr) {
         return {};
@@ -505,7 +509,7 @@ template <class Fn>
     if (!canHarvestBlock(block, tool)) {
         return {};
     }
-    return behavior.getDrops(block, tool, randomState, age, doubledSlab);
+    return behavior.getDrops(block, tool, randomState, age, doubledSlab, layers);
 }
 
 // A block's base shape, through the table's getShape slot. This is the uniform

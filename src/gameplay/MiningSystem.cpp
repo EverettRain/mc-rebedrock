@@ -176,6 +176,16 @@ namespace {
 // handler only rolls the block's loot. Unused parameters keep the shared slot
 // signature so every handler is one BlockDropFn.
 
+// MDL-3: SnowLayerBlock's loot — `layers` snowballs, no roll. (Vanilla's table
+// is silk-touch -> the layer itself, otherwise one snowball per layer; the silk
+// branch is handled centrally in minedDrops, so this is only the ordinary half.)
+MinedDrops dropSnowLayer(world::Block, const ItemStack&, std::uint64_t&, int, bool, int layers) {
+    MinedDrops drops;
+    drops.add({world::Block::Air, static_cast<std::uint8_t>(layers < 1 ? 1 : layers),
+               &items::Snowball});
+    return drops;
+}
+
 // The data-driven handler: a block's drops come from the loot table (D-4) when
 // it has an entry there — stone -> cobblestone, an ore -> its item, glass -> the
 // empty entry that drops nothing — and otherwise the block simply drops itself
@@ -184,7 +194,7 @@ namespace {
 // one function reads it. It is also the handler for external blocks. The random
 // blocks (leaves, gravel, crops) keep their own handlers below.
 MinedDrops dropFromLootOrDefault(world::Block block, const ItemStack&, std::uint64_t&, int,
-                                 bool doubledSlab) {
+                                 bool doubledSlab, int) {
     MinedDrops drops;
     if (const LootEntry* entry = lootTable().find(block); entry != nullptr) {
         for (const auto& stack : entry->stacks) {
@@ -201,7 +211,8 @@ MinedDrops dropFromLootOrDefault(world::Block block, const ItemStack&, std::uint
 // Without shears or silk touch the leaves themselves are lost; what is left are
 // the rolls of the vanilla leaves tables. Jungle leaves drop their sapling at
 // 1/40 rather than 1/20, and only oak and dark oak carry the apple roll.
-MinedDrops dropLeaves(world::Block block, const ItemStack&, std::uint64_t& randomState, int, bool) {
+MinedDrops dropLeaves(world::Block block, const ItemStack&, std::uint64_t& randomState, int, bool,
+                      int) {
     MinedDrops drops;
     if (rollChance(randomState, block == world::Block::JungleLeaves ? 0.025F : 0.05F)) {
         drops.add({saplingForLeaves(block), 1U, blockItemFor(saplingForLeaves(block))});
@@ -217,7 +228,7 @@ MinedDrops dropLeaves(world::Block block, const ItemStack&, std::uint64_t& rando
 }
 
 // 10% flint, and the gravel itself only when that roll fails.
-MinedDrops dropGravel(world::Block, const ItemStack&, std::uint64_t& randomState, int, bool) {
+MinedDrops dropGravel(world::Block, const ItemStack&, std::uint64_t& randomState, int, bool, int) {
     MinedDrops drops;
     if (rollChance(randomState, 0.10F)) {
         drops.add({world::Block::Air, 1U, &items::Flint});
@@ -229,7 +240,8 @@ MinedDrops dropGravel(world::Block, const ItemStack&, std::uint64_t& randomState
 
 // Tall grass drops a wheat seed 1/8 of the time (vanilla's grass.json loot
 // table); the grass plant itself is only kept by shears.
-MinedDrops dropTallGrass(world::Block, const ItemStack&, std::uint64_t& randomState, int, bool) {
+MinedDrops dropTallGrass(world::Block, const ItemStack&, std::uint64_t& randomState, int, bool,
+                         int) {
     MinedDrops drops;
     if (rollChance(randomState, 0.125F)) {
         drops.add({world::Block::Air, 1U, &items::WheatSeeds});
@@ -239,7 +251,8 @@ MinedDrops dropTallGrass(world::Block, const ItemStack&, std::uint64_t& randomSt
 
 // Wheat's loot table: at age 7 the guaranteed pool drops wheat and an extra
 // binomial(3, 0.5714) roll of seeds; an immature crop drops a single seed.
-MinedDrops dropWheat(world::Block block, const ItemStack&, std::uint64_t& randomState, int age, bool) {
+MinedDrops dropWheat(world::Block block, const ItemStack&, std::uint64_t& randomState, int age,
+                     bool, int) {
     MinedDrops drops;
     const bool mature = age >= 7;
     drops.add({world::Block::Air, 1U, mature ? produceForCrop(block) : seedForCrop(block)});
@@ -255,7 +268,7 @@ MinedDrops dropWheat(world::Block block, const ItemStack&, std::uint64_t& random
 // Carrot/potato share a table: one crop unconditionally (so even a young plant
 // yields one), plus a binomial(3, 0.5714) extra roll at maturity.
 MinedDrops dropCarrotPotato(world::Block block, const ItemStack&, std::uint64_t& randomState,
-                            int age, bool) {
+                            int age, bool, int) {
     MinedDrops drops;
     std::uint8_t count = 1U;
     if (age >= 7) {
@@ -279,6 +292,7 @@ MinedDrops dropCarrotPotato(world::Block block, const ItemStack&, std::uint64_t&
             entries[static_cast<std::size_t>(block)] = fn;
         };
         using world::Block;
+        set(Block::Snow, &dropSnowLayer); // MDL-3: one snowball per layer
         set(Block::OakLeaves, &dropLeaves);
         set(Block::SpruceLeaves, &dropLeaves);
         set(Block::BirchLeaves, &dropLeaves);
@@ -336,7 +350,7 @@ BlockDropFn blockDropFn(world::Block block) {
 }
 
 MinedDrops minedDrops(world::Block block, const ItemStack& tool, std::uint64_t& randomState,
-                      int age, bool doubledSlab) {
+                      int age, bool doubledSlab, int layers) {
     // Breaking a block with too weak a tool destroys it without any loot.
     if (!canHarvestBlock(block, tool)) return {};
 
@@ -355,7 +369,7 @@ MinedDrops minedDrops(world::Block block, const ItemStack& tool, std::uint64_t& 
         return drops;
     }
 
-    MinedDrops drops = blockDropFn(block)(block, tool, randomState, age, doubledSlab);
+    MinedDrops drops = blockDropFn(block)(block, tool, randomState, age, doubledSlab, layers);
 
     // ENCH-1b Fortune: ApplyBonusLootFunction.OreDrops multiplies the ore item
     // count. Vanilla applies ore_drops to the ores that drop an item straight

@@ -80,6 +80,30 @@ gameplay::ScreenContext buildScreenContext(GameSession& session) {
     return world::BlockState{};
 }
 
+// MDL-3: SnowLayerBlock#getStateForPlacement — clicking a snow layer with snow
+// in hand raises it by one (up to eight) instead of placing into the neighbour.
+// Structurally the same move slabMergeTarget below makes, and for the same
+// reason: the target cell is not replaceable, so ordinary placement rejects it.
+// Vanilla's canBeReplaced adds a face/geometry gate; this takes the simpler
+// "clicked the layer itself" reading, which covers the gesture players make.
+[[nodiscard]] std::optional<std::pair<glm::ivec3, world::BlockState>> snowStackTarget(
+    world::World& world, world::Block held, const UseItemOn& use) {
+    if (held != world::Block::Snow) {
+        return std::nullopt;
+    }
+    const auto raise = [&](glm::ivec3 cell, world::BlockState state)
+        -> std::optional<std::pair<glm::ivec3, world::BlockState>> {
+        if (state.block() != world::Block::Snow || state.layers() >= 8) {
+            return std::nullopt;
+        }
+        return std::pair{cell, state.withLayers(state.layers() + 1)};
+    };
+    if (auto clicked = raise(use.block, world.state(use.block.x, use.block.y, use.block.z))) {
+        return clicked;
+    }
+    return raise(use.adjacent, world.state(use.adjacent.x, use.adjacent.y, use.adjacent.z));
+}
+
 // SlabBlock#canBeReplaced: right-clicking an existing single slab with the same
 // slab merges the two into a double. Without a sub-cell hit fraction the gesture
 // is read from the clicked face — completing a bottom slab from above or a top
@@ -917,7 +941,11 @@ void PlayerInteraction::performUse(GameSession& session, world::World& world,
         // rewriting the cell that already holds a slab rather than placing into
         // an empty neighbour. This is its own path because the target cell is not
         // replaceable (it is a slab), so the ordinary PlaceBlock check rejects it.
-        if (const auto merge = slabMergeTarget(world, heldPlacementBlock(selectedStack), use)) {
+        // MDL-3: the snow layer stacks by the same route, for the same reason.
+        const auto heldBlock = heldPlacementBlock(selectedStack);
+        if (const auto merge = snowStackTarget(world, heldBlock, use)
+                                   ? snowStackTarget(world, heldBlock, use)
+                                   : slabMergeTarget(world, heldBlock, use)) {
             const auto cell = merge->first;
             GameplayMutationSink sink{world, session};
             if (session.worldMutations()

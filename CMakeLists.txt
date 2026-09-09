@@ -2141,6 +2141,18 @@ if(BUILD_TESTING)
     )
     add_test(NAME cross_collision_family COMMAND mc_rebedrock_cross_collision_family_test)
 
+    # MDL-3: the snow layer — LAYERS axis, the visual/collision split, support,
+    # melt, drop, and the accumulation half of tickPrecipitation.
+    add_executable(mc_rebedrock_snow_layer_test
+        tests/snow_layer_test.cpp
+    )
+    target_link_libraries(mc_rebedrock_snow_layer_test PRIVATE mc_rebedrock_runtime)
+    target_include_directories(mc_rebedrock_snow_layer_test PRIVATE
+        src
+        "${glm_SOURCE_DIR}"
+    )
+    add_test(NAME snow_layer COMMAND mc_rebedrock_snow_layer_test)
+
     add_executable(mc_rebedrock_face_occlusion_test
         tests/face_occlusion_test.cpp
     )

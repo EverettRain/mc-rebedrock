@@ -1439,6 +1439,10 @@ void GameSession::applyGameRuleMirrors(std::optional<GameRuleId> changed) {
         worldSimulation_.setRandomTickSpeed(
             gameRules_.get<std::int32_t>(GameRuleId::RandomTickSpeed));
     }
+    if (touched(GameRuleId::MaxSnowAccumulationHeight)) {
+        worldSimulation_.setMaximumSnowAccumulation(
+            gameRules_.get<std::int32_t>(GameRuleId::MaxSnowAccumulationHeight));
+    }
     if (touched(GameRuleId::FireSpreadRadiusAroundPlayer)) {
         worldSimulation_.setFireSpreadRadius(
             gameRules_.get<std::int32_t>(GameRuleId::FireSpreadRadiusAroundPlayer));
@@ -1496,7 +1500,8 @@ void GameSession::spawnBlockDrops(glm::ivec3 position, world::BlockState removed
     const auto drops =
         minedDrops(removed.block(), tool, lootRandomState_, removed.age(),
                    world::isSlab(removed.block()) &&
-                       removed.slabPortion() == world::SlabPortion::Double);
+                       removed.slabPortion() == world::SlabPortion::Double,
+                   removed.layers());
     std::size_t dropIndex = 0U;
     for (const auto& stack : drops.view()) {
         const float angle = static_cast<float>(dropIndex) * 2.39996323F;
