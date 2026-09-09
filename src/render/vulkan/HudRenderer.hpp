@@ -2880,25 +2880,6 @@ class HudRenderer final {
         return std::nullopt;
     }
 
-    // 面板底图在图集里的层号。
-    //
-    // ★ 从前是绘制侧一条**四段三元链**（`chestScreen ? 10 : CraftingTable ? 7 : …`），
-    //   而三元链没有穷尽性检查：加一块容器屏，它会静默地落到链尾那个 `: 8.0F`——
-    //   也就是画出熔炉的面板。现在是不带 `default` 的 switch。
-    [[nodiscard]] static float containerPanelLayer(ui::ContainerPageKind kind) {
-        switch (kind) {
-        case ui::ContainerPageKind::Chest:           return 10.0F;
-        case ui::ContainerPageKind::CraftingTable:   return 7.0F;
-        case ui::ContainerPageKind::EnchantingTable: return kEnchantingGuiLayer;
-        case ui::ContainerPageKind::Anvil:           return kAnvilGuiLayer;
-        case ui::ContainerPageKind::Furnace:         return 8.0F;
-        case ui::ContainerPageKind::SurvivalInventory:     return 2.0F;
-        case ui::ContainerPageKind::CreativeInventoryTab:  return 5.0F;
-        case ui::ContainerPageKind::CreativeCatalogTab:    return 3.0F;
-        case ui::ContainerPageKind::Count:           return 8.0F;   // 哨兵，不是一屏
-        }
-        return 8.0F;
-    }
 
     // A1：创造背包的两个页签。
     //

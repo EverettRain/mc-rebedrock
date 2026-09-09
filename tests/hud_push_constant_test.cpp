@@ -877,5 +877,32 @@ int main() {
         assert(push.uvRect == glm::vec4(0.0F));
     }
 
+    // --- A1：每一屏的容器面板画的是**它自己**那张底图。 ---
+    //
+    // ★ 这条不是把 containerPanelLayer 的返回值抄一遍（那是固化，不是覆盖）。
+    //   它断言的是一条性质：**八种容器页两两不同层**——每一屏在 GUI 图集里有自己的
+    //   面板贴图，两屏共用一个层号意味着其中一屏画的是别人的面板。
+    //   从前那条四段三元链正是这么错的：加一屏会静默落到链尾的 `: 8.0F`，也就是
+    //   画出熔炉的面板；而把箱子的层号写成熔炉的那次 sabotage，在这条断言之前
+    //   全套测试照样全绿（实测）。
+    {
+        std::array<float, static_cast<std::size_t>(mc::ui::ContainerPageKind::Count)> layers{};
+        for (std::size_t raw = 0;
+             raw < static_cast<std::size_t>(mc::ui::ContainerPageKind::Count); ++raw) {
+            layers[raw] =
+                mc::render::containerPanelLayer(static_cast<mc::ui::ContainerPageKind>(raw));
+        }
+        for (std::size_t i = 0; i < layers.size(); ++i) {
+            for (std::size_t j = i + 1U; j < layers.size(); ++j) {
+                assert(layers[i] != layers[j]);
+            }
+        }
+        // 附魔台与铁砧用的是 HudTypes 自己的具名层号常量，不是又抄一遍数字。
+        assert(mc::render::containerPanelLayer(mc::ui::ContainerPageKind::EnchantingTable) ==
+               mc::render::kEnchantingGuiLayer);
+        assert(mc::render::containerPanelLayer(mc::ui::ContainerPageKind::Anvil) ==
+               mc::render::kAnvilGuiLayer);
+    }
+
     return 0;
 }

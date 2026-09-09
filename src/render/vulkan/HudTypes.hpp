@@ -5,6 +5,7 @@
 
 #include "gameplay/ScreenHandler.hpp"
 #include "render/BlockOutlineGeometry.hpp"
+#include "ui/ContainerPage.hpp"
 #include "ui/HudLayout.hpp"
 #include "ui/ScreenBackground.hpp"
 #include "world/ItemModel.hpp"
@@ -49,6 +50,32 @@ inline constexpr int kEnchantingBarSpriteY = 168;
 // ENCH-3: gui/container/anvil.png, with its text-field and error sprites packed
 // into the space its 176x166 panel leaves — same arrangement, same reason.
 inline constexpr float kAnvilGuiLayer = 15.0F;
+
+// A1：容器界面那张面板底图在 GUI 图集里的层号。
+//
+// ★ 从前它是绘制侧一条**四段三元链**（`chestScreen ? 10 : CraftingTable ? 7 : …`），
+//   而三元链没有穷尽性检查：加一块容器屏，它会静默落到链尾那个 `: 8.0F`——画出来
+//   的是熔炉的面板。现在是不带 `default` 的 switch，加一种 ContainerPageKind
+//   编译器会点名。
+//
+// ★ 它住在这里而不是 HudRenderer 里，是为了**测得到**：层号是纯绘制常量，改错它
+//   不改变任何别的返回值，而无头测试进不了 Vulkan 头。放在层号常量自己身边，
+//   「每一屏的面板互不相同」那条性质才有地方断言——少了它，把箱子的层号写成熔炉的
+//   那次 sabotage 全套测试照样全绿（实测）。
+[[nodiscard]] constexpr float containerPanelLayer(ui::ContainerPageKind kind) {
+    switch (kind) {
+    case ui::ContainerPageKind::Chest:           return 10.0F;
+    case ui::ContainerPageKind::CraftingTable:   return 7.0F;
+    case ui::ContainerPageKind::EnchantingTable: return kEnchantingGuiLayer;
+    case ui::ContainerPageKind::Anvil:           return kAnvilGuiLayer;
+    case ui::ContainerPageKind::Furnace:         return 8.0F;
+    case ui::ContainerPageKind::SurvivalInventory:    return 2.0F;
+    case ui::ContainerPageKind::CreativeInventoryTab: return 5.0F;
+    case ui::ContainerPageKind::CreativeCatalogTab:   return 3.0F;
+    case ui::ContainerPageKind::Count:           break;   // 哨兵，不是一屏
+    }
+    return 8.0F;
+}
 // The 110x16 text field (normal then disabled) below the panel, and the 28x21
 // "too expensive" error marker to the right of them.
 inline constexpr int kAnvilTextFieldSpriteY = 168;
