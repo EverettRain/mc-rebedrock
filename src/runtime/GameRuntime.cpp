@@ -1189,6 +1189,10 @@ void GameRuntime::loadWorld(persistence::SaveGame save, int viewDistanceChunks) 
     gameSession_.experience().restore(
         currentSave_->playerExperienceLevel, currentSave_->playerExperiencePoints,
         currentSave_->playerTotalExperience, currentSave_->playerEnchantmentSeed);
+    // 配方书同理：没有 RCPB 块的老存档两张表都是空的，也就是"一条都还没解锁"，
+    // 下一次拾取会按解锁规则重新补上（见 RecipeBook.hpp 那段偏差说明）。
+    gameSession_.recipeBook().load(currentSave_->unlockedRecipes,
+                                   currentSave_->highlightedRecipes);
     // Player's constructor lazily rolls enchantmentSeed the first time a save
     // carries none (`if (enchantmentSeed == 0) enchantmentSeed = random.nextInt()`,
     // Player.java:632-634): a brand-new world or a pre-XP-0 save both load a
@@ -1374,6 +1378,12 @@ bool GameRuntime::saveLocked() {
     currentSave_->playerExperiencePoints = gameSession_.experience().pointsIntoLevel();
     currentSave_->playerTotalExperience = gameSession_.experience().totalExperience();
     currentSave_->playerEnchantmentSeed = gameSession_.experience().enchantmentSeed();
+    // 配方书：已解锁与待高亮两张表。存的是**配方标识符字符串**，不是稠密下标——
+    // 配方表是数据驱动的（datapack 可以增删改），下标是每次运行才成立的值。
+    currentSave_->unlockedRecipes.assign(gameSession_.recipeBook().known().begin(),
+                                         gameSession_.recipeBook().known().end());
+    currentSave_->highlightedRecipes.assign(gameSession_.recipeBook().highlight().begin(),
+                                            gameSession_.recipeBook().highlight().end());
     currentSave_->chests.assign(gameSession_.chestSystem().entities().begin(),
                                 gameSession_.chestSystem().entities().end());
     currentSave_->trappedChests.assign(gameSession_.trappedChestSystem().entities().begin(),
