@@ -51,8 +51,14 @@ struct MenuBuildContext final {
     std::size_t languageRowCount = 0;
     // UI-6e ③：资源包两栏各有几行**可见**（窗口内），以及右栏当前选中的是第几行。
     // 与绑定列表同构：装配只造窗口里的行，页面因此不会超出布局容量。
+    // UI-10 / D24：两栏各自的窗口起点。★ 装配按它跳过滚出去的行、布局按**同一个**
+    //   值折算行号——两边错开一行就是"滚动条动了内容没动"（护栏 21）。
+    std::size_t availablePackFirstRow = 0;
+    std::size_t selectedPackFirstRow = 0;
     std::size_t availablePackRowCount = 0;
     std::size_t selectedPackRowCount = 0;
+    // 右栏**一共**有多少行（不是窗口里几行）——"能不能下移"问的是绝对行号。
+    std::size_t selectedPackTotalRows = 0;
     // 右栏没有选中行时是 npos —— 调序按钮据此置灰。
     std::size_t selectedPackRow = static_cast<std::size_t>(-1);
     // 某个动作那一行的**两段**文字：左边的动作名与右边按钮上的键名。
@@ -183,8 +189,10 @@ struct MenuCallbacks final {
     std::function<void()> openResourcePacks{};
     std::function<void(std::size_t)> togglePackAvailable{};
     std::function<void(std::size_t)> togglePackSelected{};
-    std::function<void()> movePackUp{};
-    std::function<void()> movePackDown{};
+    // UI-10 / D24：**按行**上移/下移。26.1 的箭头画在行内，作用于**那一行**——
+    // 从前它们在页脚、作用于"右栏当前选中的那一行"，于是还得先选中再点。
+    std::function<void(std::size_t)> movePackUp{};
+    std::function<void(std::size_t)> movePackDown{};
 };
 
 // UI-9：文字**由调用方给**的按钮。
@@ -626,26 +634,46 @@ inline void buildPageInto(Page& page, PageId id, const MenuBuildContext& ctx,
         //   装配顺序是"先左栏所有行、再右栏所有行"，而布局靠 **debugId** 分辨
         //   一行属于哪一栏——不是靠"第几个之后算右栏"那种旁路。
         case PageId::ResourcePacks: {
-            for (std::size_t row = 0; row < ctx.availablePackRowCount; ++row) {
+            for (std::size_t visible = 0; visible < ctx.availablePackRowCount; ++visible) {
+                const std::size_t row = ctx.availablePackFirstRow + visible;
                 addListRow(page, WidgetId::PackRowAvailable, row, [cb, row]() {
                     if (cb.togglePackAvailable) {
                         cb.togglePackAvailable(row);
                     }
                 });
             }
-            for (std::size_t row = 0; row < ctx.selectedPackRowCount; ++row) {
+            for (std::size_t visible = 0; visible < ctx.selectedPackRowCount; ++visible) {
+                // ★ `row` 是**绝对行号**（回调要用它去索引真正的包），`visible` 才是
+                //   屏幕上的第几行。两者混用就是"滚下去之后点第一行却移动了别的包"。
+                const std::size_t row = ctx.selectedPackFirstRow + visible;
                 addListRow(page, WidgetId::PackRowSelected, row, [cb, row]() {
                     if (cb.togglePackSelected) {
                         cb.togglePackSelected(row);
                     }
                 });
+                // ★ UI-10 / D24：**行内三个热区**（26.1 `TransferableSelectionList`
+                //   把 unselect / move_up / move_down 画在行的 32x32 图标位里，
+                //   按光标落在左半 / 右上 1/4 / 右下 1/4 分派）。
+                //   它们紧跟在自己那一行之后——布局按这个次序给矩形。
+                //   ★ 排在行**之后**是有意的：热区盖在行的左端，而 `ui::hitTest`
+                //     取最后一个命中（后画即在上），所以热区必须后进页面。
+                addLabelledButton(page, WidgetId::PackUnselect, {}, [cb, row]() {
+                    if (cb.togglePackSelected) {
+                        cb.togglePackSelected(row);
+                    }
+                }, /*enabled=*/true, WidgetKind::IconZone);
+                addLabelledButton(page, WidgetId::PackMoveUp, {}, [cb, row]() {
+                    if (cb.movePackUp) {
+                        cb.movePackUp(row);
+                    }
+                }, row > 0U, WidgetKind::IconZone);
+                addLabelledButton(page, WidgetId::PackMoveDown, {}, [cb, row]() {
+                    if (cb.movePackDown) {
+                        cb.movePackDown(row);
+                    }
+                }, row + 1U < ctx.selectedPackTotalRows, WidgetKind::IconZone);
             }
-            // 页脚。★ 26.1 把上下箭头画在**行内**；本作放页脚、作用于右栏选中的那一行
-            //   （已登记偏差）。没选中时置灰——否则"按了没反应"又是一个静默。
-            const bool hasSelection =
-                ctx.selectedPackRow != static_cast<std::size_t>(-1);
-            addButton(page, ctx, WidgetId::PackMoveUp, cb.movePackUp, hasSelection);
-            addButton(page, ctx, WidgetId::PackMoveDown, cb.movePackDown, hasSelection);
+            // 页脚。★ 上下箭头**不在这里**了（26.1 从来没有那两个页脚按钮）。
             // 本作没有"用默认程序打开路径"这条能力，置灰。
             addButton(page, ctx, WidgetId::PackOpenFolder, nullptr, /*enabled=*/false);
             addButton(page, ctx, WidgetId::Done, cb.doneOptions);

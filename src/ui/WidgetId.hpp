@@ -87,7 +87,9 @@ enum class WidgetId : std::uint16_t {
     //   那正是"同一事实两份表述"。
     PackRowAvailable, PackRowSelected,
     // 调序。26.1 把上下箭头画在行内，本作放页脚、作用于右栏选中的那一行（已登记偏差）。
-    PackMoveUp, PackMoveDown,
+    // UI-10 / D24：调序与取消选择现在都在**行内**（26.1 的做法）。
+    // 三个共用同一个 32x32 图标位的三块热区，第几行由装配时的次序决定。
+    PackMoveUp, PackMoveDown, PackUnselect,
     // 打开 resourcepacks/ 目录。本作没有"用默认程序打开路径"这条能力，置灰。
     PackOpenFolder,
 

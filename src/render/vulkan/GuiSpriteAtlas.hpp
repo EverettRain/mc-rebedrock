@@ -60,6 +60,17 @@ enum class GuiWidgetSprite : std::size_t {
     TabSelected,
     TabHighlighted,
     TabSelectedHighlighted,
+    // UI-10 / D24：可转移列表行内那三块热区的箭头（26.1 `TransferableSelectionList`
+    // 的 SELECT / UNSELECT / MOVE_UP / MOVE_DOWN，各带一张 highlighted）。
+    // 八张都是 32x32，画在行的图标位上；highlighted 那一张只在光标落在**那一块**上时用。
+    TransferSelect,
+    TransferSelectHighlighted,
+    TransferUnselect,
+    TransferUnselectHighlighted,
+    TransferMoveUp,
+    TransferMoveUpHighlighted,
+    TransferMoveDown,
+    TransferMoveDownHighlighted,
     Count,
 };
 

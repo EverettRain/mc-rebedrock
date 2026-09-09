@@ -509,6 +509,22 @@ void TextureManager::createGuiTexture() {
     blitWidget(tabWidgets, GuiWidgetSprite::TabHighlighted, "widget/tab_highlighted", 0, 48);
     blitWidget(tabWidgets, GuiWidgetSprite::TabSelectedHighlighted,
                "widget/tab_selected_highlighted", 0, 72);
+    // UI-10 / D24：八张 32x32 的转移箭头。`tabWidgets` 这一层 y>=96 整条还空着
+    // （上面四张各 130x24 只用了左侧），一行正好放下八张——**不再加层**。
+    blitWidget(tabWidgets, GuiWidgetSprite::TransferSelect, "transferable_list/select", 0, 96);
+    blitWidget(tabWidgets, GuiWidgetSprite::TransferSelectHighlighted,
+               "transferable_list/select_highlighted", 32, 96);
+    blitWidget(tabWidgets, GuiWidgetSprite::TransferUnselect, "transferable_list/unselect", 64,
+               96);
+    blitWidget(tabWidgets, GuiWidgetSprite::TransferUnselectHighlighted,
+               "transferable_list/unselect_highlighted", 96, 96);
+    blitWidget(tabWidgets, GuiWidgetSprite::TransferMoveUp, "transferable_list/move_up", 128, 96);
+    blitWidget(tabWidgets, GuiWidgetSprite::TransferMoveUpHighlighted,
+               "transferable_list/move_up_highlighted", 160, 96);
+    blitWidget(tabWidgets, GuiWidgetSprite::TransferMoveDown, "transferable_list/move_down", 192,
+               96);
+    blitWidget(tabWidgets, GuiWidgetSprite::TransferMoveDownHighlighted,
+               "transferable_list/move_down_highlighted", 224, 96);
 
     auto hud = emptyRgbaAtlas();
     blit(hud, sprite("hud/crosshair"), 0, 0);
