@@ -941,7 +941,7 @@ class HudRenderer final {
                     color);
     }
 
-    // 一格槽位：悬停高亮 + 物品图标 + 耐久条 + 数量。
+    // 一格槽位：物品图标 + 耐久条 + 数量。
     //
     // ★ A1 删掉了两个死参数。`selected`（画一圈黄框、加深底色）与 `minecraftStyle`
     //   （自造的深色格子底）：三个调用点**全部**传 `minecraftStyle = true`，于是那条
@@ -950,11 +950,12 @@ class HudRenderer final {
     //   ★ 它还骗过了一次 sabotage：把"选中框只属于玩家自己的槽"这条判断放宽，
     //     箱子屏的图**一个像素都没变**——因为那个参数根本没人读。留着一个不被读的
     //     参数，等于给未来的每一次 sabotage 发一张免检票。
+    // ★ UI-8 / D30：悬停高亮**不在这里**了。26.1 整屏只有一个 `hoveredSlot`，它的
+    //   高亮是两张 24x24 九宫格精灵、画在槽位的 (x-4,y-4)，一张在所有槽位内容之前、
+    //   一张在之后（`AbstractContainerScreen:183-190`）。逐格画一层白方块画不出
+    //   "在物品之上的那一张"，也画不出比格子大一圈的柔边。
     void drawHudSlot(VkCommandBuffer commandBuffer, const ui::UiRect& rectangle,
-                     const gameplay::ItemStack& stack, bool hovered = false) const {
-        if (hovered) {
-            drawHudQuad(commandBuffer, rectangle, {1.0F, 1.0F, 1.0F, 0.34F});
-        }
+                     const gameplay::ItemStack& stack) const {
         if (stack.empty()) {
             return;
         }
@@ -2830,7 +2831,11 @@ class HudRenderer final {
             title("container.chest", "Chest");
             return std::nullopt;
         case ui::ContainerPageKind::CraftingTable:
-            // 26.1 的工作台屏两行标题都在，本作此前一行都没画（登记为偏差 D29）。
+            // UI-8 / D29：26.1 `AbstractContainerScreen.extractLabels`（:218-221）对
+            // **每一块**容器屏都画屏名与 "Inventory" 两行，`CraftingScreen` 与
+            // `AbstractFurnaceScreen` 都没有覆写它——本作此前这两屏一行都没画。
+            // 屏名来自 `CraftingTableBlock.CONTAINER_TITLE`（container.crafting）。
+            title("container.crafting", "Crafting");
             return std::nullopt;
         case ui::ContainerPageKind::EnchantingTable:
             return drawEnchantingScreen(commandBuffer, layout, panel);
@@ -2838,6 +2843,8 @@ class HudRenderer final {
             drawAnvilScreen(commandBuffer, layout, panel);
             return std::nullopt;
         case ui::ContainerPageKind::Furnace: {
+            // D29 同上。屏名来自 `FurnaceBlockEntity.DEFAULT_NAME`（container.furnace）。
+            title("container.furnace", "Furnace");
             // 熔炉界面按容器显示快照绘制，这里不读方块实体的位置
             const auto& worldSnap = clientMirror.world();
             const float fuel = std::clamp(worldSnap.furnaceFuelProgress, 0.0F, 1.0F);
@@ -3249,6 +3256,14 @@ class HudRenderer final {
         return page;
     }
 
+    // UI-8 / D30：光标下那一格的高亮。26.1 `AbstractContainerScreen:184/190`：
+    // 两张 24x24 的九宫格精灵，画在槽位的 (x-4, y-4)——比 16x16 的格子大一圈。
+    void drawSlotHighlight(VkCommandBuffer commandBuffer, const ui::UiRect& slot,
+                           GuiWidgetSprite sprite, float scale) const {
+        drawScaledGuiSprite(commandBuffer, ui::slotHighlightRect(slot, scale), 0.0F,
+                            guiWidgetSprite(guiWidgetSprites, sprite), scale, glm::vec4{1.0F});
+    }
+
     // A1：**容器屏的槽位一律走这一趟**——遍历容器页里的 `Slot` 控件。
     //
     // ★ 它取代的是五段各写各的循环：`drawWorkContainer` 的容器槽与 36 格、
@@ -3261,12 +3276,25 @@ class HudRenderer final {
     // 返回光标下那一格的物品堆（若非空），交给提示框那一层。
     [[nodiscard]] std::optional<gameplay::ItemStack> drawContainerSlots(
         VkCommandBuffer commandBuffer, const ui::Page& page, const ui::HudLayout& layout) const {
-        static_cast<void>(layout);
         const auto cursor = currentFramebufferCursor();
         const auto& snapshot = clientMirror.world();
         // 创造目录那 45 格的内容不在世界快照里（无限货架），从目录清单按当前滚动行取。
         const auto catalog = activeCreativeCatalog();
         const std::size_t firstCatalogIndex = menuSystem.creativeScrollRow * 9U;
+        // ★ 整屏只有**一个** hoveredSlot（26.1 `getHoveredSlot`），高亮挂在它身上。
+        //   后画即在上，所以取最后一个命中——与 `ui::hitTest` 同一条规则。
+        const ui::Widget* hoveredSlot = nullptr;
+        for (const ui::Widget& widget : page) {
+            if (widget.kind == ui::WidgetKind::Slot &&
+                widget.rect.contains(cursor.x, cursor.y)) {
+                hoveredSlot = &widget;
+            }
+        }
+        const float scale = layout.scale();
+        if (hoveredSlot != nullptr) {
+            drawSlotHighlight(commandBuffer, hoveredSlot->rect, GuiWidgetSprite::SlotHighlightBack,
+                              scale);
+        }
         std::optional<gameplay::ItemStack> hoveredStack;
         for (const ui::Widget& widget : page) {
             if (widget.kind != ui::WidgetKind::Slot) {
@@ -3281,11 +3309,15 @@ class HudRenderer final {
             } else {
                 stack = gameplay::snapshotSlotStack(snapshot, widget.slotKind, widget.slotIndex);
             }
-            const bool hovered = widget.rect.contains(cursor.x, cursor.y);
-            if (hovered && !stack.empty()) {
+            if (&widget == hoveredSlot && !stack.empty()) {
                 hoveredStack = stack;
             }
-            drawHudSlot(commandBuffer, widget.rect, stack, hovered);
+            drawHudSlot(commandBuffer, widget.rect, stack);
+        }
+        // ★ front 那一张画在**所有**槽位内容之上——这是本作此前画不出来的那一半。
+        if (hoveredSlot != nullptr) {
+            drawSlotHighlight(commandBuffer, hoveredSlot->rect,
+                              GuiWidgetSprite::SlotHighlightFront, scale);
         }
         return hoveredStack;
     }

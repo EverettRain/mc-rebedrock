@@ -21,14 +21,16 @@
 // "点了什么"和"怎么发命令"重新焊在一起，无头测试又够不着了。
 // 输出一个值，测试就能断言"点这里应该产生哪一条意图"。
 //
-// ## 一条刻意保留的怪癖
+// ## 页签与"点在外面"（D31，UI-8 已修）
 //
-// ★ **右键点在创造页签上会把光标物品堆丢出去。** 页签在面板矩形之外，而"点在面板外
-//   且手上有东西 ⇒ 丢出去"是容器屏的通用规则；页签只在**左键**那一支被拦截
-//   （26.1 也是 `if (event.button() == 0)`）。26.1 的差别在 `hasClickedOutside`
-//   （`CreativeModeInventoryScreen:650-654`）：它把"点在**当前选中**的那个页签上"
-//   也算作不在外面，本作没有这一条。这是偏差 D31，A2 **不改**——A2 是重构，
-//   改行为要另立一条，否则"截图与行为都没变"这句话就没意义了。
+// 页签在面板矩形之外，而"点在面板外且手上有东西 ⇒ 丢出去"是容器屏的通用规则；
+// 页签只在**左键**那一支被拦截（26.1 `CreativeModeInventoryScreen:494` 也是
+// `if (event.button() == 0)`）。于是右键点页签会掉进那条通用规则。
+//
+// ★ 26.1 的 `hasClickedOutside`（`:650-654`）多一个条件：
+//   `clickedOutside && !checkTabClicked(selectedTab, …)`——**点在当前选中的那个页签上
+//   不算在外面**。本作此前没有这一条（偏差 D31），右键点选中的页签会把手上的东西
+//   扔到地上。UI-8 补上了它：其余页签仍然算在外面，那是 vanilla 的规则本身。
 
 #include "gameplay/GameCommand.hpp"
 #include "gameplay/ScreenTypes.hpp"
@@ -80,6 +82,12 @@ struct ContainerViewState final {
     std::size_t catalogSize = 0U;
     // 目录滚得动吗（清单不足一屏时滚动条是死的，点它什么都不该发生）。
     bool catalogScrollable = false;
+    // 当前选中的是第几个创造页签。
+    //
+    // ★ 它只为一件事存在：**右键点在当前选中的那个页签上不算"点在外面"**
+    //   （26.1 `CreativeModeInventoryScreen.hasClickedOutside:650-654`）。
+    //   别的页签仍然算——那是 vanilla 的规则，不是本作的简化。
+    std::size_t selectedCreativeTab = 0U;
 };
 
 // 点一下会发生什么。

@@ -48,6 +48,12 @@ enum class GuiWidgetSprite : std::size_t {
     // UI-4：主菜单那两个图标钮里的 15x15 图标（CommonButtons.language/accessibility）
     IconLanguage,
     IconAccessibility,
+    // UI-8 / D30：光标下那一格的高亮。26.1 `AbstractContainerScreen:183-190` 画的是
+    // **两张 24x24 九宫格（border 4）**，一张在槽位内容之前、一张在之后，都画在
+    // 槽位的 (x-4, y-4)——也就是比 16x16 的格子大一圈。
+    // ★ 本作此前是一层白色 0.34 的方块，正好盖住格子、且在物品**下面**。
+    SlotHighlightBack,
+    SlotHighlightFront,
     Count,
 };
 

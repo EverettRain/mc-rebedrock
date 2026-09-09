@@ -1815,7 +1815,8 @@ if(BUILD_TESTING)
     # 源码护栏读渲染器：「抽了装配器」与「生产路径真的调了它」是两件事，而后者
     # 不改变任何函数的返回值——只能读源码守。
     target_compile_definitions(mc_rebedrock_container_page_test PRIVATE
-        "MC_REBEDROCK_RENDERER_SRC=\"${CMAKE_CURRENT_SOURCE_DIR}/src/render/vulkan/VulkanRenderer.cpp\"")
+        "MC_REBEDROCK_RENDERER_SRC=\"${CMAKE_CURRENT_SOURCE_DIR}/src/render/vulkan/VulkanRenderer.cpp\""
+        "MC_REBEDROCK_HUD_RENDERER_SRC=\"${CMAKE_CURRENT_SOURCE_DIR}/src/render/vulkan/HudRenderer.hpp\"")
     add_test(NAME container_page COMMAND mc_rebedrock_container_page_test)
 
     # A2：容器界面点击决策的无头测试。它是 A2 的**前置**——那 526 行交互代码此前

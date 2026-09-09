@@ -4876,6 +4876,7 @@ struct VulkanRenderer::Impl final : public gameplay::SimulationHost {
         view.catalogFirstIndex = menuSystem.creativeScrollRow * 9U;
         view.catalogSize = activeCreativeCatalog().size();
         view.catalogScrollable = creativeMaximumScrollRow() > 0U;
+        view.selectedCreativeTab = static_cast<std::size_t>(menuSystem.creativeTab);
         return view;
     }
 
