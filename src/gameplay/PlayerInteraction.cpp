@@ -669,7 +669,7 @@ void PlayerInteraction::tick(GameSession& session, world::World& world, Simulati
     const bool heldEntity = latestUse_.has_value() && latestUse_->entity;
     if (using_ && latestUse_.has_value() && !heldEntity && session.serverTick() >= nextUseTick_ &&
         !session.eating() && !drawingBow) {
-        performUse(session, world, *latestUse_);
+        performUse(session, world, host, *latestUse_);
         nextUseTick_ = session.serverTick() + 4U;
     }
 }
@@ -853,7 +853,7 @@ void PlayerInteraction::applyBreak(GameSession& session, world::World& world,
 }
 
 void PlayerInteraction::performUse(GameSession& session, world::World& world,
-                                   const UseItemOn& use) {
+                                   SimulationHost& host, const UseItemOn& use) {
     if (session.eating()) {
         return;
     }
@@ -923,7 +923,7 @@ void PlayerInteraction::performUse(GameSession& session, world::World& world,
         // SLP-2: BedBlock#useWithoutItem. The whole eight-step chain, the spawn
         // point and the OCCUPIED write live in the session, which is what owns
         // the clock, the entity list and the player.
-        session.trySleepInBed(world, {use.block.x, use.block.y, use.block.z});
+        session.trySleepInBed(world, host, {use.block.x, use.block.y, use.block.z});
         session.playerActions().swingHand(InteractionHand::Main, SwingAnimation::Use, 6U);
         break;
     case BlockInteraction::OpenAnvil:
@@ -1231,6 +1231,32 @@ void PlayerInteraction::performUse(GameSession& session, world::World& world,
                 if (session.gameMode() == GameMode::Survival) {
                     if (session.damageHeldTool(kPrimaryPlayerId, ToolUse::Till,
                                                world::blockDefinition(existing).hardness)) {
+                        session.events().publish(SoundEvent{SoundEventKind::ItemBreak,
+                                                            session.player().eyePosition()});
+                    }
+                }
+            }
+            break;
+        }
+        case ItemUseAction::PrimeTnt: {
+            // EXP-2: TntBlock#onCaughtFire — the block is removed and a primed
+            // entity takes its place with vanilla's 80-tick fuse. The flint and
+            // steel wears exactly as it does lighting a fire.
+            const auto cell = use.block;
+            GameplayMutationSink sink{world, session};
+            if (session.worldMutations()
+                    .setBlock(world, {cell.x, cell.y, cell.z}, world::BlockState{},
+                              world::MutationFlags::All, world::MutationCause::PlayerBreak, sink)
+                    .changed) {
+                session.worldSimulation().ignitePrimedTnt(
+                    {static_cast<float>(cell.x) + 0.5F, static_cast<float>(cell.y) + 0.5F,
+                     static_cast<float>(cell.z) + 0.5F},
+                    80);
+                session.events().publish(SoundEvent{SoundEventKind::FlintAndSteelUse,
+                                                    glm::vec3{cell} + glm::vec3{0.5F}});
+                session.playerActions().swingHand(InteractionHand::Main, SwingAnimation::Use, 6U);
+                if (session.gameMode() == GameMode::Survival) {
+                    if (session.damageHeldTool(kPrimaryPlayerId, ToolUse::Ignite, 0.0F)) {
                         session.events().publish(SoundEvent{SoundEventKind::ItemBreak,
                                                             session.player().eyePosition()});
                     }

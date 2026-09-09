@@ -1325,6 +1325,12 @@ int WorldSimulation::distanceToDownwardFlow(
     return best;
 }
 
+// EXP-2: TntBlock#onCaughtFire / #onPlace — the block becomes an entity, so the
+// cell is cleared here and the fuse starts counting.
+void WorldSimulation::ignitePrimedTnt(glm::vec3 position, int fuse) {
+    primedTnt_.push_back({position, position, 0.0F, fuse, false});
+}
+
 bool WorldSimulation::setSimulatedBlock(
     world::World& world,
     SimulationPosition position,
@@ -1587,6 +1593,26 @@ void WorldSimulation::notifyRedstoneComponent(world::World& world,
         static_cast<void>(mutations_.setBlock(world, pos, state.withLit(true),
                                               world::MutationFlags::NotifyClients,
                                               world::MutationCause::ScheduledTick, sink));
+        return;
+    }
+
+    // EXP-2: TntBlock#neighborChanged — a signal reaching TNT primes it. Unlike
+    // the openables below there is no edge to find and no POWERED bit to
+    // remember: the block is gone the moment it lights, so any signal at all is
+    // the trigger.
+    if (block == world::Block::Tnt) {
+        if (redstone::getBestNeighborSignal(world, pos) > 0) {
+            RedstoneReactionSink sink{world, *this};
+            if (mutations_
+                    .setBlock(world, pos, world::BlockState{}, world::MutationFlags::All,
+                              world::MutationCause::ScheduledTick, sink)
+                    .changed) {
+                ignitePrimedTnt({static_cast<float>(pos.x) + 0.5F,
+                                 static_cast<float>(pos.y) + 0.5F,
+                                 static_cast<float>(pos.z) + 0.5F},
+                                80);
+            }
+        }
         return;
     }
 
@@ -2073,6 +2099,44 @@ std::vector<BlockChange> WorldSimulation::tick(
     std::erase_if(fallingBlocks_, [](const FallingBlockEntity& entity) {
         return entity.removed;
     });
+
+    // EXP-2: primed TNT. Same vertical physics as a falling block (this
+    // simulation has no horizontal entity motion), plus the fuse. When it runs
+    // out the blast is queued rather than raised: hurting the player and rolling
+    // loot are the session's business, not the simulation's.
+    for (auto& tnt : primedTnt_) {
+        tnt.previousPosition = tnt.position;
+        const int blockX = static_cast<int>(std::floor(tnt.position.x));
+        const int blockZ = static_cast<int>(std::floor(tnt.position.z));
+        const world::ChunkPosition owner{floorDiv(blockX, world::kChunkWidth),
+                                         floorDiv(blockZ, world::kChunkDepth)};
+        if (!world.hasChunk(owner)) {
+            continue;
+        }
+        tnt.verticalVelocity = std::max(tnt.verticalVelocity - 0.04F, -3.92F);
+        const float nextY = tnt.position.y + tnt.verticalVelocity;
+        const int footCell = static_cast<int>(std::floor(nextY - 0.5F));
+        // Rest on the first solid cell below rather than falling through it.
+        if (world::isWorldYInRange(footCell) &&
+            world::hasCollision(world.block(blockX, footCell, blockZ))) {
+            tnt.position.y = static_cast<float>(footCell + 1) + 0.5F;
+            tnt.verticalVelocity = 0.0F;
+        } else {
+            tnt.position.y = nextY;
+        }
+        if (tnt.position.y < world::kVoidDespawnY) {
+            tnt.removed = true;
+            continue;
+        }
+        if (--tnt.fuse <= 0) {
+            tnt.removed = true;
+            // PrimedTnt#explode: `level.explode(this, x, y + height/2, z, 4.0F, MOB)`.
+            pendingExplosions_.push_back({{tnt.position.x, tnt.position.y + 0.49F,
+                                           tnt.position.z},
+                                          4.0F});
+        }
+    }
+    std::erase_if(primedTnt_, [](const PrimedTntEntity& tnt) { return tnt.removed; });
 
     // Redstone components' scheduled ticks. One drain, so torch/repeater/
     // comparator run in the single (dueTick, priority, subTickOrder) order — the

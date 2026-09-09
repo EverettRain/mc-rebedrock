@@ -32,6 +32,12 @@ enum class DamageType : std::uint8_t {
     OnFire,        // vanilla `on_fire`: the per-second burn while ablaze
     InFire,        // vanilla `in_fire`: standing inside a fire block
     Lava,          // vanilla `lava`: touching lava
+    // EXP-1: vanilla `explosion` / `player_explosion`. This build has one type
+    // rather than vanilla's pair — the pair only differs in the death message,
+    // which this game has none of. It is what finally puts a producer behind
+    // the IsExplosion tag: Blast Protection has been gated on that tag since
+    // EQ, with nothing in the roster able to raise it.
+    Explosion,
     Count,
 };
 

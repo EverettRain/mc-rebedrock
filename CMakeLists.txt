@@ -299,6 +299,7 @@ set(MC_REBEDROCK_RUNTIME_SOURCES
     src/gameplay/CraftingSystem.cpp
     src/gameplay/RecipeTable.cpp
     src/gameplay/EntitySystem.cpp
+    src/gameplay/Explosion.cpp
     src/gameplay/EntityRenderSnapshot.cpp
     src/gameplay/GameRules.cpp
     src/gameplay/GameSession.cpp
@@ -2216,6 +2217,18 @@ if(BUILD_TESTING)
         "${glm_SOURCE_DIR}"
     )
     add_test(NAME sleep COMMAND mc_rebedrock_sleep_test)
+
+    # EXP-1/EXP-2: the explosion ray cast, its occlusion, the damage curve and
+    # the nether bed.
+    add_executable(mc_rebedrock_explosion_test
+        tests/explosion_test.cpp
+    )
+    target_link_libraries(mc_rebedrock_explosion_test PRIVATE mc_rebedrock_runtime)
+    target_include_directories(mc_rebedrock_explosion_test PRIVATE
+        src
+        "${glm_SOURCE_DIR}"
+    )
+    add_test(NAME explosion COMMAND mc_rebedrock_explosion_test)
 
     add_executable(mc_rebedrock_face_occlusion_test
         tests/face_occlusion_test.cpp

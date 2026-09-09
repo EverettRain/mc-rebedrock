@@ -74,7 +74,10 @@ class PlayerInteraction final {
     void continueDig(GameSession& session, world::World& world);
     void applyBreak(GameSession& session, world::World& world, const glm::ivec3& block);
     // The use decision and the held-item action switch, run for one target.
-    void performUse(GameSession& session, world::World& world, const UseItemOn& use);
+    // `host` reaches the bed: a nether bed explodes, and an explosion hurts the
+    // player through GameSession::hurtPlayer, which needs the host.
+    void performUse(GameSession& session, world::World& world, SimulationHost& host,
+                    const UseItemOn& use);
     // AR-A2: right-clicking a creature with the use button — shears (shear a
     // wooled sheep) and a species' tempt item (feed toward love). Split out of
     // performUse because it never touches a block cell at all; AR-A3/AR-A4 (cow/

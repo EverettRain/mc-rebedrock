@@ -413,6 +413,10 @@ struct VulkanRenderer::Impl final : public gameplay::SimulationHost {
         audioSystem.playBurp(position);
         emitLastSubtitle();
     }
+    void playExplode(glm::vec3 position) override {
+        audioSystem.playExplode(position);
+        emitLastSubtitle();
+    }
     void playCreatureHurt(const gameplay::entities::EntityType& type, glm::vec3 position) override {
         audioSystem.playCreatureHurt(type.soundProfile(), creatureSoundCategory(type), position);
         emitLastSubtitle();

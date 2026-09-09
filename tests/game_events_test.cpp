@@ -83,6 +83,7 @@ struct CountingHost final : mc::gameplay::SimulationHost {
     void playPlayerHurt(glm::vec3) override { ++playerHurtSounds; }
     void playPlayerFall(glm::vec3, bool) override {}
     void playBurp(glm::vec3) override {}
+    void playExplode(glm::vec3) override {}
     void playCreatureHurt(const gameplay::entities::EntityType&, glm::vec3) override {}
     void playCreatureDeath(const gameplay::entities::EntityType&, glm::vec3) override {}
     void playCreatureAmbient(const gameplay::entities::EntityType&, glm::vec3) override {}

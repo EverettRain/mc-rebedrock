@@ -996,6 +996,15 @@ void AudioSystem::playFlintAndSteelUse(const glm::vec3& position) {
     implementation->playEvent("item.flintandsteel.use", SoundCategory::Block, position, 1.0F, 0.8F);
 }
 
+void AudioSystem::playExplode(const glm::vec3& position) {
+    // ServerExplosion#finalizeExplosion: SoundEvents.GENERIC_EXPLODE on BLOCKS
+    // at volume 4 — an explosion is meant to be heard from far off — with a low
+    // pitch. The deterministic sim has no per-play jitter, so the pitch is fixed
+    // where vanilla randomises it slightly.
+    implementation->playEvent("entity.generic.explode", SoundCategory::Block, position, 4.0F,
+                              0.7F);
+}
+
 void AudioSystem::playShear(const glm::vec3& position) {
     // Sheep#shear: SoundEvents.SHEEP_SHEAR on NEUTRAL (a passive mob).
     implementation->playEvent("entity.sheep.shear", SoundCategory::Neutral, position, 1.0F, 1.0F);
