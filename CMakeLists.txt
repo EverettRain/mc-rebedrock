@@ -2113,6 +2113,20 @@ if(BUILD_TESTING)
     )
     add_test(NAME block_shape COMMAND mc_rebedrock_block_shape_test)
 
+    # MDL-1/MDL-2: the CrossCollision family (fence / iron bars / glass pane) and
+    # the carpet. Links the runtime because the connection derivation reads a
+    # real World, which is the only way to check that a fence's four bits are
+    # right the instant it is placed.
+    add_executable(mc_rebedrock_cross_collision_family_test
+        tests/cross_collision_family_test.cpp
+    )
+    target_link_libraries(mc_rebedrock_cross_collision_family_test PRIVATE mc_rebedrock_runtime)
+    target_include_directories(mc_rebedrock_cross_collision_family_test PRIVATE
+        src
+        "${glm_SOURCE_DIR}"
+    )
+    add_test(NAME cross_collision_family COMMAND mc_rebedrock_cross_collision_family_test)
+
     add_executable(mc_rebedrock_face_occlusion_test
         tests/face_occlusion_test.cpp
     )

@@ -121,6 +121,50 @@ inline constexpr BakedIngredient kCraftIng_67[] = {{IngredientDefKind::Empty, ""
 inline constexpr BakedIngredient kCraftIng_68[] = {{IngredientDefKind::Item, "rebedrock:iron_ingot"}, {IngredientDefKind::Item, "rebedrock:iron_ingot"}, {IngredientDefKind::Item, "rebedrock:iron_ingot"}, {IngredientDefKind::Item, "rebedrock:iron_ingot"}, {IngredientDefKind::Item, "rebedrock:iron_ingot"}, {IngredientDefKind::Item, "rebedrock:iron_ingot"}, {IngredientDefKind::Item, "rebedrock:iron_ingot"}, {IngredientDefKind::Item, "rebedrock:iron_ingot"}, {IngredientDefKind::Item, "rebedrock:iron_ingot"}};
 inline constexpr BakedIngredient kCraftIng_69[] = {{IngredientDefKind::Block, "rebedrock:iron_block"}, {IngredientDefKind::Block, "rebedrock:iron_block"}, {IngredientDefKind::Block, "rebedrock:iron_block"}, {IngredientDefKind::Empty, ""}, {IngredientDefKind::Item, "rebedrock:iron_ingot"}, {IngredientDefKind::Empty, ""}, {IngredientDefKind::Item, "rebedrock:iron_ingot"}, {IngredientDefKind::Item, "rebedrock:iron_ingot"}, {IngredientDefKind::Item, "rebedrock:iron_ingot"}};
 
+// MDL-1/MDL-2: the connecting blocks and the carpets. Every one is a plain
+// shaped recipe over material this build already has, so the whole family is
+// survival-reachable the day it lands (AR-CX's accessibility rule).
+inline constexpr BakedIngredient kCraftIng_70[] = {{IngredientDefKind::Block, "rebedrock:oak_planks"}, {IngredientDefKind::Item, "rebedrock:stick"}, {IngredientDefKind::Block, "rebedrock:oak_planks"}, {IngredientDefKind::Block, "rebedrock:oak_planks"}, {IngredientDefKind::Item, "rebedrock:stick"}, {IngredientDefKind::Block, "rebedrock:oak_planks"}};
+inline constexpr BakedIngredient kCraftIng_71[] = {{IngredientDefKind::Block, "rebedrock:spruce_planks"}, {IngredientDefKind::Item, "rebedrock:stick"}, {IngredientDefKind::Block, "rebedrock:spruce_planks"}, {IngredientDefKind::Block, "rebedrock:spruce_planks"}, {IngredientDefKind::Item, "rebedrock:stick"}, {IngredientDefKind::Block, "rebedrock:spruce_planks"}};
+inline constexpr BakedIngredient kCraftIng_72[] = {{IngredientDefKind::Block, "rebedrock:birch_planks"}, {IngredientDefKind::Item, "rebedrock:stick"}, {IngredientDefKind::Block, "rebedrock:birch_planks"}, {IngredientDefKind::Block, "rebedrock:birch_planks"}, {IngredientDefKind::Item, "rebedrock:stick"}, {IngredientDefKind::Block, "rebedrock:birch_planks"}};
+inline constexpr BakedIngredient kCraftIng_73[] = {{IngredientDefKind::Block, "rebedrock:jungle_planks"}, {IngredientDefKind::Item, "rebedrock:stick"}, {IngredientDefKind::Block, "rebedrock:jungle_planks"}, {IngredientDefKind::Block, "rebedrock:jungle_planks"}, {IngredientDefKind::Item, "rebedrock:stick"}, {IngredientDefKind::Block, "rebedrock:jungle_planks"}};
+inline constexpr BakedIngredient kCraftIng_74[] = {{IngredientDefKind::Block, "rebedrock:acacia_planks"}, {IngredientDefKind::Item, "rebedrock:stick"}, {IngredientDefKind::Block, "rebedrock:acacia_planks"}, {IngredientDefKind::Block, "rebedrock:acacia_planks"}, {IngredientDefKind::Item, "rebedrock:stick"}, {IngredientDefKind::Block, "rebedrock:acacia_planks"}};
+inline constexpr BakedIngredient kCraftIng_75[] = {{IngredientDefKind::Block, "rebedrock:dark_oak_planks"}, {IngredientDefKind::Item, "rebedrock:stick"}, {IngredientDefKind::Block, "rebedrock:dark_oak_planks"}, {IngredientDefKind::Block, "rebedrock:dark_oak_planks"}, {IngredientDefKind::Item, "rebedrock:stick"}, {IngredientDefKind::Block, "rebedrock:dark_oak_planks"}};
+inline constexpr BakedIngredient kCraftIng_76[] = {{IngredientDefKind::Item, "rebedrock:iron_ingot"}, {IngredientDefKind::Item, "rebedrock:iron_ingot"}, {IngredientDefKind::Item, "rebedrock:iron_ingot"}, {IngredientDefKind::Item, "rebedrock:iron_ingot"}, {IngredientDefKind::Item, "rebedrock:iron_ingot"}, {IngredientDefKind::Item, "rebedrock:iron_ingot"}};
+inline constexpr BakedIngredient kCraftIng_77[] = {{IngredientDefKind::Block, "rebedrock:glass"}, {IngredientDefKind::Block, "rebedrock:glass"}, {IngredientDefKind::Block, "rebedrock:glass"}, {IngredientDefKind::Block, "rebedrock:glass"}, {IngredientDefKind::Block, "rebedrock:glass"}, {IngredientDefKind::Block, "rebedrock:glass"}};
+inline constexpr BakedIngredient kCraftIng_78[] = {{IngredientDefKind::Block, "rebedrock:white_stained_glass"}, {IngredientDefKind::Block, "rebedrock:white_stained_glass"}, {IngredientDefKind::Block, "rebedrock:white_stained_glass"}, {IngredientDefKind::Block, "rebedrock:white_stained_glass"}, {IngredientDefKind::Block, "rebedrock:white_stained_glass"}, {IngredientDefKind::Block, "rebedrock:white_stained_glass"}};
+inline constexpr BakedIngredient kCraftIng_79[] = {{IngredientDefKind::Block, "rebedrock:orange_stained_glass"}, {IngredientDefKind::Block, "rebedrock:orange_stained_glass"}, {IngredientDefKind::Block, "rebedrock:orange_stained_glass"}, {IngredientDefKind::Block, "rebedrock:orange_stained_glass"}, {IngredientDefKind::Block, "rebedrock:orange_stained_glass"}, {IngredientDefKind::Block, "rebedrock:orange_stained_glass"}};
+inline constexpr BakedIngredient kCraftIng_80[] = {{IngredientDefKind::Block, "rebedrock:magenta_stained_glass"}, {IngredientDefKind::Block, "rebedrock:magenta_stained_glass"}, {IngredientDefKind::Block, "rebedrock:magenta_stained_glass"}, {IngredientDefKind::Block, "rebedrock:magenta_stained_glass"}, {IngredientDefKind::Block, "rebedrock:magenta_stained_glass"}, {IngredientDefKind::Block, "rebedrock:magenta_stained_glass"}};
+inline constexpr BakedIngredient kCraftIng_81[] = {{IngredientDefKind::Block, "rebedrock:light_blue_stained_glass"}, {IngredientDefKind::Block, "rebedrock:light_blue_stained_glass"}, {IngredientDefKind::Block, "rebedrock:light_blue_stained_glass"}, {IngredientDefKind::Block, "rebedrock:light_blue_stained_glass"}, {IngredientDefKind::Block, "rebedrock:light_blue_stained_glass"}, {IngredientDefKind::Block, "rebedrock:light_blue_stained_glass"}};
+inline constexpr BakedIngredient kCraftIng_82[] = {{IngredientDefKind::Block, "rebedrock:yellow_stained_glass"}, {IngredientDefKind::Block, "rebedrock:yellow_stained_glass"}, {IngredientDefKind::Block, "rebedrock:yellow_stained_glass"}, {IngredientDefKind::Block, "rebedrock:yellow_stained_glass"}, {IngredientDefKind::Block, "rebedrock:yellow_stained_glass"}, {IngredientDefKind::Block, "rebedrock:yellow_stained_glass"}};
+inline constexpr BakedIngredient kCraftIng_83[] = {{IngredientDefKind::Block, "rebedrock:lime_stained_glass"}, {IngredientDefKind::Block, "rebedrock:lime_stained_glass"}, {IngredientDefKind::Block, "rebedrock:lime_stained_glass"}, {IngredientDefKind::Block, "rebedrock:lime_stained_glass"}, {IngredientDefKind::Block, "rebedrock:lime_stained_glass"}, {IngredientDefKind::Block, "rebedrock:lime_stained_glass"}};
+inline constexpr BakedIngredient kCraftIng_84[] = {{IngredientDefKind::Block, "rebedrock:pink_stained_glass"}, {IngredientDefKind::Block, "rebedrock:pink_stained_glass"}, {IngredientDefKind::Block, "rebedrock:pink_stained_glass"}, {IngredientDefKind::Block, "rebedrock:pink_stained_glass"}, {IngredientDefKind::Block, "rebedrock:pink_stained_glass"}, {IngredientDefKind::Block, "rebedrock:pink_stained_glass"}};
+inline constexpr BakedIngredient kCraftIng_85[] = {{IngredientDefKind::Block, "rebedrock:gray_stained_glass"}, {IngredientDefKind::Block, "rebedrock:gray_stained_glass"}, {IngredientDefKind::Block, "rebedrock:gray_stained_glass"}, {IngredientDefKind::Block, "rebedrock:gray_stained_glass"}, {IngredientDefKind::Block, "rebedrock:gray_stained_glass"}, {IngredientDefKind::Block, "rebedrock:gray_stained_glass"}};
+inline constexpr BakedIngredient kCraftIng_86[] = {{IngredientDefKind::Block, "rebedrock:light_gray_stained_glass"}, {IngredientDefKind::Block, "rebedrock:light_gray_stained_glass"}, {IngredientDefKind::Block, "rebedrock:light_gray_stained_glass"}, {IngredientDefKind::Block, "rebedrock:light_gray_stained_glass"}, {IngredientDefKind::Block, "rebedrock:light_gray_stained_glass"}, {IngredientDefKind::Block, "rebedrock:light_gray_stained_glass"}};
+inline constexpr BakedIngredient kCraftIng_87[] = {{IngredientDefKind::Block, "rebedrock:cyan_stained_glass"}, {IngredientDefKind::Block, "rebedrock:cyan_stained_glass"}, {IngredientDefKind::Block, "rebedrock:cyan_stained_glass"}, {IngredientDefKind::Block, "rebedrock:cyan_stained_glass"}, {IngredientDefKind::Block, "rebedrock:cyan_stained_glass"}, {IngredientDefKind::Block, "rebedrock:cyan_stained_glass"}};
+inline constexpr BakedIngredient kCraftIng_88[] = {{IngredientDefKind::Block, "rebedrock:purple_stained_glass"}, {IngredientDefKind::Block, "rebedrock:purple_stained_glass"}, {IngredientDefKind::Block, "rebedrock:purple_stained_glass"}, {IngredientDefKind::Block, "rebedrock:purple_stained_glass"}, {IngredientDefKind::Block, "rebedrock:purple_stained_glass"}, {IngredientDefKind::Block, "rebedrock:purple_stained_glass"}};
+inline constexpr BakedIngredient kCraftIng_89[] = {{IngredientDefKind::Block, "rebedrock:blue_stained_glass"}, {IngredientDefKind::Block, "rebedrock:blue_stained_glass"}, {IngredientDefKind::Block, "rebedrock:blue_stained_glass"}, {IngredientDefKind::Block, "rebedrock:blue_stained_glass"}, {IngredientDefKind::Block, "rebedrock:blue_stained_glass"}, {IngredientDefKind::Block, "rebedrock:blue_stained_glass"}};
+inline constexpr BakedIngredient kCraftIng_90[] = {{IngredientDefKind::Block, "rebedrock:brown_stained_glass"}, {IngredientDefKind::Block, "rebedrock:brown_stained_glass"}, {IngredientDefKind::Block, "rebedrock:brown_stained_glass"}, {IngredientDefKind::Block, "rebedrock:brown_stained_glass"}, {IngredientDefKind::Block, "rebedrock:brown_stained_glass"}, {IngredientDefKind::Block, "rebedrock:brown_stained_glass"}};
+inline constexpr BakedIngredient kCraftIng_91[] = {{IngredientDefKind::Block, "rebedrock:green_stained_glass"}, {IngredientDefKind::Block, "rebedrock:green_stained_glass"}, {IngredientDefKind::Block, "rebedrock:green_stained_glass"}, {IngredientDefKind::Block, "rebedrock:green_stained_glass"}, {IngredientDefKind::Block, "rebedrock:green_stained_glass"}, {IngredientDefKind::Block, "rebedrock:green_stained_glass"}};
+inline constexpr BakedIngredient kCraftIng_92[] = {{IngredientDefKind::Block, "rebedrock:red_stained_glass"}, {IngredientDefKind::Block, "rebedrock:red_stained_glass"}, {IngredientDefKind::Block, "rebedrock:red_stained_glass"}, {IngredientDefKind::Block, "rebedrock:red_stained_glass"}, {IngredientDefKind::Block, "rebedrock:red_stained_glass"}, {IngredientDefKind::Block, "rebedrock:red_stained_glass"}};
+inline constexpr BakedIngredient kCraftIng_93[] = {{IngredientDefKind::Block, "rebedrock:black_stained_glass"}, {IngredientDefKind::Block, "rebedrock:black_stained_glass"}, {IngredientDefKind::Block, "rebedrock:black_stained_glass"}, {IngredientDefKind::Block, "rebedrock:black_stained_glass"}, {IngredientDefKind::Block, "rebedrock:black_stained_glass"}, {IngredientDefKind::Block, "rebedrock:black_stained_glass"}};
+inline constexpr BakedIngredient kCraftIng_94[] = {{IngredientDefKind::Block, "rebedrock:white_wool"}, {IngredientDefKind::Block, "rebedrock:white_wool"}};
+inline constexpr BakedIngredient kCraftIng_95[] = {{IngredientDefKind::Block, "rebedrock:orange_wool"}, {IngredientDefKind::Block, "rebedrock:orange_wool"}};
+inline constexpr BakedIngredient kCraftIng_96[] = {{IngredientDefKind::Block, "rebedrock:magenta_wool"}, {IngredientDefKind::Block, "rebedrock:magenta_wool"}};
+inline constexpr BakedIngredient kCraftIng_97[] = {{IngredientDefKind::Block, "rebedrock:light_blue_wool"}, {IngredientDefKind::Block, "rebedrock:light_blue_wool"}};
+inline constexpr BakedIngredient kCraftIng_98[] = {{IngredientDefKind::Block, "rebedrock:yellow_wool"}, {IngredientDefKind::Block, "rebedrock:yellow_wool"}};
+inline constexpr BakedIngredient kCraftIng_99[] = {{IngredientDefKind::Block, "rebedrock:lime_wool"}, {IngredientDefKind::Block, "rebedrock:lime_wool"}};
+inline constexpr BakedIngredient kCraftIng_100[] = {{IngredientDefKind::Block, "rebedrock:pink_wool"}, {IngredientDefKind::Block, "rebedrock:pink_wool"}};
+inline constexpr BakedIngredient kCraftIng_101[] = {{IngredientDefKind::Block, "rebedrock:gray_wool"}, {IngredientDefKind::Block, "rebedrock:gray_wool"}};
+inline constexpr BakedIngredient kCraftIng_102[] = {{IngredientDefKind::Block, "rebedrock:light_gray_wool"}, {IngredientDefKind::Block, "rebedrock:light_gray_wool"}};
+inline constexpr BakedIngredient kCraftIng_103[] = {{IngredientDefKind::Block, "rebedrock:cyan_wool"}, {IngredientDefKind::Block, "rebedrock:cyan_wool"}};
+inline constexpr BakedIngredient kCraftIng_104[] = {{IngredientDefKind::Block, "rebedrock:purple_wool"}, {IngredientDefKind::Block, "rebedrock:purple_wool"}};
+inline constexpr BakedIngredient kCraftIng_105[] = {{IngredientDefKind::Block, "rebedrock:blue_wool"}, {IngredientDefKind::Block, "rebedrock:blue_wool"}};
+inline constexpr BakedIngredient kCraftIng_106[] = {{IngredientDefKind::Block, "rebedrock:brown_wool"}, {IngredientDefKind::Block, "rebedrock:brown_wool"}};
+inline constexpr BakedIngredient kCraftIng_107[] = {{IngredientDefKind::Block, "rebedrock:green_wool"}, {IngredientDefKind::Block, "rebedrock:green_wool"}};
+inline constexpr BakedIngredient kCraftIng_108[] = {{IngredientDefKind::Block, "rebedrock:red_wool"}, {IngredientDefKind::Block, "rebedrock:red_wool"}};
+inline constexpr BakedIngredient kCraftIng_109[] = {{IngredientDefKind::Block, "rebedrock:black_wool"}, {IngredientDefKind::Block, "rebedrock:black_wool"}};
+
 inline constexpr BakedCraftingRecipe kBakedCraftingRecipes[] = {
     {"minecraft:oak_planks", 1, 1, false, false, kCraftIng_0, "rebedrock:oak_planks", 4},
     {"minecraft:spruce_planks", 1, 1, false, false, kCraftIng_1, "rebedrock:spruce_planks", 4},
@@ -199,6 +243,46 @@ inline constexpr BakedCraftingRecipe kBakedCraftingRecipes[] = {
     // ENCH-3: without the block of iron the anvil is uncraftable.
     {"minecraft:iron_block", 3, 3, false, false, kCraftIng_68, "rebedrock:iron_block", 1},
     {"minecraft:anvil", 3, 3, false, false, kCraftIng_69, "rebedrock:anvil", 1},
+    {"minecraft:oak_fence", 3, 2, false, false, kCraftIng_70, "rebedrock:oak_fence", 3},
+    {"minecraft:spruce_fence", 3, 2, false, false, kCraftIng_71, "rebedrock:spruce_fence", 3},
+    {"minecraft:birch_fence", 3, 2, false, false, kCraftIng_72, "rebedrock:birch_fence", 3},
+    {"minecraft:jungle_fence", 3, 2, false, false, kCraftIng_73, "rebedrock:jungle_fence", 3},
+    {"minecraft:acacia_fence", 3, 2, false, false, kCraftIng_74, "rebedrock:acacia_fence", 3},
+    {"minecraft:dark_oak_fence", 3, 2, false, false, kCraftIng_75, "rebedrock:dark_oak_fence", 3},
+    {"minecraft:iron_bars", 3, 2, false, false, kCraftIng_76, "rebedrock:iron_bars", 16},
+    {"minecraft:glass_pane", 3, 2, false, false, kCraftIng_77, "rebedrock:glass_pane", 16},
+    {"minecraft:white_stained_glass_pane", 3, 2, false, false, kCraftIng_78, "rebedrock:white_stained_glass_pane", 16},
+    {"minecraft:orange_stained_glass_pane", 3, 2, false, false, kCraftIng_79, "rebedrock:orange_stained_glass_pane", 16},
+    {"minecraft:magenta_stained_glass_pane", 3, 2, false, false, kCraftIng_80, "rebedrock:magenta_stained_glass_pane", 16},
+    {"minecraft:light_blue_stained_glass_pane", 3, 2, false, false, kCraftIng_81, "rebedrock:light_blue_stained_glass_pane", 16},
+    {"minecraft:yellow_stained_glass_pane", 3, 2, false, false, kCraftIng_82, "rebedrock:yellow_stained_glass_pane", 16},
+    {"minecraft:lime_stained_glass_pane", 3, 2, false, false, kCraftIng_83, "rebedrock:lime_stained_glass_pane", 16},
+    {"minecraft:pink_stained_glass_pane", 3, 2, false, false, kCraftIng_84, "rebedrock:pink_stained_glass_pane", 16},
+    {"minecraft:gray_stained_glass_pane", 3, 2, false, false, kCraftIng_85, "rebedrock:gray_stained_glass_pane", 16},
+    {"minecraft:light_gray_stained_glass_pane", 3, 2, false, false, kCraftIng_86, "rebedrock:light_gray_stained_glass_pane", 16},
+    {"minecraft:cyan_stained_glass_pane", 3, 2, false, false, kCraftIng_87, "rebedrock:cyan_stained_glass_pane", 16},
+    {"minecraft:purple_stained_glass_pane", 3, 2, false, false, kCraftIng_88, "rebedrock:purple_stained_glass_pane", 16},
+    {"minecraft:blue_stained_glass_pane", 3, 2, false, false, kCraftIng_89, "rebedrock:blue_stained_glass_pane", 16},
+    {"minecraft:brown_stained_glass_pane", 3, 2, false, false, kCraftIng_90, "rebedrock:brown_stained_glass_pane", 16},
+    {"minecraft:green_stained_glass_pane", 3, 2, false, false, kCraftIng_91, "rebedrock:green_stained_glass_pane", 16},
+    {"minecraft:red_stained_glass_pane", 3, 2, false, false, kCraftIng_92, "rebedrock:red_stained_glass_pane", 16},
+    {"minecraft:black_stained_glass_pane", 3, 2, false, false, kCraftIng_93, "rebedrock:black_stained_glass_pane", 16},
+    {"minecraft:white_carpet", 2, 1, false, false, kCraftIng_94, "rebedrock:white_carpet", 3},
+    {"minecraft:orange_carpet", 2, 1, false, false, kCraftIng_95, "rebedrock:orange_carpet", 3},
+    {"minecraft:magenta_carpet", 2, 1, false, false, kCraftIng_96, "rebedrock:magenta_carpet", 3},
+    {"minecraft:light_blue_carpet", 2, 1, false, false, kCraftIng_97, "rebedrock:light_blue_carpet", 3},
+    {"minecraft:yellow_carpet", 2, 1, false, false, kCraftIng_98, "rebedrock:yellow_carpet", 3},
+    {"minecraft:lime_carpet", 2, 1, false, false, kCraftIng_99, "rebedrock:lime_carpet", 3},
+    {"minecraft:pink_carpet", 2, 1, false, false, kCraftIng_100, "rebedrock:pink_carpet", 3},
+    {"minecraft:gray_carpet", 2, 1, false, false, kCraftIng_101, "rebedrock:gray_carpet", 3},
+    {"minecraft:light_gray_carpet", 2, 1, false, false, kCraftIng_102, "rebedrock:light_gray_carpet", 3},
+    {"minecraft:cyan_carpet", 2, 1, false, false, kCraftIng_103, "rebedrock:cyan_carpet", 3},
+    {"minecraft:purple_carpet", 2, 1, false, false, kCraftIng_104, "rebedrock:purple_carpet", 3},
+    {"minecraft:blue_carpet", 2, 1, false, false, kCraftIng_105, "rebedrock:blue_carpet", 3},
+    {"minecraft:brown_carpet", 2, 1, false, false, kCraftIng_106, "rebedrock:brown_carpet", 3},
+    {"minecraft:green_carpet", 2, 1, false, false, kCraftIng_107, "rebedrock:green_carpet", 3},
+    {"minecraft:red_carpet", 2, 1, false, false, kCraftIng_108, "rebedrock:red_carpet", 3},
+    {"minecraft:black_carpet", 2, 1, false, false, kCraftIng_109, "rebedrock:black_carpet", 3},
 };
 
 inline constexpr BakedFurnaceRecipe kBakedFurnaceRecipes[] = {

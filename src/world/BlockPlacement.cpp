@@ -2,6 +2,7 @@
 
 #include "world/BlockPos.hpp"
 #include "world/StairShapeDerivation.hpp" // AR-B2: stairShapeFor
+#include "world/CrossCollisionDerivation.hpp"  // MDL-1: crossConnectionsFor
 #include "world/WallShapeDerivation.hpp"  // AR-B3: wallConnectionsFor
 #include "world/World.hpp"
 
@@ -115,6 +116,13 @@ using SupportRuleFn = bool (*)(const World&, glm::ivec3, BlockOrientation);
     return false;
 }
 
+// MDL-2: CarpetBlock#canSurvive — `!belowState.isAir()`. Any non-air cell will
+// hold a carpet, sturdy or not: it lies on a slab, a fence post or another
+// carpet just as happily as on stone. Weaker than supportGround on purpose.
+[[nodiscard]] bool supportAnyBelow(const World& world, glm::ivec3 position, BlockOrientation) {
+    return world.block(position.x, position.y - 1, position.z) != Block::Air;
+}
+
 // AR-CX8: HorizontalDirectionalBlock's placement turn as data, one entry per
 // `HorizontalPlacement`. `HorizontalDirectionalBlock` in 26.1 declares only the
 // FACING property — it has no `getStateForPlacement` — so there is no single
@@ -144,13 +152,14 @@ static_assert(static_cast<std::size_t>(HorizontalPlacement::TowardPlayer) == 0U)
 static_assert(static_cast<std::size_t>(HorizontalPlacement::AwayFromPlayer) == 1U);
 static_assert(static_cast<std::size_t>(HorizontalPlacement::Clockwise) == 2U);
 
-inline constexpr std::array<SupportRuleFn, 7> kSupportRules{{
+inline constexpr std::array<SupportRuleFn, 8> kSupportRules{{
     &supportAlways,    // BlockSupport::None
     &supportGround,    // BlockSupport::Ground
     &supportWall,      // BlockSupport::Wall
     &supportSoil,      // BlockSupport::Soil
     &supportFarmland,  // BlockSupport::Farmland
     &supportSugarCane, // BlockSupport::SugarCane
+    &supportAnyBelow,  // BlockSupport::AnyBelow (MDL-2: carpet)
     &supportFire,      // BlockSupport::Fire
 }};
 static_assert(static_cast<std::size_t>(BlockSupport::None) == 0U);
@@ -159,7 +168,11 @@ static_assert(static_cast<std::size_t>(BlockSupport::Wall) == 2U);
 static_assert(static_cast<std::size_t>(BlockSupport::Soil) == 3U);
 static_assert(static_cast<std::size_t>(BlockSupport::Farmland) == 4U);
 static_assert(static_cast<std::size_t>(BlockSupport::SugarCane) == 5U);
-static_assert(static_cast<std::size_t>(BlockSupport::Fire) == 6U);
+static_assert(static_cast<std::size_t>(BlockSupport::AnyBelow) == 6U);
+static_assert(static_cast<std::size_t>(BlockSupport::Fire) == 7U);
+static_assert(kSupportRules.size() == static_cast<std::size_t>(BlockSupport::Fire) + 1U,
+              "every BlockSupport must have a rule — a missing entry is an "
+              "out-of-bounds function-pointer read");
 
 } // namespace
 
@@ -376,6 +389,15 @@ std::optional<BlockState> placementBlock(
                                 context.placePosition.z};
         const BlockState oriented{selected, placementOrientation(selected, context)};
         return oriented.withInWall(fenceGateInWallFor(world, placePos, oriented))
+            .withSubmergedFluid(submerged);
+    }
+    if (blockDefinition(selected).model == BlockModel::CrossCollision) {
+        // MDL-1: CrossCollisionBlock#getStateForPlacement — all four connection
+        // bits are read from the world as the block lands, exactly as the wall
+        // below does, so a fence never appears as a bare post for one tick.
+        const BlockPos placePos{context.placePosition.x, context.placePosition.y,
+                                context.placePosition.z};
+        return crossConnectionsFor(world, placePos, BlockState{selected})
             .withSubmergedFluid(submerged);
     }
     if (blockDefinition(selected).model == BlockModel::Wall) {

@@ -45,7 +45,7 @@ using mc::world::rendersAsModelItem;
 // 掉在地上是扁平贴图、拿在背包里是方块。本文件旧注释说"要推广就改那一层，别悄悄
 // 塞进这个集合"——推广的正确做法就是把那条规则并回单点、删掉图标那一面的例外，
 // 而这里同步表态，所以它既不悄悄也没留下第二处口径
-[[nodiscard]] constexpr ItemModelKind expectedForModel(BlockModel model) {
+[[nodiscard]] constexpr ItemModelKind expectedForModel(BlockModel model, mc::world::ConnectFamily connectFamily) {
     switch (model) {
     // 立方体几何：整格立方体、六面立方体、箱子
     case BlockModel::Cube:
@@ -81,6 +81,18 @@ using mc::world::rendersAsModelItem;
     case BlockModel::RedstoneWire:
     case BlockModel::Fire:
         return ItemModelKind::None;
+    // MDL-1：CrossCollision 这一族的图标**不是**只由 model 决定的，vanilla 自己就分两路——
+    // `items/oak_fence.json` 指向 `block/oak_fence_inventory`（3D），而
+    // `items/iron_bars.json` / `items/glass_pane.json` 指向 `item/iron_bars` /
+    // `item/glass_pane`（扁平贴图）。所以判据从「model」扩成「model + 方块声明的
+    // ConnectFamily」，多的这一维**仍然是声明数据**，不是按方块身份开的后门：下面这
+    // 个参照实现和 itemModelKindOf 一样，一句 `block == Block::X` 都没有。
+    case BlockModel::CrossCollision:
+        return connectFamily == mc::world::ConnectFamily::WoodenFence ? ItemModelKind::Fence
+                                                                     : ItemModelKind::None;
+    // MDL-2：地毯的物品就是 `block/carpet` 那一片 1/16。
+    case BlockModel::Carpet:
+        return ItemModelKind::Carpet;
     }
     return ItemModelKind::None;
 }
@@ -90,7 +102,9 @@ using mc::world::rendersAsModelItem;
 void testKeyedOnModelAlone() {
     for (std::size_t index = 0; index < static_cast<std::size_t>(Block::Count); ++index) {
         const auto block = static_cast<Block>(index);
-        assert(itemModelKindOf(block) == expectedForModel(blockDefinition(block).model));
+        assert(itemModelKindOf(block) ==
+               expectedForModel(blockDefinition(block).model,
+                                blockDefinition(block).connectFamily));
     }
 }
 

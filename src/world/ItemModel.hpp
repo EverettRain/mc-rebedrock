@@ -101,6 +101,13 @@ enum class ItemModelKind : std::uint8_t {
     PressurePlate,
     Button,
     TrapDoor,
+    // MDL-1: `block/fence_inventory` — two posts and two rails, the 3D icon a
+    // fence item is drawn from. Iron bars and the glass panes are NOT here:
+    // their `items/` entries name `item/iron_bars` / `item/glass_pane`, flat
+    // sprites, so they answer None like the door does.
+    Fence,
+    // MDL-2: `block/carpet` — a 1/16 slice, the carpet item's own model.
+    Carpet,
     Count,
 };
 
@@ -173,6 +180,52 @@ constexpr void putItemFace(ItemModelBox& box, bake::Facing facing, ItemLayerSlot
 // block/wall_inventory.json — a model that exists ONLY for the item: a full-height
 // centre post plus one straight arm through it. No wall blockstate ever produces
 // this combination, which is why the item cannot simply reuse a world variant.
+// MDL-1: one of `block/fence_inventory`'s two posts — [6,0,z0]..[10,16,z1].
+[[nodiscard]] constexpr ItemModelBox fenceInventoryPostBox(float z0, float z1) {
+    ItemModelBox box;
+    box.from16 = {6.0F, 0.0F, z0};
+    box.to16 = {10.0F, 16.0F, z1};
+    putItemFace(box, bake::Facing::Down, ItemLayerSlot::Side, itemRect(6, z0, 10, z1));
+    putItemFace(box, bake::Facing::Up, ItemLayerSlot::Side, itemRect(6, z0, 10, z1));
+    for (const bake::Facing side : {bake::Facing::North, bake::Facing::South}) {
+        putItemFace(box, side, ItemLayerSlot::Side, itemRect(6, 0, 10, 16));
+    }
+    for (const bake::Facing side : {bake::Facing::East, bake::Facing::West}) {
+        putItemFace(box, side, ItemLayerSlot::Side, itemRect(z0, 0, z1, 16));
+    }
+    return box;
+}
+
+// MDL-1: one of `block/fence_inventory`'s two rails — [7,y0,0]..[9,y1,16].
+[[nodiscard]] constexpr ItemModelBox fenceInventoryRailBox(float y0, float y1) {
+    ItemModelBox box;
+    box.from16 = {7.0F, y0, 0.0F};
+    box.to16 = {9.0F, y1, 16.0F};
+    putItemFace(box, bake::Facing::Down, ItemLayerSlot::Side, itemRect(7, 0, 9, 16));
+    putItemFace(box, bake::Facing::Up, ItemLayerSlot::Side, itemRect(7, 0, 9, 16));
+    for (const bake::Facing side : {bake::Facing::North, bake::Facing::South}) {
+        putItemFace(box, side, ItemLayerSlot::Side, itemRect(7, 16.0F - y1, 9, 16.0F - y0));
+    }
+    for (const bake::Facing side : {bake::Facing::East, bake::Facing::West}) {
+        putItemFace(box, side, ItemLayerSlot::Side, itemRect(0, 16.0F - y1, 16, 16.0F - y0));
+    }
+    return box;
+}
+
+// MDL-2: `block/carpet` — the whole footprint, one sixteenth tall.
+[[nodiscard]] constexpr ItemModelBox carpetBox() {
+    ItemModelBox box;
+    box.from16 = {0.0F, 0.0F, 0.0F};
+    box.to16 = {16.0F, 1.0F, 16.0F};
+    putItemFace(box, bake::Facing::Down, ItemLayerSlot::Bottom, itemRect(0, 0, 16, 16));
+    putItemFace(box, bake::Facing::Up, ItemLayerSlot::Top, itemRect(0, 0, 16, 16));
+    for (const bake::Facing side : {bake::Facing::North, bake::Facing::South,
+                                    bake::Facing::East, bake::Facing::West}) {
+        putItemFace(box, side, ItemLayerSlot::Side, itemRect(0, 15, 16, 16));
+    }
+    return box;
+}
+
 [[nodiscard]] constexpr ItemModelBox wallPostBox() {
     ItemModelBox box;
     box.from16 = {4.0F, 0.0F, 4.0F};
@@ -315,7 +368,7 @@ constexpr void putItemFace(ItemModelBox& box, bake::Facing facing, ItemLayerSlot
 // that order: `cubeItemUvModel(block)` already returns 0/1/2 and both item vertex
 // shaders index their UV table with it, so keeping the cubes at 0..2 is what makes
 // this an extension of that table rather than a replacement for it.
-inline constexpr std::array<ItemModelBox, 19> kItemModelBoxes{{
+inline constexpr std::array<ItemModelBox, 24> kItemModelBoxes{{
     detail::wholeCube(CubeUvModel::Default),        // 0
     detail::wholeCube(CubeUvModel::PistonTemplate), // 1
     detail::wholeCube(CubeUvModel::Observer),       // 2
@@ -339,6 +392,11 @@ inline constexpr std::array<ItemModelBox, 19> kItemModelBoxes{{
     detail::fenceGateBarBox(10, 12, 14, 15, detail::itemRect(10, 7, 14, 9),
                             detail::itemRect(10, 1, 14, 4)),  // 17
     detail::trapdoorBottomBox(),                              // 18
+    detail::fenceInventoryPostBox(0.0F, 4.0F),                // 19
+    detail::fenceInventoryPostBox(12.0F, 16.0F),              // 20
+    detail::fenceInventoryRailBox(12.0F, 15.0F),              // 21
+    detail::fenceInventoryRailBox(6.0F, 9.0F),                // 22
+    detail::carpetBox(),                                      // 23
 }};
 
 // Where each kind's boxes live in the flat array, and how the inventory turns it.
@@ -359,6 +417,8 @@ inline constexpr std::array<ItemModelRange, static_cast<std::size_t>(ItemModelKi
         {8, 1, ItemIconTurn::None},           // PressurePlate
         {9, 1, ItemIconTurn::None},           // Button
         {18, 1, ItemIconTurn::None},          // TrapDoor
+        {19, 4, ItemIconTurn::None},          // Fence (two posts + two rails)
+        {23, 1, ItemIconTurn::None},          // Carpet
     }};
 
 // The single point. Every item surface asks this and nothing else: `None` means
@@ -392,6 +452,16 @@ inline constexpr std::array<ItemModelRange, static_cast<std::size_t>(ItemModelKi
     // `item/oak_door`), which is why the two were mistaken for a pair.
     case BlockModel::TrapDoor:
         return ItemModelKind::TrapDoor;
+    // MDL-1: the family splits here, exactly as vanilla's `items/` entries do —
+    // `oak_fence` names `block/oak_fence_inventory` (a 3D model), while
+    // `iron_bars` and `glass_pane` name `item/iron_bars` / `item/glass_pane`,
+    // flat sprites. So the icon question is the connect family, not the model.
+    case BlockModel::CrossCollision:
+        return blockDefinition(block).connectFamily == ConnectFamily::WoodenFence
+                   ? ItemModelKind::Fence
+                   : ItemModelKind::None;
+    case BlockModel::Carpet:
+        return ItemModelKind::Carpet;
     // A door item is a flat sprite in vanilla's `items/` entry
     // (`item/oak_door`); so are the diodes (`item/repeater`), the lever, the
     // torch, the crops and the wire, all of which vanilla draws from an

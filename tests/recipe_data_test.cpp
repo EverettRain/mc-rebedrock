@@ -135,8 +135,23 @@ void testBuiltinFloorResolves() {
     // paper/book/yellow_dye/flint_and_steel) resolve. ENCH-2 added the
     // enchanting table itself (1); ENCH-3 added the block of iron and the anvil
     // it is crafted from (2).
-    assert(crafting.size() == 43U + 16U + 8U + 1U + 2U);
+    // MDL-1 added 24 (6 wooden fences + iron bars + plain pane + 16 stained
+    // panes) and MDL-2 added 16 carpets — the whole family is craftable from
+    // material this build already had, so none of them is survival-unreachable.
+    assert(crafting.size() == 43U + 16U + 8U + 1U + 2U + 24U + 16U);
     assert(furnace.size() == 7U);
+
+    // MDL-1/2 spot checks: the shapes and yields vanilla gives, not just a count.
+    const CraftingRecipe* fence = findCrafting(crafting, "minecraft:oak_fence");
+    assert(fence != nullptr && fence->width == 3U && fence->height == 2U && !fence->shapeless);
+    assert(fence->ingredients.size() == 6U && fence->output.count == 3U);
+    const CraftingRecipe* pane = findCrafting(crafting, "minecraft:glass_pane");
+    assert(pane != nullptr && pane->width == 3U && pane->height == 2U && pane->output.count == 16U);
+    const CraftingRecipe* bars = findCrafting(crafting, "minecraft:iron_bars");
+    assert(bars != nullptr && bars->output.count == 16U);
+    const CraftingRecipe* carpet = findCrafting(crafting, "minecraft:white_carpet");
+    assert(carpet != nullptr && carpet->width == 2U && carpet->height == 1U &&
+           carpet->output.count == 3U);
 
     // 1x1 log -> 4 planks, a block ingredient and a block output.
     const CraftingRecipe* planks = findCrafting(crafting, "minecraft:oak_planks");
@@ -340,7 +355,7 @@ void testOverlayMerges() {
     // 43+16 built-ins (EQ-0 armor) + 8 AR-CX utility (paper resolves + yellow_dye
     // (AR-CX2) + flint_and_steel (AR-CX4-b)) + 1 ENCH-2 (enchanting_table) +
     // demo_combo (oak_planks replaced in place, not added).
-    assert(table.crafting().size() == 43U + 16U + 8U + 1U + 2U + 1U);
+    assert(table.crafting().size() == 43U + 16U + 8U + 1U + 2U + 40U + 1U);
     assert(findCrafting(table.crafting(), "minecraft:demo_combo") != nullptr);
     assert(findCrafting(table.crafting(), "minecraft:oak_planks")->output.count == 8U);
     const FurnaceRecipe* smelt = findFurnace(table.furnace(), "minecraft:demo_smelt");
@@ -352,7 +367,7 @@ void testNoDataFallback() {
     RecipeTable table;
     MemoryProvider empty;
     table.load(empty);
-    assert(table.crafting().size() == 43U + 16U + 8U + 1U + 2U);
+    assert(table.crafting().size() == 43U + 16U + 8U + 1U + 2U + 40U);
     assert(table.furnace().size() == 7U);
     assert(findCrafting(table.crafting(), "minecraft:oak_planks")->output.count == 4U);
 }
@@ -369,7 +384,7 @@ void testUnknownIdentifierSkipped() {
              R"({"width":1,"height":1,"ingredients":[{"item":"minecraft:coal"}],
                  "output":"minecraft:no_such_block","count":1})");
     table.load(pack);
-    assert(table.crafting().size() == 43U + 16U + 8U + 1U + 2U); // neither bad recipe was added
+    assert(table.crafting().size() == 43U + 16U + 8U + 1U + 2U + 40U); // neither bad recipe was added
     assert(findCrafting(table.crafting(), "minecraft:bad_item") == nullptr);
     assert(findCrafting(table.crafting(), "minecraft:bad_output") == nullptr);
 }

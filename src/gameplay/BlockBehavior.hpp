@@ -34,6 +34,7 @@
 #include "world/BlockShape.hpp"     // BlockShape, blockShape
 #include "world/BlockState.hpp"
 #include "world/StairShapeDerivation.hpp" // AR-B2: stairUpdateShape, doorUpdateShape
+#include "world/CrossCollisionDerivation.hpp" // MDL-1: crossUpdateShape
 #include "world/WallShapeDerivation.hpp"  // AR-B3: wallUpdateShape
 
 #include <array>
@@ -100,7 +101,10 @@ struct BlockBehaviorPrefilter final {
 // harness pins this against the real MiningSystem::minedDrops for every block.
 [[nodiscard]] constexpr bool blockYieldsLoot(world::Block block) {
     using world::Block;
-    if (block == Block::Glass) return false; // harvestable, but silk-touch only
+    // MDL-1: "harvestable, but silk-touch only" is a definition bit now — it was
+    // `block == Block::Glass`, and the glass panes turned that one identity into
+    // seventeen.
+    if (world::blockDefinition(block).silkTouchOnly) return false;
     if (world::blockDefinition(block).dropsItem) return true;
     return block == Block::GrassPlant || block == Block::WheatCrops ||
            block == Block::Carrots || block == Block::Potatoes;
@@ -136,6 +140,7 @@ struct BlockBehaviorPrefilter final {
                       definition.model == world::BlockModel::Stairs ||
                       definition.model == world::BlockModel::Door ||
                       definition.model == world::BlockModel::Wall ||
+                      definition.model == world::BlockModel::CrossCollision ||
                       definition.model == world::BlockModel::FenceGate ||
                       definition.states.has(world::StateProperty::Locked));
     prefilter.set(BlockBehaviorBit::HasRandomTick, WorldSimulation::isRandomlyTicking(block));
@@ -292,6 +297,14 @@ doorUpdateShapeSlot(const NeighborUpdateContext& context) {
 wallUpdateShapeSlot(const NeighborUpdateContext& context) {
     return world::wallUpdateShape(context.world, context.pos, context.state, context.fromOffset);
 }
+// MDL-1's updateShape slot: the CrossCollision family re-derives all four
+// connection bits from the current world, the same convergent shape the wall's
+// does. One slot covers every fence, iron bars and glass pane — the family
+// difference is inside crossConnectsTo, not here.
+[[nodiscard]] inline std::optional<world::BlockState>
+crossCollisionUpdateShapeSlot(const NeighborUpdateContext& context) {
+    return world::crossUpdateShape(context.world, context.pos, context.state, context.fromOffset);
+}
 // AR-B4-4's slots. The gate's derivation is world-layer (it only asks whether a
 // neighbour is a wall); the repeater's is not, because "locked" is a redstone
 // question, so it lives here and calls the one existing predicate rather than
@@ -414,6 +427,8 @@ repeaterLockedUpdateShapeSlot(const NeighborUpdateContext& context) {
                 entry.updateShape = &doorUpdateShapeSlot;
             } else if (model == world::BlockModel::Wall) {
                 entry.updateShape = &wallUpdateShapeSlot;
+            } else if (model == world::BlockModel::CrossCollision) {
+                entry.updateShape = &crossCollisionUpdateShapeSlot;
             } else if (model == world::BlockModel::FenceGate) {
                 entry.updateShape = &fenceGateUpdateShapeSlot;
             } else if (world::blockDefinition(static_cast<world::Block>(i))

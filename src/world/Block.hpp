@@ -577,6 +577,51 @@ enum class Block : std::uint16_t {
     // ENCH-3: the anvil's recipe needs it, and its absence is why the anvil
     // would otherwise be another uncraftable block. A plain cube.
     IronBlock,
+    // MDL-1: the CrossCollision roster — six wooden fences, iron bars, and the
+    // glass panes (plain + 16 dyed). One model, one parameter table, no new
+    // mechanism: connections, shape, waterlogging and placement are all shared.
+    OakFence,
+    SpruceFence,
+    BirchFence,
+    JungleFence,
+    AcaciaFence,
+    DarkOakFence,
+    IronBars,
+    GlassPane,
+    WhiteStainedGlassPane,
+    OrangeStainedGlassPane,
+    MagentaStainedGlassPane,
+    LightBlueStainedGlassPane,
+    YellowStainedGlassPane,
+    LimeStainedGlassPane,
+    PinkStainedGlassPane,
+    GrayStainedGlassPane,
+    LightGrayStainedGlassPane,
+    CyanStainedGlassPane,
+    PurpleStainedGlassPane,
+    BlueStainedGlassPane,
+    BrownStainedGlassPane,
+    GreenStainedGlassPane,
+    RedStainedGlassPane,
+    BlackStainedGlassPane,
+    // MDL-2: the 16 carpets. A Cube of height 1/16 on any non-air cell — the
+    // cheapest whole family in the roster, and the one village floors need.
+    WhiteCarpet,
+    OrangeCarpet,
+    MagentaCarpet,
+    LightBlueCarpet,
+    YellowCarpet,
+    LimeCarpet,
+    PinkCarpet,
+    GrayCarpet,
+    LightGrayCarpet,
+    CyanCarpet,
+    PurpleCarpet,
+    BlueCarpet,
+    BrownCarpet,
+    GreenCarpet,
+    RedCarpet,
+    BlackCarpet,
     Count,
 };
 
@@ -718,6 +763,44 @@ enum class BlockModel : std::uint8_t {
     // template_fire_floor/side/up. Replaces the Cross model that could only draw
     // the two diagonal quads and never the side flames. Full-bright, no collision.
     Fire,
+    // MDL-1: CrossCollisionBlock —— 26.1 把栅栏、铁栏杆、玻璃板做成同一个基类的
+    // 参数化子类（postWidth/postHeight/wallWidth/wallHeight/collisionHeight +
+    // 四个连接布尔 + waterlogged），本作照此收成一个模型 + 一张族参数表。
+    // 与 Wall 的区别只有两处：族参数不同（栅栏的碰撞盒 1.5 格高、板/栏杆只有 2/16 厚），
+    // 以及连接规则里的"同族"判据（木栅栏只连木栅栏，板/栏杆互相连并连墙）。
+    // 连接位复用 WallNorth/East/South/West —— 那四条轴的语义本来就是"四向连接位"。
+    CrossCollision,
+    // MDL-2: CarpetBlock — `Block.column(16, 0, 1)`, a 1/16 slice on the floor.
+    //
+    // A model of its own rather than a Cube with modelHeight = 1/16, because
+    // `isFullCube` keys on the model: a Cube-modelled carpet would be
+    // face-sturdy (a fence would attach to it, a torch would hang off it) and
+    // would report full light dampening. It meshes through the shared shaped-
+    // block path, whose Column branch is the same one the pressure plate takes.
+    Carpet,
+};
+
+// MDL-1: which row of the CrossCollision parameter table a block reads. Only
+// meaningful for BlockModel::CrossCollision; the geometry difference between a
+// fence and a pane is entirely these five numbers (BlockShape.hpp's
+// kCrossCollisionParams), never a second model.
+enum class CrossCollisionFamily : std::uint8_t {
+    Fence,      // 26.1 FenceBlock: 4/16/4/16, collision 24 (1.5 cells)
+    PaneOrBars, // 26.1 IronBarsBlock (and GlassPaneBlock under it): 2/16/2/16/16
+};
+
+// MDL-1: the "connects to its own kind" family, vanilla's `isSameFence`
+// (BlockTags.FENCES + WOODEN_FENCES) and `attachsTo`'s `instanceof IronBarsBlock`.
+//
+// A definition field rather than a BlockTags query on purpose: the connection
+// derivation lives in world/ (BlockPlacement.cpp needs a block's four bits the
+// instant it is placed) and world/ never depends on gameplay/, which is where
+// BlockTags lives. It is also cheaper — one enum compare instead of a tag bit
+// test — and the families are a closed set the block roster already knows.
+enum class ConnectFamily : std::uint8_t {
+    None,        // not a connecting block
+    WoodenFence, // the six wooden fences; joins wooden fences and fence gates
+    PaneOrBars,  // iron bars + every glass pane; joins each other and walls
 };
 
 // Whether a model is a shaped block — one whose real geometry is a `BlockShape`
@@ -737,6 +820,8 @@ enum class BlockModel : std::uint8_t {
     case BlockModel::PressurePlate:
     case BlockModel::Button:
     case BlockModel::Wall:
+    case BlockModel::CrossCollision:
+    case BlockModel::Carpet:
         return true;
     case BlockModel::Cube:
     case BlockModel::Cross:
@@ -845,6 +930,10 @@ enum class BlockSupport : std::uint8_t {
     // the four horizontal neighbours of the block *below*, which none of the
     // other support shapes do.
     SugarCane,
+    // MDL-2: CarpetBlock#canSurvive — `!belowState.isAir()`, any non-air cell
+    // below, sturdy or not (a carpet sits on a slab, a fence post, snow...).
+    // Weaker than Ground, which demands a sturdy upward face.
+    AnyBelow,
     // AR-CX4-b: FireBlock#canSurvive — fire survives on a sturdy face below it
     // (the ordinary case: fire lit on the top of a solid block) or when at least
     // one of its six neighbours is flammable (fire clinging to a wooden wall).
@@ -1105,12 +1194,31 @@ struct BlockDefinition final {
     bool opaquePartsCastShadow = false;
     bool collision = true;
     BlockModel model = BlockModel::Cube;
+    // MDL-1: which row of kCrossCollisionParams a CrossCollision block reads.
+    // Meaningless for every other model, which never asks.
+    CrossCollisionFamily crossFamily = CrossCollisionFamily::Fence;
+    // MDL-1: the family this block joins to without needing a sturdy face
+    // (vanilla's isSameFence / `instanceof IronBarsBlock`). None for everything
+    // that is not a connecting block.
+    ConnectFamily connectFamily = ConnectFamily::None;
+    // MDL-1: Block#isExceptionForConnection — a block a fence/pane refuses to
+    // attach to even though it presents a sturdy face (leaves, pumpkin, melon,
+    // barrier, carved pumpkin, jack o'lantern in 26.1). A bit rather than an
+    // if-chain over identities, so the connection rule stays one load.
+    bool exceptionForConnection = false;
     // The height of the block's solid box, in [0, 1]. Full cubes are 1.0; a
     // truncated block (farmland is 15/16 in vanilla) shrinks its top face and
     // the tops of its side faces in the mesh, the selection box and collision.
     float modelHeight = 1.0F;
     bool replaceable = false;
     bool dropsItem = true;
+    // MDL-1: breaking this block yields nothing without silk touch (26.1's
+    // glass / glass pane / stained pane loot tables are a silk-touch-only pool).
+    // A bit rather than the identity test `block == Block::Glass` that
+    // BlockBehavior's blockYieldsLoot used to carry: the glass panes made that
+    // one entry into seventeen, and seventeen identities in a predicate is the
+    // switch this roster exists to not have.
+    bool silkTouchOnly = false;
     // Light the block emits, and how much sky light it swallows when it is not
     // a full opaque cube (leaves and water dim the column by one).
     std::uint8_t light = 0U;
@@ -1336,6 +1444,13 @@ class BlockProperties final {
         copy.definition_.replaceable = true;
         return copy;
     }
+    // MDL-1: see BlockDefinition::silkTouchOnly.
+    [[nodiscard]] constexpr BlockProperties silkTouchOnly() const {
+        BlockProperties copy = *this;
+        copy.definition_.silkTouchOnly = true;
+        return copy;
+    }
+
     [[nodiscard]] constexpr BlockProperties noDrops() const {
         BlockProperties copy = *this;
         copy.definition_.dropsItem = false;
@@ -1526,6 +1641,9 @@ class BlockProperties final {
             // moved them out of Cutout.
             .noOcclusion()
             .lightFilter(1U)
+            // MDL-1: Block#isExceptionForConnection names LeavesBlock first — a
+            // fence never attaches to leaves even though they fill the cell.
+            .exceptionForConnection()
             .state(StateProperty::Persistent, 2U);
     }
 
@@ -1691,6 +1809,62 @@ class BlockProperties final {
             .state(StateProperty::Powered, 2U);
     }
 
+    // MDL-1: the shared CrossCollision builder. Everything a fence, a pane and
+    // iron bars have in common: the model, the four connection axes (the same
+    // WallNorth/East/South/West a wall uses — the axis means "connected on this
+    // side", not "is a wall"), and the family fields the shape table and the
+    // connection derivation read. Collision stays on; the caller picks the
+    // render layer and whether it submerges.
+    [[nodiscard]] constexpr BlockProperties crossCollision(CrossCollisionFamily geometry,
+                                                           ConnectFamily connects) const {
+        BlockProperties copy = *this;
+        copy.definition_.crossFamily = geometry;
+        copy.definition_.connectFamily = connects;
+        return copy.model(BlockModel::CrossCollision)
+            .noOcclusion()
+            .state(StateProperty::WallNorth, 2U)
+            .state(StateProperty::WallEast, 2U)
+            .state(StateProperty::WallSouth, 2U)
+            .state(StateProperty::WallWest, 2U);
+    }
+
+    // MDL-1: a wooden FenceBlock — 26.1 `super(4, 16, 4, 16, 24)`, cutout, and
+    // `SimpleWaterloggedBlock` through CrossCollisionBlock, so it submerges.
+    // The 24 is the whole point of a fence line: 1.5 cells of collision is what
+    // a player (and a cow) cannot jump.
+    [[nodiscard]] constexpr BlockProperties fence() const {
+        return crossCollision(CrossCollisionFamily::Fence, ConnectFamily::WoodenFence)
+            .renderLayer(BlockRenderLayer::Cutout)
+            .submerges();
+    }
+
+    // MDL-1: IronBarsBlock and the glass panes under it — 26.1
+    // `super(2, 16, 2, 16, 16)`. `skipRendering` is IronBarsBlock's own override
+    // (BlockDefinition's comment names it), so two panes of the same kind do not
+    // draw the face they share. The caller sets the render layer: iron bars are
+    // cutout, glass panes follow their block (translucent).
+    [[nodiscard]] constexpr BlockProperties pane() const {
+        return crossCollision(CrossCollisionFamily::PaneOrBars, ConnectFamily::PaneOrBars)
+            .skipsRenderingAgainstSelf()
+            .submerges();
+    }
+
+    // MDL-2: CarpetBlock — a 1/16 slice of wool on the floor. Not a model of its
+    // own: a Cube of height 1/16 is exactly the geometry, the way farmland is a
+    // Cube of height 15/16. It needs any non-air cell below (AnyBelow), never
+    // occludes, and is opaque (wool is).
+    [[nodiscard]] constexpr BlockProperties carpet() const {
+        return model(BlockModel::Carpet).noOcclusion().support(BlockSupport::AnyBelow);
+    }
+
+    // MDL-1: Block#isExceptionForConnection — this block never satisfies the
+    // "sturdy face" half of a fence/pane connection.
+    [[nodiscard]] constexpr BlockProperties exceptionForConnection() const {
+        BlockProperties copy = *this;
+        copy.definition_.exceptionForConnection = true;
+        return copy;
+    }
+
     // A WallBlock (AR-B3): the Wall model plus the four per-side connection
     // booleans (WallNorth/East/South/West). Collision stays on; the taller
     // (1.5-cell) collision-vs-visual split a full vanilla wall has is folded
@@ -1777,6 +1951,7 @@ inline constexpr std::array<BlockDefinition, static_cast<std::size_t>(Block::Cou
     BlockProperties::of(Block::Glass, "glass", "Glass")
         .texture("glass")
         .strength(0.3F)
+        .silkTouchOnly()
         .renderLayer(BlockRenderLayer::Translucent)
         // RN-8e: `TransparentBlock` extends HalfTransparentBlock, whose
         // skipRendering (HalfTransparentBlock.java:27) is `neighborState.is(this)`.
@@ -2009,10 +2184,13 @@ inline constexpr std::array<BlockDefinition, static_cast<std::size_t>(Block::Cou
     BlockProperties::of(Block::Pumpkin, "pumpkin", "Pumpkin")
         .texture("pumpkin_top", "pumpkin_side", "pumpkin_top")
         .strength(1.0F)
+        // MDL-1: named in Block#isExceptionForConnection alongside melon.
+        .exceptionForConnection()
         .creative(CreativeCategory::NaturalBlocks),
     BlockProperties::of(Block::Melon, "melon", "Melon")
         .texture("melon_top", "melon_side", "melon_top")
         .strength(1.0F)
+        .exceptionForConnection()
         .creative(CreativeCategory::NaturalBlocks),
     BlockProperties::of(Block::Tnt, "tnt", "TNT")
         .texture("tnt_top", "tnt_side", "tnt_bottom")
@@ -3681,6 +3859,190 @@ inline constexpr std::array<BlockDefinition, static_cast<std::size_t>(Block::Cou
         .texture("iron_block")
         .strength(5.0F, 6.0F)
         .creative(CreativeCategory::BuildingBlocks),
+    // MDL-1: wooden fences. 26.1 FenceBlock is `super(4, 16, 4, 16, 24)` on the
+    // planks texture; strength 2.0/3.0 like the planks it is made of.
+    BlockProperties::of(Block::OakFence, "oak_fence", "Oak Fence")
+        .texture("oak_planks").strength(2.0F, 3.0F).fence()
+        .creative(CreativeCategory::BuildingBlocks),
+    BlockProperties::of(Block::SpruceFence, "spruce_fence", "Spruce Fence")
+        .texture("spruce_planks").strength(2.0F, 3.0F).fence()
+        .creative(CreativeCategory::BuildingBlocks),
+    BlockProperties::of(Block::BirchFence, "birch_fence", "Birch Fence")
+        .texture("birch_planks").strength(2.0F, 3.0F).fence()
+        .creative(CreativeCategory::BuildingBlocks),
+    BlockProperties::of(Block::JungleFence, "jungle_fence", "Jungle Fence")
+        .texture("jungle_planks").strength(2.0F, 3.0F).fence()
+        .creative(CreativeCategory::BuildingBlocks),
+    BlockProperties::of(Block::AcaciaFence, "acacia_fence", "Acacia Fence")
+        .texture("acacia_planks").strength(2.0F, 3.0F).fence()
+        .creative(CreativeCategory::BuildingBlocks),
+    BlockProperties::of(Block::DarkOakFence, "dark_oak_fence", "Dark Oak Fence")
+        .texture("dark_oak_planks").strength(2.0F, 3.0F).fence()
+        .creative(CreativeCategory::BuildingBlocks),
+    // MDL-1: iron bars — the pane geometry on its own cutout texture,
+    // strength 5.0/6.0 (Blocks.java: `ofFullCopy(IRON_BLOCK)` family numbers).
+    BlockProperties::of(Block::IronBars, "iron_bars", "Iron Bars")
+        .texture("iron_bars").strength(5.0F, 6.0F).pane()
+        .renderLayer(BlockRenderLayer::Cutout)
+        .creative(CreativeCategory::BuildingBlocks),
+    // MDL-1: glass panes. Same render treatment as the glass block they are cut
+    // from — translucent, transparent shade, skipRendering against their own kind
+    // — and, like glass, they break into nothing without silk touch (LootBakedData).
+    BlockProperties::of(Block::GlassPane, "glass_pane", "Glass Pane")
+        // 26.1 draws the pane's edge (the up/down faces of every box) from
+        // `block/glass_pane_top`, a solid strip, and only its broad faces from
+        // `block/glass`. One texture for all six faces leaves the top edge
+        // transparent — the pane reads as a floating frame with no rim.
+        .texture("glass_pane_top", "glass", "glass_pane_top")
+        .strength(0.3F).pane().silkTouchOnly()
+        .renderLayer(BlockRenderLayer::Translucent).transparentShade()
+        .creative(CreativeCategory::ColoredBlocks),
+    BlockProperties::of(Block::WhiteStainedGlassPane, "white_stained_glass_pane",
+                        "White Stained Glass Pane")
+        .texture("white_stained_glass_pane_top", "white_stained_glass", "white_stained_glass_pane_top")
+        .strength(0.3F).pane().silkTouchOnly()
+        .renderLayer(BlockRenderLayer::Translucent).transparentShade()
+        .creative(CreativeCategory::ColoredBlocks),
+    BlockProperties::of(Block::OrangeStainedGlassPane, "orange_stained_glass_pane",
+                        "Orange Stained Glass Pane")
+        .texture("orange_stained_glass_pane_top", "orange_stained_glass", "orange_stained_glass_pane_top")
+        .strength(0.3F).pane().silkTouchOnly()
+        .renderLayer(BlockRenderLayer::Translucent).transparentShade()
+        .creative(CreativeCategory::ColoredBlocks),
+    BlockProperties::of(Block::MagentaStainedGlassPane, "magenta_stained_glass_pane",
+                        "Magenta Stained Glass Pane")
+        .texture("magenta_stained_glass_pane_top", "magenta_stained_glass", "magenta_stained_glass_pane_top")
+        .strength(0.3F).pane().silkTouchOnly()
+        .renderLayer(BlockRenderLayer::Translucent).transparentShade()
+        .creative(CreativeCategory::ColoredBlocks),
+    BlockProperties::of(Block::LightBlueStainedGlassPane, "light_blue_stained_glass_pane",
+                        "Light Blue Stained Glass Pane")
+        .texture("light_blue_stained_glass_pane_top", "light_blue_stained_glass", "light_blue_stained_glass_pane_top")
+        .strength(0.3F).pane().silkTouchOnly()
+        .renderLayer(BlockRenderLayer::Translucent).transparentShade()
+        .creative(CreativeCategory::ColoredBlocks),
+    BlockProperties::of(Block::YellowStainedGlassPane, "yellow_stained_glass_pane",
+                        "Yellow Stained Glass Pane")
+        .texture("yellow_stained_glass_pane_top", "yellow_stained_glass", "yellow_stained_glass_pane_top")
+        .strength(0.3F).pane().silkTouchOnly()
+        .renderLayer(BlockRenderLayer::Translucent).transparentShade()
+        .creative(CreativeCategory::ColoredBlocks),
+    BlockProperties::of(Block::LimeStainedGlassPane, "lime_stained_glass_pane",
+                        "Lime Stained Glass Pane")
+        .texture("lime_stained_glass_pane_top", "lime_stained_glass", "lime_stained_glass_pane_top")
+        .strength(0.3F).pane().silkTouchOnly()
+        .renderLayer(BlockRenderLayer::Translucent).transparentShade()
+        .creative(CreativeCategory::ColoredBlocks),
+    BlockProperties::of(Block::PinkStainedGlassPane, "pink_stained_glass_pane",
+                        "Pink Stained Glass Pane")
+        .texture("pink_stained_glass_pane_top", "pink_stained_glass", "pink_stained_glass_pane_top")
+        .strength(0.3F).pane().silkTouchOnly()
+        .renderLayer(BlockRenderLayer::Translucent).transparentShade()
+        .creative(CreativeCategory::ColoredBlocks),
+    BlockProperties::of(Block::GrayStainedGlassPane, "gray_stained_glass_pane",
+                        "Gray Stained Glass Pane")
+        .texture("gray_stained_glass_pane_top", "gray_stained_glass", "gray_stained_glass_pane_top")
+        .strength(0.3F).pane().silkTouchOnly()
+        .renderLayer(BlockRenderLayer::Translucent).transparentShade()
+        .creative(CreativeCategory::ColoredBlocks),
+    BlockProperties::of(Block::LightGrayStainedGlassPane, "light_gray_stained_glass_pane",
+                        "Light Gray Stained Glass Pane")
+        .texture("light_gray_stained_glass_pane_top", "light_gray_stained_glass", "light_gray_stained_glass_pane_top")
+        .strength(0.3F).pane().silkTouchOnly()
+        .renderLayer(BlockRenderLayer::Translucent).transparentShade()
+        .creative(CreativeCategory::ColoredBlocks),
+    BlockProperties::of(Block::CyanStainedGlassPane, "cyan_stained_glass_pane",
+                        "Cyan Stained Glass Pane")
+        .texture("cyan_stained_glass_pane_top", "cyan_stained_glass", "cyan_stained_glass_pane_top")
+        .strength(0.3F).pane().silkTouchOnly()
+        .renderLayer(BlockRenderLayer::Translucent).transparentShade()
+        .creative(CreativeCategory::ColoredBlocks),
+    BlockProperties::of(Block::PurpleStainedGlassPane, "purple_stained_glass_pane",
+                        "Purple Stained Glass Pane")
+        .texture("purple_stained_glass_pane_top", "purple_stained_glass", "purple_stained_glass_pane_top")
+        .strength(0.3F).pane().silkTouchOnly()
+        .renderLayer(BlockRenderLayer::Translucent).transparentShade()
+        .creative(CreativeCategory::ColoredBlocks),
+    BlockProperties::of(Block::BlueStainedGlassPane, "blue_stained_glass_pane",
+                        "Blue Stained Glass Pane")
+        .texture("blue_stained_glass_pane_top", "blue_stained_glass", "blue_stained_glass_pane_top")
+        .strength(0.3F).pane().silkTouchOnly()
+        .renderLayer(BlockRenderLayer::Translucent).transparentShade()
+        .creative(CreativeCategory::ColoredBlocks),
+    BlockProperties::of(Block::BrownStainedGlassPane, "brown_stained_glass_pane",
+                        "Brown Stained Glass Pane")
+        .texture("brown_stained_glass_pane_top", "brown_stained_glass", "brown_stained_glass_pane_top")
+        .strength(0.3F).pane().silkTouchOnly()
+        .renderLayer(BlockRenderLayer::Translucent).transparentShade()
+        .creative(CreativeCategory::ColoredBlocks),
+    BlockProperties::of(Block::GreenStainedGlassPane, "green_stained_glass_pane",
+                        "Green Stained Glass Pane")
+        .texture("green_stained_glass_pane_top", "green_stained_glass", "green_stained_glass_pane_top")
+        .strength(0.3F).pane().silkTouchOnly()
+        .renderLayer(BlockRenderLayer::Translucent).transparentShade()
+        .creative(CreativeCategory::ColoredBlocks),
+    BlockProperties::of(Block::RedStainedGlassPane, "red_stained_glass_pane",
+                        "Red Stained Glass Pane")
+        .texture("red_stained_glass_pane_top", "red_stained_glass", "red_stained_glass_pane_top")
+        .strength(0.3F).pane().silkTouchOnly()
+        .renderLayer(BlockRenderLayer::Translucent).transparentShade()
+        .creative(CreativeCategory::ColoredBlocks),
+    BlockProperties::of(Block::BlackStainedGlassPane, "black_stained_glass_pane",
+                        "Black Stained Glass Pane")
+        .texture("black_stained_glass_pane_top", "black_stained_glass", "black_stained_glass_pane_top")
+        .strength(0.3F).pane().silkTouchOnly()
+        .renderLayer(BlockRenderLayer::Translucent).transparentShade()
+        .creative(CreativeCategory::ColoredBlocks),
+    // MDL-2: carpets. 26.1 CarpetBlock is `Block.column(16, 0, 1)` on the wool
+    // texture, strength 0.1, and survives on any non-air cell below.
+    BlockProperties::of(Block::WhiteCarpet, "white_carpet", "White Carpet")
+        .texture("white_wool").strength(0.1F).carpet()
+        .creative(CreativeCategory::ColoredBlocks),
+    BlockProperties::of(Block::OrangeCarpet, "orange_carpet", "Orange Carpet")
+        .texture("orange_wool").strength(0.1F).carpet()
+        .creative(CreativeCategory::ColoredBlocks),
+    BlockProperties::of(Block::MagentaCarpet, "magenta_carpet", "Magenta Carpet")
+        .texture("magenta_wool").strength(0.1F).carpet()
+        .creative(CreativeCategory::ColoredBlocks),
+    BlockProperties::of(Block::LightBlueCarpet, "light_blue_carpet", "Light Blue Carpet")
+        .texture("light_blue_wool").strength(0.1F).carpet()
+        .creative(CreativeCategory::ColoredBlocks),
+    BlockProperties::of(Block::YellowCarpet, "yellow_carpet", "Yellow Carpet")
+        .texture("yellow_wool").strength(0.1F).carpet()
+        .creative(CreativeCategory::ColoredBlocks),
+    BlockProperties::of(Block::LimeCarpet, "lime_carpet", "Lime Carpet")
+        .texture("lime_wool").strength(0.1F).carpet()
+        .creative(CreativeCategory::ColoredBlocks),
+    BlockProperties::of(Block::PinkCarpet, "pink_carpet", "Pink Carpet")
+        .texture("pink_wool").strength(0.1F).carpet()
+        .creative(CreativeCategory::ColoredBlocks),
+    BlockProperties::of(Block::GrayCarpet, "gray_carpet", "Gray Carpet")
+        .texture("gray_wool").strength(0.1F).carpet()
+        .creative(CreativeCategory::ColoredBlocks),
+    BlockProperties::of(Block::LightGrayCarpet, "light_gray_carpet", "Light Gray Carpet")
+        .texture("light_gray_wool").strength(0.1F).carpet()
+        .creative(CreativeCategory::ColoredBlocks),
+    BlockProperties::of(Block::CyanCarpet, "cyan_carpet", "Cyan Carpet")
+        .texture("cyan_wool").strength(0.1F).carpet()
+        .creative(CreativeCategory::ColoredBlocks),
+    BlockProperties::of(Block::PurpleCarpet, "purple_carpet", "Purple Carpet")
+        .texture("purple_wool").strength(0.1F).carpet()
+        .creative(CreativeCategory::ColoredBlocks),
+    BlockProperties::of(Block::BlueCarpet, "blue_carpet", "Blue Carpet")
+        .texture("blue_wool").strength(0.1F).carpet()
+        .creative(CreativeCategory::ColoredBlocks),
+    BlockProperties::of(Block::BrownCarpet, "brown_carpet", "Brown Carpet")
+        .texture("brown_wool").strength(0.1F).carpet()
+        .creative(CreativeCategory::ColoredBlocks),
+    BlockProperties::of(Block::GreenCarpet, "green_carpet", "Green Carpet")
+        .texture("green_wool").strength(0.1F).carpet()
+        .creative(CreativeCategory::ColoredBlocks),
+    BlockProperties::of(Block::RedCarpet, "red_carpet", "Red Carpet")
+        .texture("red_wool").strength(0.1F).carpet()
+        .creative(CreativeCategory::ColoredBlocks),
+    BlockProperties::of(Block::BlackCarpet, "black_carpet", "Black Carpet")
+        .texture("black_wool").strength(0.1F).carpet()
+        .creative(CreativeCategory::ColoredBlocks),
 };
 
 [[nodiscard]] constexpr bool isValidBlock(Block block) {

@@ -2662,6 +2662,17 @@ bool buildSectionImpl(
                 // of the full-cube fallthrough below. A Column shape (pressure
                 // plate) reuses the slab's box path via its [bottom, top] Y span; a
                 // Boxes shape walks its box list.
+                // MDL-1: a fence/pane/bars draws from vanilla's MODEL boxes, not
+                // from its VoxelShape. The shape's arm is a solid full-height
+                // slab (right for collision, right for occlusion) while
+                // block/fence_side is two bars — meshing from the shape draws a
+                // solid wooden wall. Pick, outline and collision are untouched.
+                if (definition.model == BlockModel::CrossCollision) {
+                    appendBoxes(targetMesh, world, cull,
+                                crossCollisionMeshShape(chunk->state(localX, worldY, localZ)),
+                                worldX, worldY, worldZ, lighting, sectionOrigin, tints);
+                    continue;
+                }
                 if (isShapedBlockModel(definition.model)) {
                     const BlockState state = chunk->state(localX, worldY, localZ);
                     const BlockShape shape = blockShape(state);
