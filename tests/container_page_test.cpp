@@ -492,30 +492,68 @@ void testTheRendererUsesThePage() {
         }
     }
 
-    const auto start = source.find("dragSlotRectangle(const ui::HudLayout&");
-    if (start == std::string::npos) {
-        std::printf("container_page_test: dragSlotRectangle not found — if it was renamed, "
-                    "move this guard with it rather than deleting it\n");
-        ++failures;
-        return;
-    }
-    const auto open = source.find('{', start);
-    std::string body;
-    int depth = 0;
-    for (std::size_t i = open; i < source.size() && open != std::string::npos; ++i) {
-        if (source[i] == '{') { ++depth; }
-        else if (source[i] == '}') {
-            --depth;
-            if (depth == 0) { body = source.substr(open, i - open + 1U); break; }
+    // 从一个函数签名截出它的函数体（花括号配对）。
+    const auto bodyOf = [&](const char* signature) -> std::string {
+        const auto at = source.find(signature);
+        if (at == std::string::npos) {
+            std::printf("container_page_test: %s not found — if it was renamed, move this "
+                        "guard with it rather than deleting it\n", signature);
+            ++failures;
+            return {};
         }
+        const auto open = source.find('{', at);
+        int depth = 0;
+        for (std::size_t i = open; i < source.size() && open != std::string::npos; ++i) {
+            if (source[i] == '{') { ++depth; }
+            else if (source[i] == '}') {
+                --depth;
+                if (depth == 0) { return source.substr(open, i - open + 1U); }
+            }
+        }
+        ++failures;
+        return {};
+    };
+
+    // 容器页的构造只有一处：`containerPage()`。
+    const std::string page = bodyOf("ui::Page containerPage(const ui::HudLayout&");
+    CHECK(page.find("buildContainerPageInto(") != std::string::npos);
+
+    // ★ 生产路径上问几何的每一处都走那一页，**没有一处**自己再遍历一遍槽位表。
+    //   `buildSlotLayout` 在渲染器里应当彻底消失——它是点击路由那张表的构造函数，
+    //   而"这一屏有哪些槽"现在只从页面问。
+    for (const char* signature : {
+             "std::optional<ui::UiRect> dragSlotRectangle(const ui::HudLayout&",
+             "std::optional<gameplay::SlotRef> dragSlotAt(const ui::HudLayout&",
+             "std::optional<gameplay::SlotRef> slotUnderCursor()",
+             "std::vector<gameplay::SlotRef> allScreenSlots()",
+             "void dispatchInventoryClick(gameplay::InventoryMouseButton",
+             "bool immediateCreativeControlUnderCursor()",
+         }) {
+        const std::string body = bodyOf(signature);
+        if (body.empty()) continue;
+        check(body.find("containerPage(") != std::string::npos,
+              std::string{signature} + " must ask the container page", __LINE__);
+        check(body.find("buildSlotLayout") == std::string::npos,
+              std::string{signature} + " must not walk the slot table itself", __LINE__);
     }
-    CHECK(!body.empty());
-    if (body.empty()) return;
-    // 走的是容器页。
-    CHECK(body.find("buildContainerPageInto(") != std::string::npos);
-    CHECK(body.find("findSlotWidget(") != std::string::npos);
-    // ★ 而**不是**自己再遍历一遍槽位表：那正是 A0 要消掉的第二份表述。
-    CHECK(body.find("buildSlotLayout") == std::string::npos);
+
+    // ★ A2：点击路由**不许自己做几何判断**。从前它逐个 `contains` 测三条选项条、
+    //   十一个页签、滚动条、删除框、45 个目录格——那一百行没有任何无头断言看得见。
+    //   现在决策在 `ui::containerClickAction`（有 container_interaction 钉着），
+    //   这里只剩把意图翻译成命令。
+    const std::string dispatch = bodyOf("void dispatchInventoryClick(gameplay::InventoryMouseButton");
+    if (!dispatch.empty()) {
+        CHECK(dispatch.find("containerClickAction(") != std::string::npos);
+        CHECK(dispatch.find(".contains(") == std::string::npos);
+        CHECK(dispatch.find("creativeTab(") == std::string::npos);
+        CHECK(dispatch.find("creativeSlot(") == std::string::npos);
+        CHECK(dispatch.find("enchantingOption(") == std::string::npos);
+    }
+    const std::string immediate = bodyOf("bool immediateCreativeControlUnderCursor()");
+    if (!immediate.empty()) {
+        CHECK(immediate.find("containerImmediateControlAt(") != std::string::npos);
+        CHECK(immediate.find(".contains(") == std::string::npos);
+    }
 }
 
 } // namespace

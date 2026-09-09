@@ -307,6 +307,7 @@ set(MC_REBEDROCK_RUNTIME_SOURCES
     src/gameplay/ScreenHandler.cpp
     src/ui/HudLayout.cpp
     src/ui/ContainerPage.cpp
+    src/ui/ContainerInteraction.cpp
     src/gameplay/GameplayMutationSink.cpp
     src/gameplay/SimulationHostBridge.cpp
     src/gameplay/Inventory.cpp
@@ -1814,6 +1815,16 @@ if(BUILD_TESTING)
     target_compile_definitions(mc_rebedrock_container_page_test PRIVATE
         "MC_REBEDROCK_RENDERER_SRC=\"${CMAKE_CURRENT_SOURCE_DIR}/src/render/vulkan/VulkanRenderer.cpp\"")
     add_test(NAME container_page COMMAND mc_rebedrock_container_page_test)
+
+    # A2：容器界面点击决策的无头测试。它是 A2 的**前置**——那 526 行交互代码此前
+    # 零无头测试，因为它们住在链接 Vulkan 与 GLFW 的翻译单元里。
+    add_executable(mc_rebedrock_container_interaction_test
+        tests/container_interaction_test.cpp
+    )
+    target_include_directories(mc_rebedrock_container_interaction_test PRIVATE src)
+    target_link_libraries(mc_rebedrock_container_interaction_test
+        PRIVATE mc_rebedrock_runtime glm::glm)
+    add_test(NAME container_interaction COMMAND mc_rebedrock_container_interaction_test)
 
     add_executable(mc_rebedrock_tooltip_layout_test
         tests/tooltip_layout_test.cpp

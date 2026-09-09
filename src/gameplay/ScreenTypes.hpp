@@ -98,6 +98,37 @@ enum class SlotKind : std::uint8_t {
     Count,
 };
 
+// 这种槽收不收东西。输出槽（合成结果、熔炉产物、铁砧结果）只给不收，
+// QUICK_CRAFT 拖拽也跳过它们；创造目录格是无限货架，同样不是拖拽目标。
+//
+// ★ A2 抽成按 kind 的自由函数：`SlotView::acceptsItems()` 与界面侧的 `ui::Widget`
+//   要问的是同一个问题，而 Widget 上没有 SlotView。两处各写一遍就是同一事实的
+//   两份表述，而漏改的症状是"这一格拖拽预览画了、松手却什么都没发生"。
+[[nodiscard]] constexpr bool slotAcceptsItems(SlotKind kind) {
+    switch (kind) {
+    case SlotKind::PlayerCraftingOutput:
+    case SlotKind::TableCraftingOutput:
+    case SlotKind::FurnaceOutput:
+    case SlotKind::AnvilOutput:
+    case SlotKind::CreativeCatalog:
+    case SlotKind::Count:
+        return false;
+    case SlotKind::PlayerInventory:
+    case SlotKind::PlayerCraftingGrid:
+    case SlotKind::TableCraftingGrid:
+    case SlotKind::FurnaceInput:
+    case SlotKind::FurnaceFuel:
+    case SlotKind::ChestStorage:
+    case SlotKind::EnchantingItem:
+    case SlotKind::EnchantingLapis:
+    case SlotKind::AnvilLeft:
+    case SlotKind::AnvilRight:
+    case SlotKind::Equipment:
+        return true;
+    }
+    return false;
+}
+
 // EQ-1: the screen's armor-slot draw order (0..3 = Head/Chest/Legs/Feet, the
 // GUI spec §10 top-to-bottom layout) plus offhand at 4, mapped to the
 // gameplay::EquipmentSlot each index addresses. A SlotKind::Equipment index

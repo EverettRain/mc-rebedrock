@@ -42,14 +42,9 @@ struct SlotView final {
     std::uint16_t index = 0U;
 
     // Output slots are not drag targets, and QUICK_CRAFT skips them.
-    // A0：目录格同理——它今天根本不进这张表（它没有存储，走 ClickCreativeItem），
-    // 列在这里是为了万一将来有人把它加进来时答案是对的，而不是靠"它不在表里"这个
-    // 前提沉默地正确。
-    [[nodiscard]] bool acceptsItems() const {
-        return kind != SlotKind::PlayerCraftingOutput && kind != SlotKind::TableCraftingOutput &&
-               kind != SlotKind::FurnaceOutput && kind != SlotKind::AnvilOutput &&
-               kind != SlotKind::CreativeCatalog;
-    }
+    // ★ A2：规则本身住在 `gameplay::slotAcceptsItems`（ScreenTypes.hpp）——界面侧的
+    //   `ui::Widget` 要问同一个问题，而它没有 SlotView。这里只是转发。
+    [[nodiscard]] bool acceptsItems() const { return slotAcceptsItems(kind); }
 };
 
 // Everything about the open screen that is not geometry: which screen, which
