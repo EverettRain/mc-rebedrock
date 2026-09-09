@@ -538,15 +538,12 @@ void WorldSimulation::precipitationTick(
     const world::Chunk& chunk,
     world::ChunkPosition chunkPosition,
     std::vector<BlockChange>& changes) {
-    // ServerLevel#tickChunk draws one column in sixteen per chunk per tick.
-    //
-    // Only the freezing half of vanilla's tickPrecipitation is here. Snow
-    // accumulation is the other half and needs a snow *layer* block — vanilla's
-    // Blocks.SNOW with its LAYERS property — which this build does not have (it
-    // has a full snow block, which is a different thing). Registering one is
-    // block identity work and belongs to B/AR, not to the biome subtree: a snowy
-    // biome classifies its precipitation as SNOW and freezes its water correctly
-    // now, but nothing settles on the ground yet.
+    // ServerLevel#tickChunk draws one column in sixteen per chunk per tick, then
+    // tickPrecipitation does two independent things at that column: freeze the
+    // water at the top cell, and — while it is raining — pile snow on the cell
+    // above it. Both halves are here now; the snow half waited on MDL-3's snow
+    // *layer* block (this roster's SnowBlock is `minecraft:snow_block`, a
+    // different thing), which is why this function used to say so in a comment.
     if (nextBounded(precipitationRandomState_, 16U) != 0U) {
         return;
     }
@@ -560,8 +557,17 @@ void WorldSimulation::precipitationTick(
     if (!world::isWorldYInRange(surfaceY)) {
         return;
     }
-    // Biome#shouldFreeze, asked at the column's own top cell (vanilla's belowPos).
     const auto biome = world.biomeAt(worldX, worldZ);
+    freezeSurfaceWater(world, worldX, surfaceY, worldZ, biome, changes);
+    accumulateSnow(world, worldX, surfaceY, worldZ, biome, changes);
+}
+
+// vanilla: `if (biome.shouldFreeze(this, belowPos)) setBlockAndUpdate(belowPos, ICE)`.
+// `belowPos` is the top solid cell itself, which is what `surfaceY` names here.
+void WorldSimulation::freezeSurfaceWater(
+    world::World& world, int worldX, int surfaceY, int worldZ, world::gen::Biome biome,
+    std::vector<BlockChange>& changes) {
+    // Biome#shouldFreeze, asked at the column's own top cell (vanilla's belowPos).
     if (world::gen::warmEnoughToRain(biome, worldX, surfaceY, worldZ, world::kSeaLevel)) {
         return;
     }
@@ -583,6 +589,65 @@ void WorldSimulation::precipitationTick(
         return;
     }
     setSimulatedBlock(world, {worldX, surfaceY, worldZ}, world::Block::Ice, changes);
+}
+
+// vanilla's snow half of tickPrecipitation:
+//
+//     if (isRaining()) {
+//         int maxHeight = gamerule MAX_SNOW_ACCUMULATION_HEIGHT;
+//         if (maxHeight > 0 && biome.shouldSnow(this, topPos)) { ...raise or place... }
+//     }
+//
+// `topPos` is one above the column's top solid cell — the cell the snow lands
+// IN — and Biome#shouldSnow asks three things there: the precipitation is snow
+// (cold enough), the block light is under 10, and the cell is air (or already
+// snow) where a layer can survive.
+void WorldSimulation::accumulateSnow(
+    world::World& world, int worldX, int surfaceY, int worldZ, world::gen::Biome biome,
+    std::vector<BlockChange>& changes) {
+    if (!environment_.raining) {
+        return;  // Level#isRaining — snow falls only while it is precipitating
+    }
+    const int maximum = maximumSnowAccumulation_;
+    if (maximum <= 0) {
+        return;  // `/gamerule max_snow_accumulation_height 0`
+    }
+    // vanilla's `topPos` is the MOTION_BLOCKING heightmap, and a snow layer does
+    // not block motion — so once a layer is lying there, topPos is the layer's
+    // OWN cell and the next fall deepens it. This build's `topNonAirY` is the
+    // highest non-air cell instead, which lands one above the layer and would
+    // stack a second one-layer block on top of the first forever. Reading the
+    // layer's own cell when that is what the column's top holds is the same
+    // answer vanilla's heightmap gives, without a second heightmap.
+    const bool ontoExistingSnow = world.block(worldX, surfaceY, worldZ) == world::Block::Snow;
+    const int y = ontoExistingSnow ? surfaceY : surfaceY + 1;
+    if (!world::isWorldYInRange(y)) {
+        return;
+    }
+    if (world::gen::warmEnoughToRain(biome, worldX, y, worldZ, world::kSeaLevel)) {
+        return;  // it is rain here, not snow
+    }
+    if (world.blockLight(worldX, y, worldZ) >= 10U) {
+        return;  // Biome#shouldSnow's light gate — a lit roof stays clear
+    }
+    const auto existing = world.state(worldX, y, worldZ);
+    const SimulationPosition at{worldX, y, worldZ};
+    if (existing.block() == world::Block::Snow) {
+        const int ceiling = maximum < 8 ? maximum : 8;
+        if (existing.layers() >= ceiling) {
+            return;
+        }
+        setSimulatedState(world, at, existing.withLayers(existing.layers() + 1), changes);
+        return;
+    }
+    if (existing.block() != world::Block::Air) {
+        return;
+    }
+    if (!world::canBlockSurvive(world, {worldX, y, worldZ}, world::Block::Snow,
+                                world::BlockOrientation::Up)) {
+        return;
+    }
+    setSimulatedBlock(world, at, world::Block::Snow, changes);
 }
 
 void WorldSimulation::randomTickGrassEntry(const RandomTickContext& context) {
@@ -608,6 +673,25 @@ void WorldSimulation::randomTickSugarCaneEntry(const RandomTickContext& context)
 
 void WorldSimulation::randomTickFireEntry(const RandomTickContext& context) {
     context.simulation.randomTickFire(context.world, context.position, context.changes);
+}
+
+void WorldSimulation::randomTickSnowLayerEntry(const RandomTickContext& context) {
+    context.simulation.randomTickSnowLayer(context.world, context.position, context.changes);
+}
+
+// MDL-3: SnowLayerBlock#randomTick —
+//     if (level.getBrightness(LightLayer.BLOCK, pos) > 11) { dropResources(); removeBlock(); }
+// BLOCK light, not sky: a torch beside a drift melts it, an open sky at noon
+// does not (that is what keeps snow lying around in a snowy biome all day).
+// The whole layer goes at once — vanilla does not melt it one layer at a time.
+void WorldSimulation::randomTickSnowLayer(
+    world::World& world,
+    SimulationPosition position,
+    std::vector<BlockChange>& changes) {
+    if (world.blockLight(position.x, position.y, position.z) <= 11U) {
+        return;
+    }
+    setSimulatedBlock(world, position, world::Block::Air, changes);
 }
 
 void WorldSimulation::randomTickBlock(
@@ -1252,6 +1336,19 @@ bool WorldSimulation::setSimulatedBlock(
          world.fluidLevel(position.x, position.y, position.z) == fluidLevel)) {
         return false;
     }
+    return setSimulatedState(
+        world, position,
+        world::BlockState{block, world::defaultOrientation(block), fluidLevel}, changes,
+        immediateRenderUpdate);
+}
+
+bool WorldSimulation::setSimulatedState(
+    world::World& world,
+    SimulationPosition position,
+    world::BlockState state,
+    std::vector<BlockChange>& changes,
+    bool immediateRenderUpdate) {
+    const auto block = state.block();
     const auto previousState = world.state(position.x, position.y, position.z);
     const auto previous = previousState.block();
     // The write itself goes through the mutation service, so a simulated edit
@@ -1264,8 +1361,7 @@ bool WorldSimulation::setSimulatedBlock(
     // fire them a second time.
     RecordingMutationSink sink;
     const auto result = mutations_.setBlock(
-        world, {position.x, position.y, position.z},
-        world::BlockState{block, world::defaultOrientation(block), fluidLevel},
+        world, {position.x, position.y, position.z}, state,
         world::MutationFlags::KnownShape, world::MutationCause::ScheduledTick, sink);
     if (result.changed) {
         // Decoration blocks that a fluid washes away, or that lost their
@@ -1275,8 +1371,7 @@ bool WorldSimulation::setSimulatedBlock(
         const bool dropsPrevious = previous != block &&
             world::isDestroyedByFluid(previous) &&
             world::blockDefinition(previous).dropsItem;
-        changes.push_back({position,
-                           world::BlockState{block, world::defaultOrientation(block), fluidLevel},
+        changes.push_back({position, state,
                            dropsPrevious ? previousState : world::BlockState{},
                            immediateRenderUpdate});
     }

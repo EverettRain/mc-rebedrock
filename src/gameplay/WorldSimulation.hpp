@@ -101,6 +101,9 @@ class WorldSimulation final {
     static void randomTickFarmlandEntry(const RandomTickContext& context);
     static void randomTickSugarCaneEntry(const RandomTickContext& context);
     static void randomTickFireEntry(const RandomTickContext& context);
+    // MDL-3: SnowLayerBlock#randomTick — melts where the BLOCK light passes 11
+    // (not the sky light: a torch melts snow, daylight does not).
+    static void randomTickSnowLayerEntry(const RandomTickContext& context);
 
     // The behaviour table, indexed by block: a null entry means the block has no
     // random tick. This replaces the switch this used to be — 26.1 dispatches
@@ -128,6 +131,7 @@ class WorldSimulation final {
         entries[world::blockId(world::Block::Farmland).index()] = &randomTickFarmlandEntry;
         entries[world::blockId(world::Block::SugarCane).index()] = &randomTickSugarCaneEntry;
         entries[world::blockId(world::Block::Fire).index()] = &randomTickFireEntry;
+        entries[world::blockId(world::Block::Snow).index()] = &randomTickSnowLayerEntry;
         return entries;
     }();
 
@@ -423,6 +427,11 @@ class WorldSimulation final {
     // asking a clock or the weather what is going on — 26.1 routes the same
     // facts through EnvironmentAttributes for the same reason.
     void setEnvironment(const EnvironmentSnapshot& environment) { environment_ = environment; }
+    // MDL-3: `/gamerule max_snow_accumulation_height`. 0 stops snow settling
+    // without touching the freezing half of precipitationTick; 8 is the ceiling
+    // the LAYERS property holds. Vanilla's default is 1.
+    void setMaximumSnowAccumulation(int layers) { maximumSnowAccumulation_ = layers; }
+    [[nodiscard]] int maximumSnowAccumulation() const { return maximumSnowAccumulation_; }
     [[nodiscard]] const EnvironmentSnapshot& environment() const { return environment_; }
     [[nodiscard]] std::size_t lastTreeGrowthsProcessed() const {
         return lastTreeGrowthsProcessed_;
@@ -496,6 +505,9 @@ class WorldSimulation final {
     // The burn budget is shared with the crop-write budget so a wildfire cannot
     // flood one tick's change pipeline. Spread targets are chosen with the
     // deterministic random-tick LCG (nextBounded), never a wall clock.
+    // MDL-3: the snow layer's melt.
+    void randomTickSnowLayer(world::World& world, SimulationPosition position,
+                             std::vector<BlockChange>& changes);
     void randomTickFire(world::World& world, SimulationPosition position,
                         std::vector<BlockChange>& changes);
     // CropsBlock#getAvailableMoisture: how much the farmland under and around a
@@ -550,6 +562,22 @@ class WorldSimulation final {
         std::vector<BlockChange>& changes,
         std::uint8_t fluidLevel = 0U,
         bool immediateRenderUpdate = false);
+    // MDL-3: the same write, but for a state the caller has already built —
+    // a snow layer's LAYERS cannot be expressed as (block, orientation, fluid).
+    // setSimulatedBlock is now a thin wrapper over this.
+    bool setSimulatedState(
+        world::World& world,
+        SimulationPosition position,
+        world::BlockState state,
+        std::vector<BlockChange>& changes,
+        bool immediateRenderUpdate = false);
+
+    // MDL-3: the two halves of vanilla's tickPrecipitation, split so each keeps
+    // its own early exits. Freezing was the only half this build had.
+    void freezeSurfaceWater(world::World& world, int worldX, int surfaceY, int worldZ,
+                            world::gen::Biome biome, std::vector<BlockChange>& changes);
+    void accumulateSnow(world::World& world, int worldX, int surfaceY, int worldZ,
+                        world::gen::Biome biome, std::vector<BlockChange>& changes);
 
     // Runs one redstone component's due tick: applies its state change through
     // the mutation service (flags 3, so the change fans out to neighbours and
@@ -589,6 +617,7 @@ class WorldSimulation final {
     // (Java's Level.blockEvent). This is the W-2 queue's first live consumer.
     BlockEventQueue blockEvents_;
     EnvironmentSnapshot environment_{};
+    int maximumSnowAccumulation_ = 1;
     std::uint32_t leafRandomState_ = 0x2545F491U;
     int randomTickSpeed_ = 3;
     // The simulation-distance window random ticks are confined to, in chunks

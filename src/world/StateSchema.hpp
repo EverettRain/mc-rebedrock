@@ -98,6 +98,11 @@ enum class StateProperty : std::uint8_t {
     // exists because the mesher cannot see neighbours (it has a Block, not a
     // BlockState of the cells around it) and because JE saves it by name.
     Locked,
+    // MDL-3: SnowLayerBlock.LAYERS — 26.1 spells it 1..8, this build stores it
+    // as 0..7 so the block's default state (every axis at zero) is vanilla's
+    // one-layer default without a special case. `BlockState::layers()` adds the
+    // one back; nothing else should read the raw value.
+    Layers,
     Count,
 };
 
@@ -158,6 +163,11 @@ inline constexpr std::size_t kStatePropertyCount = static_cast<std::size_t>(Stat
         return "in_wall";
     case StateProperty::Locked:
         return "locked";
+    case StateProperty::Layers:
+        // Same name and same meaning as vanilla's, but this build's value is
+        // one less (0..7 vs 1..8) — the JC bridge's business, registered in
+        // compat/VanillaMapping.hpp, not the parser's.
+        return "layers";
     case StateProperty::Count:
         break;
     }

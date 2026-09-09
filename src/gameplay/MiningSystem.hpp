@@ -69,9 +69,13 @@ struct MinedDrops final {
 // GetDropsFn). The tool-adequacy gate (canHarvestBlock) is the caller's, not the
 // handler's, so a handler only rolls loot; `randomState`/`age`/`doubledSlab`
 // carry the same meaning they do for minedDrops below.
+// MDL-3 note: `age`, `doubledSlab` and `layers` are three narrow projections of
+// the broken block's state. A fourth one should stop this pattern and pass the
+// BlockState itself — the only reason it is not done here is that it would
+// touch every caller and every drop test, which is not this task's scope.
 using BlockDropFn =
     MinedDrops (*)(world::Block block, const ItemStack& tool, std::uint64_t& randomState, int age,
-                   bool doubledSlab);
+                   bool doubledSlab, int layers);
 
 // The drop handler for `block`: its own if it has special loot, else the default
 // (loot = the block item itself when the block dropsItem). This is what the
@@ -85,9 +89,10 @@ using BlockDropFn =
 // `age` is the crop's AGE property, 0-7, read off the state before the crop was
 // removed; the crop loot tables roll against it. `doubledSlab` is set when the
 // removed state was a double slab, which drops two slab items instead of one.
+// `layers` is the snow layer's LAYERS (1..8), which multiplies its snowball drop.
 [[nodiscard]] MinedDrops minedDrops(
     world::Block block, const ItemStack& tool, std::uint64_t& randomState, int age = 0,
-    bool doubledSlab = false);
+    bool doubledSlab = false, int layers = 1);
 
 // XP-2: an inclusive [minimum, maximum] experience roll, mirroring the vanilla
 // OreBlock.xpRange each ore states directly on the block (not the loot table —

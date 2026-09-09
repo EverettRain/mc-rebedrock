@@ -604,6 +604,12 @@ enum class Block : std::uint16_t {
     GreenStainedGlassPane,
     RedStainedGlassPane,
     BlackStainedGlassPane,
+    // MDL-3: the snow layer — `minecraft:snow`, the one that falls and stacks,
+    // as distinct from SnowBlock (`minecraft:snow_block`) which this roster has
+    // had all along. Its absence is why nothing has ever settled on the ground
+    // in a snowy biome (WorldSimulation's precipitationTick says so in a
+    // comment: only the freezing half of vanilla's tickPrecipitation is there).
+    Snow,
     // MDL-2: the 16 carpets. A Cube of height 1/16 on any non-air cell — the
     // cheapest whole family in the roster, and the one village floors need.
     WhiteCarpet,
@@ -778,6 +784,13 @@ enum class BlockModel : std::uint8_t {
     // would report full light dampening. It meshes through the shared shaped-
     // block path, whose Column branch is the same one the pressure plate takes.
     Carpet,
+    // MDL-3: SnowLayerBlock — a Column whose height is the LAYERS property,
+    // `Block.column(16, 0, layers * 2)`. Its own model rather than a parameter
+    // on Carpet because the height is state-driven, and because its collision
+    // shape is one layer SHORTER than what it draws (26.1 getCollisionShape
+    // reads SHAPES[layers - 1]): a single layer of snow is walked over without
+    // stepping up at all.
+    Layered,
 };
 
 // MDL-1: which row of the CrossCollision parameter table a block reads. Only
@@ -828,6 +841,7 @@ enum class ConnectFamily : std::uint8_t {
     case BlockModel::Wall:
     case BlockModel::CrossCollision:
     case BlockModel::Carpet:
+    case BlockModel::Layered:
         return true;
     case BlockModel::Cube:
     case BlockModel::Cross:
@@ -940,6 +954,11 @@ enum class BlockSupport : std::uint8_t {
     // below, sturdy or not (a carpet sits on a slab, a fence post, snow...).
     // Weaker than Ground, which demands a sturdy upward face.
     AnyBelow,
+    // MDL-3: SnowLayerBlock#canSurvive — a full upward collision face below, or
+    // another snow layer below that is already at its full eight. Its own
+    // category because of that second clause: no other support shape asks about
+    // the *state* of the block below, only its identity or its face.
+    SnowLayer,
     // AR-CX4-b: FireBlock#canSurvive — fire survives on a sturdy face below it
     // (the ordinary case: fire lit on the top of a solid block) or when at least
     // one of its six neighbours is flammable (fire clinging to a wooden wall).
@@ -1869,6 +1888,17 @@ class BlockProperties final {
     // occludes, and is opaque (wool is).
     [[nodiscard]] constexpr BlockProperties carpet() const {
         return model(BlockModel::Carpet).noOcclusion().support(BlockSupport::AnyBelow);
+    }
+
+    // MDL-3: SnowLayerBlock — the Layered model, its eight-value LAYERS axis and
+    // the support rule that reads the block below's state. Never occludes (even
+    // eight layers is a full cube only by accident of height, and vanilla's
+    // useShapeForLightOcclusion means the shape answers, not the block).
+    [[nodiscard]] constexpr BlockProperties snowLayer() const {
+        return model(BlockModel::Layered)
+            .noOcclusion()
+            .support(BlockSupport::SnowLayer)
+            .state(StateProperty::Layers, 8U);
     }
 
     // MDL-1: Block#isExceptionForConnection — this block never satisfies the
@@ -4154,6 +4184,13 @@ inline constexpr std::array<BlockDefinition, static_cast<std::size_t>(Block::Cou
         // 上下缘用 block/glass_pane_top（整条 255）——按 alpha 裁出来就是边框加缘条。
         .opaquePartsCastShadow()
         .creative(CreativeCategory::ColoredBlocks),
+    // MDL-3: the snow layer. strength 0.1 like vanilla's; it needs a shovel to
+    // yield anything, which the vanilla `mineable/shovel` tag already says.
+    BlockProperties::of(Block::Snow, "snow", "Snow")
+        .texture("snow")
+        .strength(0.1F)
+        .snowLayer()
+        .creative(CreativeCategory::NaturalBlocks),
     // MDL-2: carpets. 26.1 CarpetBlock is `Block.column(16, 0, 1)` on the wool
     // texture, strength 0.1, and survives on any non-air cell below.
     BlockProperties::of(Block::WhiteCarpet, "white_carpet", "White Carpet")
