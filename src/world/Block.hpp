@@ -3587,6 +3587,12 @@ inline constexpr std::array<BlockDefinition, static_cast<std::size_t>(Block::Cou
         // RN-8e: StainedGlassBlock is a HalfTransparentBlock (skipRendering vs
         // the same colour) and Blocks.java:2944+ calls noOcclusion().
         .skipsRenderingAgainstSelf().noOcclusion()
+        // RN-51：染色玻璃也投它边框的影子。RN-37 当初把它排除在外，理由写的是
+        // 「纹理整片不透明，投出来是一个黑方块」——**那是错的**。实测 26.1 的
+        // white_stained_glass.png：alpha 只有三个值，边框 163、玻璃面 102、
+        // 高光 155，而阴影通道的阈值是 0.5（127.5）。也就是说这张纹理本来就是
+        // cutout 形态，按 alpha 裁出来的正好只有那一圈边框。
+        .opaquePartsCastShadow()
         .creative(CreativeCategory::ColoredBlocks),
     BlockProperties::of(Block::OrangeStainedGlass, "orange_stained_glass", "Orange Stained Glass")
         .texture("orange_stained_glass").strength(0.3F).renderLayer(BlockRenderLayer::Translucent)
@@ -3594,6 +3600,12 @@ inline constexpr std::array<BlockDefinition, static_cast<std::size_t>(Block::Cou
         // RN-8e: StainedGlassBlock is a HalfTransparentBlock (skipRendering vs
         // the same colour) and Blocks.java:2944+ calls noOcclusion().
         .skipsRenderingAgainstSelf().noOcclusion()
+        // RN-51：染色玻璃也投它边框的影子。RN-37 当初把它排除在外，理由写的是
+        // 「纹理整片不透明，投出来是一个黑方块」——**那是错的**。实测 26.1 的
+        // white_stained_glass.png：alpha 只有三个值，边框 163、玻璃面 102、
+        // 高光 155，而阴影通道的阈值是 0.5（127.5）。也就是说这张纹理本来就是
+        // cutout 形态，按 alpha 裁出来的正好只有那一圈边框。
+        .opaquePartsCastShadow()
         .creative(CreativeCategory::ColoredBlocks),
     BlockProperties::of(Block::MagentaStainedGlass, "magenta_stained_glass", "Magenta Stained Glass")
         .texture("magenta_stained_glass").strength(0.3F).renderLayer(BlockRenderLayer::Translucent)
@@ -3601,6 +3613,12 @@ inline constexpr std::array<BlockDefinition, static_cast<std::size_t>(Block::Cou
         // RN-8e: StainedGlassBlock is a HalfTransparentBlock (skipRendering vs
         // the same colour) and Blocks.java:2944+ calls noOcclusion().
         .skipsRenderingAgainstSelf().noOcclusion()
+        // RN-51：染色玻璃也投它边框的影子。RN-37 当初把它排除在外，理由写的是
+        // 「纹理整片不透明，投出来是一个黑方块」——**那是错的**。实测 26.1 的
+        // white_stained_glass.png：alpha 只有三个值，边框 163、玻璃面 102、
+        // 高光 155，而阴影通道的阈值是 0.5（127.5）。也就是说这张纹理本来就是
+        // cutout 形态，按 alpha 裁出来的正好只有那一圈边框。
+        .opaquePartsCastShadow()
         .creative(CreativeCategory::ColoredBlocks),
     BlockProperties::of(Block::LightBlueStainedGlass, "light_blue_stained_glass",
                         "Light Blue Stained Glass")
@@ -3609,6 +3627,12 @@ inline constexpr std::array<BlockDefinition, static_cast<std::size_t>(Block::Cou
         // RN-8e: StainedGlassBlock is a HalfTransparentBlock (skipRendering vs
         // the same colour) and Blocks.java:2944+ calls noOcclusion().
         .skipsRenderingAgainstSelf().noOcclusion()
+        // RN-51：染色玻璃也投它边框的影子。RN-37 当初把它排除在外，理由写的是
+        // 「纹理整片不透明，投出来是一个黑方块」——**那是错的**。实测 26.1 的
+        // white_stained_glass.png：alpha 只有三个值，边框 163、玻璃面 102、
+        // 高光 155，而阴影通道的阈值是 0.5（127.5）。也就是说这张纹理本来就是
+        // cutout 形态，按 alpha 裁出来的正好只有那一圈边框。
+        .opaquePartsCastShadow()
         .creative(CreativeCategory::ColoredBlocks),
     BlockProperties::of(Block::YellowStainedGlass, "yellow_stained_glass", "Yellow Stained Glass")
         .texture("yellow_stained_glass").strength(0.3F).renderLayer(BlockRenderLayer::Translucent)
@@ -3616,6 +3640,12 @@ inline constexpr std::array<BlockDefinition, static_cast<std::size_t>(Block::Cou
         // RN-8e: StainedGlassBlock is a HalfTransparentBlock (skipRendering vs
         // the same colour) and Blocks.java:2944+ calls noOcclusion().
         .skipsRenderingAgainstSelf().noOcclusion()
+        // RN-51：染色玻璃也投它边框的影子。RN-37 当初把它排除在外，理由写的是
+        // 「纹理整片不透明，投出来是一个黑方块」——**那是错的**。实测 26.1 的
+        // white_stained_glass.png：alpha 只有三个值，边框 163、玻璃面 102、
+        // 高光 155，而阴影通道的阈值是 0.5（127.5）。也就是说这张纹理本来就是
+        // cutout 形态，按 alpha 裁出来的正好只有那一圈边框。
+        .opaquePartsCastShadow()
         .creative(CreativeCategory::ColoredBlocks),
     BlockProperties::of(Block::LimeStainedGlass, "lime_stained_glass", "Lime Stained Glass")
         .texture("lime_stained_glass").strength(0.3F).renderLayer(BlockRenderLayer::Translucent)
@@ -3623,6 +3653,12 @@ inline constexpr std::array<BlockDefinition, static_cast<std::size_t>(Block::Cou
         // RN-8e: StainedGlassBlock is a HalfTransparentBlock (skipRendering vs
         // the same colour) and Blocks.java:2944+ calls noOcclusion().
         .skipsRenderingAgainstSelf().noOcclusion()
+        // RN-51：染色玻璃也投它边框的影子。RN-37 当初把它排除在外，理由写的是
+        // 「纹理整片不透明，投出来是一个黑方块」——**那是错的**。实测 26.1 的
+        // white_stained_glass.png：alpha 只有三个值，边框 163、玻璃面 102、
+        // 高光 155，而阴影通道的阈值是 0.5（127.5）。也就是说这张纹理本来就是
+        // cutout 形态，按 alpha 裁出来的正好只有那一圈边框。
+        .opaquePartsCastShadow()
         .creative(CreativeCategory::ColoredBlocks),
     BlockProperties::of(Block::PinkStainedGlass, "pink_stained_glass", "Pink Stained Glass")
         .texture("pink_stained_glass").strength(0.3F).renderLayer(BlockRenderLayer::Translucent)
@@ -3630,6 +3666,12 @@ inline constexpr std::array<BlockDefinition, static_cast<std::size_t>(Block::Cou
         // RN-8e: StainedGlassBlock is a HalfTransparentBlock (skipRendering vs
         // the same colour) and Blocks.java:2944+ calls noOcclusion().
         .skipsRenderingAgainstSelf().noOcclusion()
+        // RN-51：染色玻璃也投它边框的影子。RN-37 当初把它排除在外，理由写的是
+        // 「纹理整片不透明，投出来是一个黑方块」——**那是错的**。实测 26.1 的
+        // white_stained_glass.png：alpha 只有三个值，边框 163、玻璃面 102、
+        // 高光 155，而阴影通道的阈值是 0.5（127.5）。也就是说这张纹理本来就是
+        // cutout 形态，按 alpha 裁出来的正好只有那一圈边框。
+        .opaquePartsCastShadow()
         .creative(CreativeCategory::ColoredBlocks),
     BlockProperties::of(Block::GrayStainedGlass, "gray_stained_glass", "Gray Stained Glass")
         .texture("gray_stained_glass").strength(0.3F).renderLayer(BlockRenderLayer::Translucent)
@@ -3637,6 +3679,12 @@ inline constexpr std::array<BlockDefinition, static_cast<std::size_t>(Block::Cou
         // RN-8e: StainedGlassBlock is a HalfTransparentBlock (skipRendering vs
         // the same colour) and Blocks.java:2944+ calls noOcclusion().
         .skipsRenderingAgainstSelf().noOcclusion()
+        // RN-51：染色玻璃也投它边框的影子。RN-37 当初把它排除在外，理由写的是
+        // 「纹理整片不透明，投出来是一个黑方块」——**那是错的**。实测 26.1 的
+        // white_stained_glass.png：alpha 只有三个值，边框 163、玻璃面 102、
+        // 高光 155，而阴影通道的阈值是 0.5（127.5）。也就是说这张纹理本来就是
+        // cutout 形态，按 alpha 裁出来的正好只有那一圈边框。
+        .opaquePartsCastShadow()
         .creative(CreativeCategory::ColoredBlocks),
     BlockProperties::of(Block::LightGrayStainedGlass, "light_gray_stained_glass",
                         "Light Gray Stained Glass")
@@ -3645,6 +3693,12 @@ inline constexpr std::array<BlockDefinition, static_cast<std::size_t>(Block::Cou
         // RN-8e: StainedGlassBlock is a HalfTransparentBlock (skipRendering vs
         // the same colour) and Blocks.java:2944+ calls noOcclusion().
         .skipsRenderingAgainstSelf().noOcclusion()
+        // RN-51：染色玻璃也投它边框的影子。RN-37 当初把它排除在外，理由写的是
+        // 「纹理整片不透明，投出来是一个黑方块」——**那是错的**。实测 26.1 的
+        // white_stained_glass.png：alpha 只有三个值，边框 163、玻璃面 102、
+        // 高光 155，而阴影通道的阈值是 0.5（127.5）。也就是说这张纹理本来就是
+        // cutout 形态，按 alpha 裁出来的正好只有那一圈边框。
+        .opaquePartsCastShadow()
         .creative(CreativeCategory::ColoredBlocks),
     BlockProperties::of(Block::CyanStainedGlass, "cyan_stained_glass", "Cyan Stained Glass")
         .texture("cyan_stained_glass").strength(0.3F).renderLayer(BlockRenderLayer::Translucent)
@@ -3652,6 +3706,12 @@ inline constexpr std::array<BlockDefinition, static_cast<std::size_t>(Block::Cou
         // RN-8e: StainedGlassBlock is a HalfTransparentBlock (skipRendering vs
         // the same colour) and Blocks.java:2944+ calls noOcclusion().
         .skipsRenderingAgainstSelf().noOcclusion()
+        // RN-51：染色玻璃也投它边框的影子。RN-37 当初把它排除在外，理由写的是
+        // 「纹理整片不透明，投出来是一个黑方块」——**那是错的**。实测 26.1 的
+        // white_stained_glass.png：alpha 只有三个值，边框 163、玻璃面 102、
+        // 高光 155，而阴影通道的阈值是 0.5（127.5）。也就是说这张纹理本来就是
+        // cutout 形态，按 alpha 裁出来的正好只有那一圈边框。
+        .opaquePartsCastShadow()
         .creative(CreativeCategory::ColoredBlocks),
     BlockProperties::of(Block::PurpleStainedGlass, "purple_stained_glass", "Purple Stained Glass")
         .texture("purple_stained_glass").strength(0.3F).renderLayer(BlockRenderLayer::Translucent)
@@ -3659,6 +3719,12 @@ inline constexpr std::array<BlockDefinition, static_cast<std::size_t>(Block::Cou
         // RN-8e: StainedGlassBlock is a HalfTransparentBlock (skipRendering vs
         // the same colour) and Blocks.java:2944+ calls noOcclusion().
         .skipsRenderingAgainstSelf().noOcclusion()
+        // RN-51：染色玻璃也投它边框的影子。RN-37 当初把它排除在外，理由写的是
+        // 「纹理整片不透明，投出来是一个黑方块」——**那是错的**。实测 26.1 的
+        // white_stained_glass.png：alpha 只有三个值，边框 163、玻璃面 102、
+        // 高光 155，而阴影通道的阈值是 0.5（127.5）。也就是说这张纹理本来就是
+        // cutout 形态，按 alpha 裁出来的正好只有那一圈边框。
+        .opaquePartsCastShadow()
         .creative(CreativeCategory::ColoredBlocks),
     BlockProperties::of(Block::BlueStainedGlass, "blue_stained_glass", "Blue Stained Glass")
         .texture("blue_stained_glass").strength(0.3F).renderLayer(BlockRenderLayer::Translucent)
@@ -3666,6 +3732,12 @@ inline constexpr std::array<BlockDefinition, static_cast<std::size_t>(Block::Cou
         // RN-8e: StainedGlassBlock is a HalfTransparentBlock (skipRendering vs
         // the same colour) and Blocks.java:2944+ calls noOcclusion().
         .skipsRenderingAgainstSelf().noOcclusion()
+        // RN-51：染色玻璃也投它边框的影子。RN-37 当初把它排除在外，理由写的是
+        // 「纹理整片不透明，投出来是一个黑方块」——**那是错的**。实测 26.1 的
+        // white_stained_glass.png：alpha 只有三个值，边框 163、玻璃面 102、
+        // 高光 155，而阴影通道的阈值是 0.5（127.5）。也就是说这张纹理本来就是
+        // cutout 形态，按 alpha 裁出来的正好只有那一圈边框。
+        .opaquePartsCastShadow()
         .creative(CreativeCategory::ColoredBlocks),
     BlockProperties::of(Block::BrownStainedGlass, "brown_stained_glass", "Brown Stained Glass")
         .texture("brown_stained_glass").strength(0.3F).renderLayer(BlockRenderLayer::Translucent)
@@ -3673,6 +3745,12 @@ inline constexpr std::array<BlockDefinition, static_cast<std::size_t>(Block::Cou
         // RN-8e: StainedGlassBlock is a HalfTransparentBlock (skipRendering vs
         // the same colour) and Blocks.java:2944+ calls noOcclusion().
         .skipsRenderingAgainstSelf().noOcclusion()
+        // RN-51：染色玻璃也投它边框的影子。RN-37 当初把它排除在外，理由写的是
+        // 「纹理整片不透明，投出来是一个黑方块」——**那是错的**。实测 26.1 的
+        // white_stained_glass.png：alpha 只有三个值，边框 163、玻璃面 102、
+        // 高光 155，而阴影通道的阈值是 0.5（127.5）。也就是说这张纹理本来就是
+        // cutout 形态，按 alpha 裁出来的正好只有那一圈边框。
+        .opaquePartsCastShadow()
         .creative(CreativeCategory::ColoredBlocks),
     BlockProperties::of(Block::GreenStainedGlass, "green_stained_glass", "Green Stained Glass")
         .texture("green_stained_glass").strength(0.3F).renderLayer(BlockRenderLayer::Translucent)
@@ -3680,6 +3758,12 @@ inline constexpr std::array<BlockDefinition, static_cast<std::size_t>(Block::Cou
         // RN-8e: StainedGlassBlock is a HalfTransparentBlock (skipRendering vs
         // the same colour) and Blocks.java:2944+ calls noOcclusion().
         .skipsRenderingAgainstSelf().noOcclusion()
+        // RN-51：染色玻璃也投它边框的影子。RN-37 当初把它排除在外，理由写的是
+        // 「纹理整片不透明，投出来是一个黑方块」——**那是错的**。实测 26.1 的
+        // white_stained_glass.png：alpha 只有三个值，边框 163、玻璃面 102、
+        // 高光 155，而阴影通道的阈值是 0.5（127.5）。也就是说这张纹理本来就是
+        // cutout 形态，按 alpha 裁出来的正好只有那一圈边框。
+        .opaquePartsCastShadow()
         .creative(CreativeCategory::ColoredBlocks),
     BlockProperties::of(Block::RedStainedGlass, "red_stained_glass", "Red Stained Glass")
         .texture("red_stained_glass").strength(0.3F).renderLayer(BlockRenderLayer::Translucent)
@@ -3687,6 +3771,12 @@ inline constexpr std::array<BlockDefinition, static_cast<std::size_t>(Block::Cou
         // RN-8e: StainedGlassBlock is a HalfTransparentBlock (skipRendering vs
         // the same colour) and Blocks.java:2944+ calls noOcclusion().
         .skipsRenderingAgainstSelf().noOcclusion()
+        // RN-51：染色玻璃也投它边框的影子。RN-37 当初把它排除在外，理由写的是
+        // 「纹理整片不透明，投出来是一个黑方块」——**那是错的**。实测 26.1 的
+        // white_stained_glass.png：alpha 只有三个值，边框 163、玻璃面 102、
+        // 高光 155，而阴影通道的阈值是 0.5（127.5）。也就是说这张纹理本来就是
+        // cutout 形态，按 alpha 裁出来的正好只有那一圈边框。
+        .opaquePartsCastShadow()
         .creative(CreativeCategory::ColoredBlocks),
     BlockProperties::of(Block::BlackStainedGlass, "black_stained_glass", "Black Stained Glass")
         .texture("black_stained_glass").strength(0.3F).renderLayer(BlockRenderLayer::Translucent)
@@ -3694,6 +3784,12 @@ inline constexpr std::array<BlockDefinition, static_cast<std::size_t>(Block::Cou
         // RN-8e: StainedGlassBlock is a HalfTransparentBlock (skipRendering vs
         // the same colour) and Blocks.java:2944+ calls noOcclusion().
         .skipsRenderingAgainstSelf().noOcclusion()
+        // RN-51：染色玻璃也投它边框的影子。RN-37 当初把它排除在外，理由写的是
+        // 「纹理整片不透明，投出来是一个黑方块」——**那是错的**。实测 26.1 的
+        // white_stained_glass.png：alpha 只有三个值，边框 163、玻璃面 102、
+        // 高光 155，而阴影通道的阈值是 0.5（127.5）。也就是说这张纹理本来就是
+        // cutout 形态，按 alpha 裁出来的正好只有那一圈边框。
+        .opaquePartsCastShadow()
         .creative(CreativeCategory::ColoredBlocks),
     // Misc full cubes.
     BlockProperties::of(Block::PackedIce, "packed_ice", "Packed Ice")
@@ -3910,102 +4006,153 @@ inline constexpr std::array<BlockDefinition, static_cast<std::size_t>(Block::Cou
         .texture("glass_pane_top", "glass", "glass_pane_top")
         .strength(0.3F).pane().silkTouchOnly()
         .renderLayer(BlockRenderLayer::Translucent).transparentShade()
+        // RN-51：玻璃板同理。宽面用 block/glass（边框 alpha 255、玻璃面 0），
+        // 上下缘用 block/glass_pane_top（整条 255）——按 alpha 裁出来就是边框加缘条。
+        .opaquePartsCastShadow()
         .creative(CreativeCategory::ColoredBlocks),
     BlockProperties::of(Block::WhiteStainedGlassPane, "white_stained_glass_pane",
                         "White Stained Glass Pane")
         .texture("white_stained_glass_pane_top", "white_stained_glass", "white_stained_glass_pane_top")
         .strength(0.3F).pane().silkTouchOnly()
         .renderLayer(BlockRenderLayer::Translucent).transparentShade()
+        // RN-51：玻璃板同理。宽面用 block/glass（边框 alpha 255、玻璃面 0），
+        // 上下缘用 block/glass_pane_top（整条 255）——按 alpha 裁出来就是边框加缘条。
+        .opaquePartsCastShadow()
         .creative(CreativeCategory::ColoredBlocks),
     BlockProperties::of(Block::OrangeStainedGlassPane, "orange_stained_glass_pane",
                         "Orange Stained Glass Pane")
         .texture("orange_stained_glass_pane_top", "orange_stained_glass", "orange_stained_glass_pane_top")
         .strength(0.3F).pane().silkTouchOnly()
         .renderLayer(BlockRenderLayer::Translucent).transparentShade()
+        // RN-51：玻璃板同理。宽面用 block/glass（边框 alpha 255、玻璃面 0），
+        // 上下缘用 block/glass_pane_top（整条 255）——按 alpha 裁出来就是边框加缘条。
+        .opaquePartsCastShadow()
         .creative(CreativeCategory::ColoredBlocks),
     BlockProperties::of(Block::MagentaStainedGlassPane, "magenta_stained_glass_pane",
                         "Magenta Stained Glass Pane")
         .texture("magenta_stained_glass_pane_top", "magenta_stained_glass", "magenta_stained_glass_pane_top")
         .strength(0.3F).pane().silkTouchOnly()
         .renderLayer(BlockRenderLayer::Translucent).transparentShade()
+        // RN-51：玻璃板同理。宽面用 block/glass（边框 alpha 255、玻璃面 0），
+        // 上下缘用 block/glass_pane_top（整条 255）——按 alpha 裁出来就是边框加缘条。
+        .opaquePartsCastShadow()
         .creative(CreativeCategory::ColoredBlocks),
     BlockProperties::of(Block::LightBlueStainedGlassPane, "light_blue_stained_glass_pane",
                         "Light Blue Stained Glass Pane")
         .texture("light_blue_stained_glass_pane_top", "light_blue_stained_glass", "light_blue_stained_glass_pane_top")
         .strength(0.3F).pane().silkTouchOnly()
         .renderLayer(BlockRenderLayer::Translucent).transparentShade()
+        // RN-51：玻璃板同理。宽面用 block/glass（边框 alpha 255、玻璃面 0），
+        // 上下缘用 block/glass_pane_top（整条 255）——按 alpha 裁出来就是边框加缘条。
+        .opaquePartsCastShadow()
         .creative(CreativeCategory::ColoredBlocks),
     BlockProperties::of(Block::YellowStainedGlassPane, "yellow_stained_glass_pane",
                         "Yellow Stained Glass Pane")
         .texture("yellow_stained_glass_pane_top", "yellow_stained_glass", "yellow_stained_glass_pane_top")
         .strength(0.3F).pane().silkTouchOnly()
         .renderLayer(BlockRenderLayer::Translucent).transparentShade()
+        // RN-51：玻璃板同理。宽面用 block/glass（边框 alpha 255、玻璃面 0），
+        // 上下缘用 block/glass_pane_top（整条 255）——按 alpha 裁出来就是边框加缘条。
+        .opaquePartsCastShadow()
         .creative(CreativeCategory::ColoredBlocks),
     BlockProperties::of(Block::LimeStainedGlassPane, "lime_stained_glass_pane",
                         "Lime Stained Glass Pane")
         .texture("lime_stained_glass_pane_top", "lime_stained_glass", "lime_stained_glass_pane_top")
         .strength(0.3F).pane().silkTouchOnly()
         .renderLayer(BlockRenderLayer::Translucent).transparentShade()
+        // RN-51：玻璃板同理。宽面用 block/glass（边框 alpha 255、玻璃面 0），
+        // 上下缘用 block/glass_pane_top（整条 255）——按 alpha 裁出来就是边框加缘条。
+        .opaquePartsCastShadow()
         .creative(CreativeCategory::ColoredBlocks),
     BlockProperties::of(Block::PinkStainedGlassPane, "pink_stained_glass_pane",
                         "Pink Stained Glass Pane")
         .texture("pink_stained_glass_pane_top", "pink_stained_glass", "pink_stained_glass_pane_top")
         .strength(0.3F).pane().silkTouchOnly()
         .renderLayer(BlockRenderLayer::Translucent).transparentShade()
+        // RN-51：玻璃板同理。宽面用 block/glass（边框 alpha 255、玻璃面 0），
+        // 上下缘用 block/glass_pane_top（整条 255）——按 alpha 裁出来就是边框加缘条。
+        .opaquePartsCastShadow()
         .creative(CreativeCategory::ColoredBlocks),
     BlockProperties::of(Block::GrayStainedGlassPane, "gray_stained_glass_pane",
                         "Gray Stained Glass Pane")
         .texture("gray_stained_glass_pane_top", "gray_stained_glass", "gray_stained_glass_pane_top")
         .strength(0.3F).pane().silkTouchOnly()
         .renderLayer(BlockRenderLayer::Translucent).transparentShade()
+        // RN-51：玻璃板同理。宽面用 block/glass（边框 alpha 255、玻璃面 0），
+        // 上下缘用 block/glass_pane_top（整条 255）——按 alpha 裁出来就是边框加缘条。
+        .opaquePartsCastShadow()
         .creative(CreativeCategory::ColoredBlocks),
     BlockProperties::of(Block::LightGrayStainedGlassPane, "light_gray_stained_glass_pane",
                         "Light Gray Stained Glass Pane")
         .texture("light_gray_stained_glass_pane_top", "light_gray_stained_glass", "light_gray_stained_glass_pane_top")
         .strength(0.3F).pane().silkTouchOnly()
         .renderLayer(BlockRenderLayer::Translucent).transparentShade()
+        // RN-51：玻璃板同理。宽面用 block/glass（边框 alpha 255、玻璃面 0），
+        // 上下缘用 block/glass_pane_top（整条 255）——按 alpha 裁出来就是边框加缘条。
+        .opaquePartsCastShadow()
         .creative(CreativeCategory::ColoredBlocks),
     BlockProperties::of(Block::CyanStainedGlassPane, "cyan_stained_glass_pane",
                         "Cyan Stained Glass Pane")
         .texture("cyan_stained_glass_pane_top", "cyan_stained_glass", "cyan_stained_glass_pane_top")
         .strength(0.3F).pane().silkTouchOnly()
         .renderLayer(BlockRenderLayer::Translucent).transparentShade()
+        // RN-51：玻璃板同理。宽面用 block/glass（边框 alpha 255、玻璃面 0），
+        // 上下缘用 block/glass_pane_top（整条 255）——按 alpha 裁出来就是边框加缘条。
+        .opaquePartsCastShadow()
         .creative(CreativeCategory::ColoredBlocks),
     BlockProperties::of(Block::PurpleStainedGlassPane, "purple_stained_glass_pane",
                         "Purple Stained Glass Pane")
         .texture("purple_stained_glass_pane_top", "purple_stained_glass", "purple_stained_glass_pane_top")
         .strength(0.3F).pane().silkTouchOnly()
         .renderLayer(BlockRenderLayer::Translucent).transparentShade()
+        // RN-51：玻璃板同理。宽面用 block/glass（边框 alpha 255、玻璃面 0），
+        // 上下缘用 block/glass_pane_top（整条 255）——按 alpha 裁出来就是边框加缘条。
+        .opaquePartsCastShadow()
         .creative(CreativeCategory::ColoredBlocks),
     BlockProperties::of(Block::BlueStainedGlassPane, "blue_stained_glass_pane",
                         "Blue Stained Glass Pane")
         .texture("blue_stained_glass_pane_top", "blue_stained_glass", "blue_stained_glass_pane_top")
         .strength(0.3F).pane().silkTouchOnly()
         .renderLayer(BlockRenderLayer::Translucent).transparentShade()
+        // RN-51：玻璃板同理。宽面用 block/glass（边框 alpha 255、玻璃面 0），
+        // 上下缘用 block/glass_pane_top（整条 255）——按 alpha 裁出来就是边框加缘条。
+        .opaquePartsCastShadow()
         .creative(CreativeCategory::ColoredBlocks),
     BlockProperties::of(Block::BrownStainedGlassPane, "brown_stained_glass_pane",
                         "Brown Stained Glass Pane")
         .texture("brown_stained_glass_pane_top", "brown_stained_glass", "brown_stained_glass_pane_top")
         .strength(0.3F).pane().silkTouchOnly()
         .renderLayer(BlockRenderLayer::Translucent).transparentShade()
+        // RN-51：玻璃板同理。宽面用 block/glass（边框 alpha 255、玻璃面 0），
+        // 上下缘用 block/glass_pane_top（整条 255）——按 alpha 裁出来就是边框加缘条。
+        .opaquePartsCastShadow()
         .creative(CreativeCategory::ColoredBlocks),
     BlockProperties::of(Block::GreenStainedGlassPane, "green_stained_glass_pane",
                         "Green Stained Glass Pane")
         .texture("green_stained_glass_pane_top", "green_stained_glass", "green_stained_glass_pane_top")
         .strength(0.3F).pane().silkTouchOnly()
         .renderLayer(BlockRenderLayer::Translucent).transparentShade()
+        // RN-51：玻璃板同理。宽面用 block/glass（边框 alpha 255、玻璃面 0），
+        // 上下缘用 block/glass_pane_top（整条 255）——按 alpha 裁出来就是边框加缘条。
+        .opaquePartsCastShadow()
         .creative(CreativeCategory::ColoredBlocks),
     BlockProperties::of(Block::RedStainedGlassPane, "red_stained_glass_pane",
                         "Red Stained Glass Pane")
         .texture("red_stained_glass_pane_top", "red_stained_glass", "red_stained_glass_pane_top")
         .strength(0.3F).pane().silkTouchOnly()
         .renderLayer(BlockRenderLayer::Translucent).transparentShade()
+        // RN-51：玻璃板同理。宽面用 block/glass（边框 alpha 255、玻璃面 0），
+        // 上下缘用 block/glass_pane_top（整条 255）——按 alpha 裁出来就是边框加缘条。
+        .opaquePartsCastShadow()
         .creative(CreativeCategory::ColoredBlocks),
     BlockProperties::of(Block::BlackStainedGlassPane, "black_stained_glass_pane",
                         "Black Stained Glass Pane")
         .texture("black_stained_glass_pane_top", "black_stained_glass", "black_stained_glass_pane_top")
         .strength(0.3F).pane().silkTouchOnly()
         .renderLayer(BlockRenderLayer::Translucent).transparentShade()
+        // RN-51：玻璃板同理。宽面用 block/glass（边框 alpha 255、玻璃面 0），
+        // 上下缘用 block/glass_pane_top（整条 255）——按 alpha 裁出来就是边框加缘条。
+        .opaquePartsCastShadow()
         .creative(CreativeCategory::ColoredBlocks),
     // MDL-2: carpets. 26.1 CarpetBlock is `Block.column(16, 0, 1)` on the wool
     // texture, strength 0.1, and survives on any non-air cell below.

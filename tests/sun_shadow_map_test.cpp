@@ -1399,9 +1399,20 @@ void checkThinPlaneBias() {
     // 薄片这一档靠**下标**传递（顶点格式没有空位），所以两张表一旦错位，植物会拿到
     // 另一个方向的法线，而症状是「草的亮度变了」，读源码看不出来。
     const std::filesystem::path shaderDir{MC_REBEDROCK_SHADER_SRC_DIR};
-    const std::string vertex = stripLineComments(readFile(shaderDir / "grass_block.vert"));
+    // RN-51：表搬进了共享 include——阴影通道也要读它（薄投射者侧对光时不投影）。
+    // 两份 GLSL 副本正是这条链子上反复出问题的形状，所以搬的时候合成了一份
+    const std::string vertex =
+        stripLineComments(readFile(shaderDir / "include" / "vertex_normals.glsl"));
     const auto from = vertex.find("vec3 kVertexNormals[");
-    REQUIRE(from != std::string::npos, "grass_block.vert must still declare the normal table");
+    REQUIRE(from != std::string::npos, "the shared include must still declare the normal table");
+    // 而两个消费者都得走那一份，不许自己再抄
+    for (const char* consumer : {"grass_block.vert", "shadow.vert"}) {
+        const std::string source = stripLineComments(readFile(shaderDir / consumer));
+        REQUIRE(source.find("#include \"include/vertex_normals.glsl\"") != std::string::npos,
+                std::string{consumer} + " must take the normal table from the shared include");
+        REQUIRE(source.find("vec3 kVertexNormals[") == std::string::npos,
+                std::string{consumer} + " must not carry its own copy of the table");
+    }
     const auto to = vertex.find(");", from);
     REQUIRE(to != std::string::npos, "the normal table must be terminated");
     std::vector<float> numbers;
@@ -1778,6 +1789,52 @@ void checkNearDistanceOption() {
 
 // RN-49：级联**不混合**。RN-43 加过一条过渡带，本节点删了它——理由见 docs。
 // 这条测试因此从「带内两级各采一次」整个反过来：**任何时候都只采一级**。
+// RN-51：薄投射者侧对光时不投影。
+void checkThinCasterFacing() {
+    const std::filesystem::path shaderDir{MC_REBEDROCK_SHADER_SRC_DIR};
+    const std::string vertexSource = stripLineComments(readFile(shaderDir / "shadow.vert"));
+    const std::string cutoutSource =
+        stripLineComments(readFile(shaderDir / "shadow_cutout.frag"));
+
+    // ---- 1. 筛子必须在 ----------------------------------------------------
+    // 去掉它，玻璃侧对光的那些面又会往阴影图里渲一条随纹素通断的发丝影——
+    // 用户两次报的「阴影线条上的光斑」
+    REQUIRE(cutoutSource.find("fragmentCasterFacing < kThinCasterMinFacing") != std::string::npos,
+            "the cutout shadow pass must drop thin casters that are edge-on to the light");
+    REQUIRE(cutoutSource.find("discard") != std::string::npos, "and it must discard, not fade");
+
+    // ---- 2. 判据是 |N·L|，而光的方向从矩阵里取 -----------------------------
+    // 取自 uniform 或另算一次太阳方向，就又有一个会与真正用的那张矩阵脱钩的地方
+    REQUIRE(vertexSource.find("abs(dot(normal, lightForward))") != std::string::npos,
+            "facing must be the absolute cosine between the face and the light");
+    REQUIRE(vertexSource.find("shadow.lightViewProj[0][2]") != std::string::npos,
+            "the light direction must come from the matrix this draw actually projects with");
+
+    // ---- 3. 只筛薄投射者 --------------------------------------------------
+    // ★ 对不透明地形也筛就是咬掉它们的轮廓：一个实心方块侧对光的那一面虽然只贡献
+    //   一条边，但那条边是它的剪影
+    REQUIRE(vertexSource.find("shadow.sectionOrigin.w > 0.5 ?") != std::string::npos,
+            "the filter must be gated on the per-draw thin-caster flag");
+    REQUIRE(vertexSource.find(": 1.0;") != std::string::npos,
+            "and everything else must report full facing, so the filter never touches it");
+
+    // ---- 4. 阈值的量纲 ----------------------------------------------------
+    // 玻璃边框宽 1/16 格，挡光的投影宽度是 1/16 x |N·L|。阈值太小就筛不掉噪声，
+    // 太大就把正对光的边框也筛掉了
+    const auto at = cutoutSource.find("kThinCasterMinFacing = ");
+    REQUIRE(at != std::string::npos, "the threshold must be a named constant");
+    const float threshold =
+        std::stof(cutoutSource.substr(at + std::string_view{"kThinCasterMinFacing = "}.size()));
+    const float frameWidthBlocks = 1.0F / 16.0F;
+    const float nearTexel =
+        mc::render::sunShadowTexelSize(0, mc::render::kDefaultSunShadowNearDistance);
+    REQUIRE(frameWidthBlocks * threshold >= nearTexel * 2.0F,
+            "below the threshold the frame must project to under two near texels, or the filter "
+            "is letting noise through");
+    REQUIRE(threshold <= 0.4F,
+            "and it must stay far from face-on, or real frame shadows get dropped");
+}
+
 void checkCascadeBlend() {
     // 一次调用最多四个 tap。八个 = 有人又把两级混起来了，而那条路会把远段的漏采
     // 混进近段的实影：实机现象是「阴影线条上出现光斑」（玻璃边框宽 1/16 格，
@@ -1917,8 +1974,16 @@ void checkEntityWiring() {
     // alpha 测试），所以它们必须在一次绑定里画完；分两次调用是白切一次管线。
     // 顶点则与半透明层共用——两层的 vertexOffset 必须是同一个值，写错的症状是
     // 玻璃的影子长在别的方块上。
-    REQUIRE(record.find("{&GpuMesh::cutout, &GpuMesh::translucentShadow}") != std::string::npos,
+    // RN-50：近段那一级才画玻璃——远段一个纹素正好是边框宽度，渲出来的是噪声。
+    // 所以这一条钉的是「近段那一支带着玻璃层」，而不是「只有一份层表」
+    REQUIRE(record.find("&GpuMesh::cutout, &GpuMesh::translucentShadow}") != std::string::npos,
             "the glass shadow geometry must ride the cutout pipeline's single bind");
+    REQUIRE(record.find("cascade == 0 ?") != std::string::npos,
+            "and only in the cascade whose texel can resolve a one-sixteenth-block frame");
+    // RN-51：薄投射者的旗子必须真的按层给，不是常量——给成常量就等于对树叶、
+    // 草也筛一遍侧对光的面，那些是实心几何，筛掉会咬掉它们的轮廓
+    REQUIRE(record.find("layer == &GpuMesh::translucentShadow ? 1.0F : 0.0F") != std::string::npos,
+            "the thin-caster flag must be per layer");
     REQUIRE(record.find("mesh.translucentShadow.indexCount == 0U") != std::string::npos,
             "a section whose only caster is glass must still pass the caster filter");
     const auto upload = functionBody(world, "void uploadRenderMesh(");
@@ -2056,6 +2121,7 @@ int main() {
         checkThinPlaneBias();
         checkDirectWeight();
         checkCascadeBlend();
+        checkThinCasterFacing();
         checkNearDistanceOption();
         checkWaterTransmittance();
         checkBouncedLight();

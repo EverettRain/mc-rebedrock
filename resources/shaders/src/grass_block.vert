@@ -68,18 +68,7 @@ invariant gl_Position;
 const float kLocalScale = 17.0 / 65535.0;
 const float kUvScale = 2.0 / 65535.0;
 
-// 与 MeshData.hpp 的 kVertexNormals 逐位对拍（sun_shadow_map_test）。
-// 末位是 RN-41 的薄片植物：方向与下标 2 相同，含义多一层「几何是竖直的」。
-const vec3 kVertexNormals[15] = vec3[15](
-    vec3(1.0, 0.0, 0.0), vec3(-1.0, 0.0, 0.0), vec3(0.0, 1.0, 0.0), vec3(0.0, -1.0, 0.0),
-    vec3(0.0, 0.0, 1.0), vec3(0.0, 0.0, -1.0),
-    vec3(0.0, 0.900552, -0.434749), vec3(0.0, -0.434749, -0.900552),
-    vec3(0.434749, 0.900552, 0.0), vec3(0.900552, -0.434749, 0.0),
-    vec3(0.0, 0.900552, 0.434749), vec3(0.0, -0.434749, 0.900552),
-    vec3(-0.434749, 0.900552, 0.0), vec3(-0.900552, -0.434749, 0.0),
-    vec3(0.0, 1.0, 0.0)
-);
-const int kThinPlaneNormalIndex = 14;
+#include "include/vertex_normals.glsl"
 
 void main() {
     uint posZ = inZNorm.x & 0xFFFFu;

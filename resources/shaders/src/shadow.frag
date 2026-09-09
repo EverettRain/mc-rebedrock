@@ -10,5 +10,8 @@
 // 再复制一份顶点位置的算术便宜——两份位置算术漂移，影子就会与投影它的方块错开。
 layout(location = 0) in vec2 fragmentUv;
 layout(location = 1) flat in float fragmentTextureLayer;
+// RN-51 新加的第三个：薄投射者正对光的程度。不透明地形不是薄投射者（那一档恒为 1），
+// 这条通道也就用不上它——但同样得声明，理由与上面两个一模一样。
+layout(location = 2) flat in float fragmentCasterFacing;
 
 void main() {}

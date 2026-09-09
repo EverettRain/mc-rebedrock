@@ -1219,8 +1219,12 @@ class WorldRenderer final {
                 if (draw.indexCount == 0U) {
                     continue;
                 }
+                // RN-51：`.w` 标记「这一趟画的是薄投射者」。着色器只读 `.xyz` 当位置，
+                // 这个分量一直是未赋义的 1.0——现在它是玻璃那一层的旗子，
+                // 侧对光的玻璃面因此不再往阴影图里渲那条断续的发丝影
+                const float thinCaster = layer == &GpuMesh::translucentShadow ? 1.0F : 0.0F;
                 const ShadowPush push{shadowLightViewProj[cascade],
-                                      glm::vec4{mesh->sectionOrigin, 1.0F}};
+                                      glm::vec4{mesh->sectionOrigin, thinCaster}};
                 vkCmdPushConstants(frame.commandBuffer, layout, VK_SHADER_STAGE_VERTEX_BIT, 0,
                                    sizeof(push), &push);
                 vkCmdBindVertexBuffers(frame.commandBuffer, 0, 1, &mesh->vertexBuffer.buffer,
@@ -1234,9 +1238,22 @@ class WorldRenderer final {
         recordShadowLayer(pipelines.shadowPipeline, pipelines.shadowPipelineLayout,
                           {&GpuMesh::opaque});
         // 玻璃与镂空地形一起画：同一条管线、同一次 alpha 测试，玻璃的阴影因此恰好
-        // 只剩纹理里不透明的那一圈边框
+        // 只剩纹理里不透明的那一圈边框。
+        //
+        // ★ RN-50：**只进近段**。玻璃边框宽 1/16 格，而远段一个纹素正好也是 1/16 格——
+        // 一个恰好等于采样间距的投射者，光栅化出来的是噪声不是信号：它随纹素中心落在
+        // 边框内外而通断，实机上就是「阴影线条上的光斑」（用户 2026-09-09 两次报到）。
+        // 离屏实测：同一堵玻璃墙，远段只画得出 68 个影子像素，近段是 405 个。
+        //
+        // 近段的纹素在三档设置下分别是 1/128、1/64、1/42.7 格，也就是边框宽度的
+        // 8 / 4 / 2.7 倍——都撑得住。所以规则是「撑得住的那一级才画」，
+        // 而不是「哪一级都画一遍」。代价是近段框之外玻璃不投影：**没有影子**比
+        // 一串闪烁的光斑好，而且远段那一趟还省了这一层。
         recordShadowLayer(pipelines.shadowCutoutPipeline, pipelines.shadowCutoutPipelineLayout,
-                          {&GpuMesh::cutout, &GpuMesh::translucentShadow});
+                          cascade == 0 ? std::initializer_list<GpuMeshLayer GpuMesh::*>{
+                                             &GpuMesh::cutout, &GpuMesh::translucentShadow}
+                                       : std::initializer_list<GpuMeshLayer GpuMesh::*>{
+                                             &GpuMesh::cutout});
         // 实体的矩阵走 UBO 而不是 push constant（ItemPush 正好满 128 字节），级别因此
         // 是一个特化常量——每级一条管线，见 item_entity.vert 的 sunShadowCascade
         vkCmdBindPipeline(frame.commandBuffer, VK_PIPELINE_BIND_POINT_GRAPHICS,

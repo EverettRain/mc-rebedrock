@@ -266,10 +266,14 @@ int main() {
     // 而且就是那一层的那些面，顺序都一样——阴影写深度，不需要 RN-22 的视点排序
     assert(glassMesh.translucentShadowIndices == glassMesh.translucentMesh.indices);
 
-    // ★ 不标那条属性的半透明方块**不得**产生阴影几何。染色玻璃的纹理是整片不透明的
-    // （它的半透明来自渲染层而不是 alpha），标了就是一个黑方块的影子；水同理，
-    // 它的半透明是着色器里另算的深度公式，纹理本身近乎不透明。
-    for (const auto block : {mc::world::Block::WhiteStainedGlass, mc::world::Block::Water}) {
+    // ★ 不标那条属性的半透明方块**不得**产生阴影几何。水就是这样一个：它的半透明是
+    // 着色器里另算的深度公式，纹理本身近乎不透明，标了就是水底一块黑影。
+    //
+    // ★★ RN-51：染色玻璃**从这条名单里移走了**。RN-37 当初把它排除在外，理由写的是
+    // 「纹理整片不透明」——实测 26.1 的 white_stained_glass.png，alpha 只有三个值：
+    // 边框 163、玻璃面 102、高光 155，而阴影通道的阈值是 127.5。它本来就是 cutout
+    // 形态的纹理，裁出来正好只有那一圈边框。**那条理由是猜的，不是量的。**
+    for (const auto block : {mc::world::Block::Water}) {
         mc::world::World other;
         mc::world::Chunk chunk;
         chunk.setBlock(1, mc::world::kMinY + 1, 1, block);
@@ -277,6 +281,24 @@ int main() {
         const auto mesh = mc::world::ChunkMesher::buildSection(other, {0, 0}, 0);
         assert(!mesh.translucentMesh.indices.empty());
         assert(mesh.translucentShadowIndices.empty());
+    }
+
+    // RN-51：染色玻璃、玻璃板、染色玻璃板都要投边框的影子（与透明玻璃同一条属性）
+    for (const auto block : {mc::world::Block::WhiteStainedGlass,
+                             mc::world::Block::RedStainedGlass,
+                             mc::world::Block::GlassPane,
+                             mc::world::Block::BlueStainedGlassPane}) {
+        mc::world::World other;
+        mc::world::Chunk chunk;
+        chunk.setBlock(1, mc::world::kMinY + 1, 1, block);
+        other.setChunk({0, 0}, std::move(chunk));
+        const auto mesh = mc::world::ChunkMesher::buildSection(other, {0, 0}, 0);
+        assert(!mesh.translucentMesh.indices.empty());
+        assert(!mesh.translucentShadowIndices.empty() &&
+               "stained glass and panes must cast their frame's shadow, like clear glass");
+        // 而且仍旧只加索引、不复制顶点（RN-37 的那笔账）
+        const auto plain = mc::world::ChunkMesher::buildSection(other, {0, 0}, 0);
+        assert(plain.translucentMesh.vertices.size() == mesh.translucentMesh.vertices.size());
     }
 
     mc::world::World leavesWorld;
