@@ -1841,6 +1841,10 @@ if(BUILD_TESTING)
     )
     target_include_directories(mc_rebedrock_notice_screen_test PRIVATE src)
     target_link_libraries(mc_rebedrock_notice_screen_test PRIVATE glm::glm)
+    # 「提示屏的标题由页面自己的 Label 画、绘制侧不再另画一行」住在渲染器的翻译单元里，
+    # 没有测试链接得到它；而截图夹具也分辨不出（多出来的那行落在画布外被裁掉）。
+    target_compile_definitions(mc_rebedrock_notice_screen_test PRIVATE
+        MC_REBEDROCK_HUD_RENDERER_SRC="${CMAKE_CURRENT_SOURCE_DIR}/src/render/vulkan/HudRenderer.hpp")
     add_test(NAME notice_screen COMMAND mc_rebedrock_notice_screen_test)
 
     add_executable(mc_rebedrock_tab_bar_test tests/tab_bar_test.cpp)

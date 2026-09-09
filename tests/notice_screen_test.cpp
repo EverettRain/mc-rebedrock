@@ -24,8 +24,14 @@
 #include "ui/PageBuilder.hpp"
 
 #include <cstdio>
+#include <fstream>
+#include <sstream>
 #include <string>
 #include <vector>
+
+#ifndef MC_REBEDROCK_HUD_RENDERER_SRC
+#error "MC_REBEDROCK_HUD_RENDERER_SRC must point at src/render/vulkan/HudRenderer.hpp"
+#endif
 
 namespace {
 
@@ -265,6 +271,50 @@ void testPageClassification() {
           std::string{mc::ui::pageTitle(PageId::AdvancedGraphics).key});
 }
 
+// --- 11. 源码守：drawPauseMenu 那行标题必须被 drawsTitleAsWidget 挡住 ----------
+//
+// ★ 这一条是**替补**，不是锦上添花：把那个 if 换成 `if (true)`（也就是回到提示屏
+//   多画一行标题的状态）之后，`--ui-shot advanced-graphics-notice` 两遍出图**逐像素
+//   相同**——因为多出来的那行标题落在 y = firstButton.y - 30，而这一页有 10 个控件，
+//   `menuButton(0, 10)` 给出 y = 240/2 - 10*12 = 0，标题于是被画到画布上方 -90 处、
+//   整行被裁掉。也就是说：**夹具分辨不出这两个实现**（REGULAR §5 的第一问）。
+//   正文短一点、控件少几个，同一份代码就会在屏幕上显示两个标题。
+//   这条事实住在渲染器的翻译单元里，没有测试链接得到它，所以只能读源码守。
+void testTitleGuardSourceGuard() {
+    std::ifstream input{MC_REBEDROCK_HUD_RENDERER_SRC, std::ios::binary};
+    if (!input) {
+        std::printf("notice_screen_test: cannot open %s\n", MC_REBEDROCK_HUD_RENDERER_SRC);
+        ++failures;
+        return;
+    }
+    std::ostringstream buffer;
+    buffer << input.rdbuf();
+    const std::string source = buffer.str();
+    // 只看 drawPauseMenu 的函数体：整份源码里画 `title` 的地方有四处
+    // （主菜单、语言屏、创造背包页签、这里），别的三处与提示屏无关。
+    const std::size_t begin = source.find("void drawPauseMenu(");
+    CHECK(begin != std::string::npos);
+    if (begin == std::string::npos) {
+        return;
+    }
+    const std::size_t end = source.find("void drawPlayerPreview(", begin);
+    CHECK(end != std::string::npos);
+    const std::string body = source.substr(begin, end - begin);
+    const std::size_t call = body.find("drawHudText(commandBuffer, title,");
+    CHECK(call != std::string::npos);
+    if (call == std::string::npos) {
+        return;
+    }
+    // 这个函数体里**只有一处**画标题——多一处就等于绕过了这道门。
+    CHECK(body.find("drawHudText(commandBuffer, title,", call + 1U) == std::string::npos);
+    // 而它前面 400 个字符内必须出现那个判据。写成"往前找"而不是"函数体里出现过"，
+    // 是因为后者在判据被挪到别处（比如只用来决定 titleY）时也会绿。
+    const std::size_t from = call > 400U ? call - 400U : 0U;
+    const std::string before = body.substr(from, call - from);
+    CHECK(before.find("!ui::drawsTitleAsWidget(ui::pageLayoutKind(currentPage))") !=
+          std::string::npos);
+}
+
 } // namespace
 
 int main() {
@@ -278,6 +328,7 @@ int main() {
     testPageShape();
     testCheckedSnapshot();
     testPageClassification();
+    testTitleGuardSourceGuard();
     if (failures > 0) {
         std::printf("notice_screen_test: %d failure(s)\n", failures);
         return 1;
