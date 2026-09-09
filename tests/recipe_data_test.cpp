@@ -142,26 +142,26 @@ void testBuiltinFloorResolves() {
     assert(furnace.size() == 7U);
 
     // MDL-1/2 spot checks: the shapes and yields vanilla gives, not just a count.
-    const CraftingRecipe* fence = findCrafting(crafting, "minecraft:oak_fence");
+    const CraftingRecipe* fence = findCrafting(crafting, "rebedrock:oak_fence");
     assert(fence != nullptr && fence->width == 3U && fence->height == 2U && !fence->shapeless);
     assert(fence->ingredients.size() == 6U && fence->output.count == 3U);
-    const CraftingRecipe* pane = findCrafting(crafting, "minecraft:glass_pane");
+    const CraftingRecipe* pane = findCrafting(crafting, "rebedrock:glass_pane");
     assert(pane != nullptr && pane->width == 3U && pane->height == 2U && pane->output.count == 16U);
-    const CraftingRecipe* bars = findCrafting(crafting, "minecraft:iron_bars");
+    const CraftingRecipe* bars = findCrafting(crafting, "rebedrock:iron_bars");
     assert(bars != nullptr && bars->output.count == 16U);
     // MDL-3: snowballs pack into a block, a block cuts into six layers.
-    const CraftingRecipe* snowBlock = findCrafting(crafting, "minecraft:snow_block");
+    const CraftingRecipe* snowBlock = findCrafting(crafting, "rebedrock:snow_block");
     assert(snowBlock != nullptr && snowBlock->width == 2U && snowBlock->height == 2U &&
            snowBlock->output.count == 1U);
-    const CraftingRecipe* snowLayers = findCrafting(crafting, "minecraft:snow");
+    const CraftingRecipe* snowLayers = findCrafting(crafting, "rebedrock:snow");
     assert(snowLayers != nullptr && snowLayers->width == 3U && snowLayers->height == 2U &&
            snowLayers->output.count == 6U);
-    const CraftingRecipe* carpet = findCrafting(crafting, "minecraft:white_carpet");
+    const CraftingRecipe* carpet = findCrafting(crafting, "rebedrock:white_carpet");
     assert(carpet != nullptr && carpet->width == 2U && carpet->height == 1U &&
            carpet->output.count == 3U);
 
     // 1x1 log -> 4 planks, a block ingredient and a block output.
-    const CraftingRecipe* planks = findCrafting(crafting, "minecraft:oak_planks");
+    const CraftingRecipe* planks = findCrafting(crafting, "rebedrock:oak_planks");
     assert(planks != nullptr && planks->width == 1U && planks->height == 1U && !planks->shapeless);
     assert(planks->ingredients.size() == 1U);
     assert(planks->ingredients[0].kind == IngredientKind::Block);
@@ -171,26 +171,26 @@ void testBuiltinFloorResolves() {
                                     mc::gameplay::blockItemFor(Block::OakPlanks)}));
 
     // The plank group (AnyPlanks) and an item output.
-    const CraftingRecipe* sticks = findCrafting(crafting, "minecraft:sticks");
+    const CraftingRecipe* sticks = findCrafting(crafting, "rebedrock:sticks");
     assert(sticks != nullptr && sticks->ingredients.size() == 2U);
     assert(sticks->ingredients[0].kind == IngredientKind::AnyPlanks);
     assert(sticks->output.item == &mc::gameplay::items::Stick && sticks->output.count == 4U);
 
     // An item ingredient (wheat) and a shaped 3x1.
-    const CraftingRecipe* bread = findCrafting(crafting, "minecraft:bread");
+    const CraftingRecipe* bread = findCrafting(crafting, "rebedrock:bread");
     assert(bread != nullptr && bread->width == 3U && bread->height == 1U);
     assert(bread->ingredients[0].kind == IngredientKind::Item &&
            bread->ingredients[0].item == &mc::gameplay::items::Wheat);
     assert(bread->output.item == &mc::gameplay::items::Bread);
 
     // A shapeless recipe and an empty cell in a shaped one.
-    assert(findCrafting(crafting, "minecraft:coarse_dirt")->shapeless);
-    const CraftingRecipe* axe = findCrafting(crafting, "minecraft:wooden_axe");
+    assert(findCrafting(crafting, "rebedrock:coarse_dirt")->shapeless);
+    const CraftingRecipe* axe = findCrafting(crafting, "rebedrock:wooden_axe");
     assert(axe != nullptr && axe->allowMirror);
     assert(axe->ingredients[4].kind == IngredientKind::Empty); // the gap in the 2x3
 
     // A furnace recipe: input, output, and the experience float survived the bake.
-    const FurnaceRecipe* iron = findFurnace(furnace, "minecraft:iron_ingot_from_smelting");
+    const FurnaceRecipe* iron = findFurnace(furnace, "rebedrock:iron_ingot_from_smelting");
     assert(iron != nullptr && iron->input.kind == IngredientKind::Block &&
            iron->input.block == Block::IronOre);
     assert(iron->output.item == &mc::gameplay::items::IronIngot);
@@ -205,7 +205,7 @@ void testArcx1UtilityRecipes() {
     const auto crafting = table.crafting();
 
     // bow: 3x3 shaped, one bow (string + stick, no mirror).
-    const CraftingRecipe* bow = findCrafting(crafting, "minecraft:bow");
+    const CraftingRecipe* bow = findCrafting(crafting, "rebedrock:bow");
     assert(bow != nullptr && bow->width == 3U && bow->height == 3U && !bow->shapeless);
     assert(bow->ingredients.size() == 9U);
     assert(bow->ingredients[1].kind == IngredientKind::Item &&
@@ -216,7 +216,7 @@ void testArcx1UtilityRecipes() {
     assert(bow->output.item == &mc::gameplay::items::Bow && bow->output.count == 1U);
 
     // arrow: 1x3, flint/stick/feather, yields 4 (pin the count — sabotage guard).
-    const CraftingRecipe* arrow = findCrafting(crafting, "minecraft:arrow");
+    const CraftingRecipe* arrow = findCrafting(crafting, "rebedrock:arrow");
     assert(arrow != nullptr && arrow->width == 1U && arrow->height == 3U && !arrow->shapeless);
     assert(arrow->ingredients.size() == 3U);
     assert(arrow->ingredients[0].item == &mc::gameplay::items::Flint);
@@ -225,7 +225,7 @@ void testArcx1UtilityRecipes() {
     assert(arrow->output.item == &mc::gameplay::items::Arrow && arrow->output.count == 4U);
 
     // shears: 2x2, two iron_ingot diagonally, one shears.
-    const CraftingRecipe* shears = findCrafting(crafting, "minecraft:shears");
+    const CraftingRecipe* shears = findCrafting(crafting, "rebedrock:shears");
     assert(shears != nullptr && shears->width == 2U && shears->height == 2U && !shears->shapeless);
     assert(shears->ingredients.size() == 4U);
     assert(shears->ingredients[1].item == &mc::gameplay::items::IronIngot);
@@ -234,7 +234,7 @@ void testArcx1UtilityRecipes() {
     assert(shears->output.item == &mc::gameplay::items::Shears && shears->output.count == 1U);
 
     // bucket: 3x2, three iron_ingot, one bucket.
-    const CraftingRecipe* bucket = findCrafting(crafting, "minecraft:bucket");
+    const CraftingRecipe* bucket = findCrafting(crafting, "rebedrock:bucket");
     assert(bucket != nullptr && bucket->width == 3U && bucket->height == 2U && !bucket->shapeless);
     assert(bucket->ingredients.size() == 6U);
     assert(bucket->ingredients[0].item == &mc::gameplay::items::IronIngot);
@@ -244,14 +244,14 @@ void testArcx1UtilityRecipes() {
 
     // book: 2x2 SHAPELESS (3 paper + 1 leather), one book. The shapeless flag and
     // width/height <= 3 both matter (sabotage guard: a 1x4 book never matches).
-    const CraftingRecipe* book = findCrafting(crafting, "minecraft:book");
+    const CraftingRecipe* book = findCrafting(crafting, "rebedrock:book");
     assert(book != nullptr && book->width == 2U && book->height == 2U && book->shapeless);
     assert(book->ingredients.size() == 4U);
     assert(book->output.item == &mc::gameplay::items::Book && book->output.count == 1U);
 
     // paper: AR-CX2 landed the sugar_cane block, so the recipe now resolves —
     // 3x1 shaped of three sugar_cane blocks, yielding 3 paper.
-    const CraftingRecipe* paper = findCrafting(crafting, "minecraft:paper");
+    const CraftingRecipe* paper = findCrafting(crafting, "rebedrock:paper");
     assert(paper != nullptr && paper->width == 3U && paper->height == 1U && !paper->shapeless);
     assert(paper->ingredients.size() == 3U);
     assert(paper->ingredients[0].kind == IngredientKind::Block &&
@@ -259,7 +259,7 @@ void testArcx1UtilityRecipes() {
     assert(paper->output.item == &mc::gameplay::items::Paper && paper->output.count == 3U);
 
     // yellow_dye (AR-CX2): 1x1 shapeless dandelion block -> 1 yellow_dye.
-    const CraftingRecipe* yellowDye = findCrafting(crafting, "minecraft:yellow_dye");
+    const CraftingRecipe* yellowDye = findCrafting(crafting, "rebedrock:yellow_dye");
     assert(yellowDye != nullptr && yellowDye->width == 1U && yellowDye->height == 1U &&
            yellowDye->shapeless);
     assert(yellowDye->ingredients.size() == 1U);
@@ -271,7 +271,7 @@ void testArcx1UtilityRecipes() {
     // flint_and_steel (AR-CX4-b): shapeless iron_ingot + flint -> 1
     // flint_and_steel. Both ingredients are items (iron from smelting, flint from
     // gravel), so the recipe resolves the moment flint_and_steel registers.
-    const CraftingRecipe* flintAndSteel = findCrafting(crafting, "minecraft:flint_and_steel");
+    const CraftingRecipe* flintAndSteel = findCrafting(crafting, "rebedrock:flint_and_steel");
     assert(flintAndSteel != nullptr && flintAndSteel->shapeless);
     assert(flintAndSteel->ingredients.size() == 2U);
     assert(flintAndSteel->ingredients[0].kind == IngredientKind::Item &&
@@ -363,9 +363,9 @@ void testOverlayMerges() {
     // (AR-CX2) + flint_and_steel (AR-CX4-b)) + 1 ENCH-2 (enchanting_table) +
     // demo_combo (oak_planks replaced in place, not added).
     assert(table.crafting().size() == 43U + 16U + 8U + 1U + 2U + 59U + 1U);
-    assert(findCrafting(table.crafting(), "minecraft:demo_combo") != nullptr);
-    assert(findCrafting(table.crafting(), "minecraft:oak_planks")->output.count == 8U);
-    const FurnaceRecipe* smelt = findFurnace(table.furnace(), "minecraft:demo_smelt");
+    assert(findCrafting(table.crafting(), "rebedrock:demo_combo") != nullptr);
+    assert(findCrafting(table.crafting(), "rebedrock:oak_planks")->output.count == 8U);
+    const FurnaceRecipe* smelt = findFurnace(table.furnace(), "rebedrock:demo_smelt");
     assert(smelt != nullptr && smelt->cookTicks == 123 && smelt->output.block == Block::Stone);
 }
 
@@ -376,7 +376,7 @@ void testNoDataFallback() {
     table.load(empty);
     assert(table.crafting().size() == 43U + 16U + 8U + 1U + 2U + 59U);
     assert(table.furnace().size() == 7U);
-    assert(findCrafting(table.crafting(), "minecraft:oak_planks")->output.count == 4U);
+    assert(findCrafting(table.crafting(), "rebedrock:oak_planks")->output.count == 4U);
 }
 
 // 5. An overlay recipe naming content this build lacks is skipped, not resolved
@@ -392,8 +392,8 @@ void testUnknownIdentifierSkipped() {
                  "output":"minecraft:no_such_block","count":1})");
     table.load(pack);
     assert(table.crafting().size() == 43U + 16U + 8U + 1U + 2U + 59U); // neither bad recipe was added
-    assert(findCrafting(table.crafting(), "minecraft:bad_item") == nullptr);
-    assert(findCrafting(table.crafting(), "minecraft:bad_output") == nullptr);
+    assert(findCrafting(table.crafting(), "rebedrock:bad_item") == nullptr);
+    assert(findCrafting(table.crafting(), "rebedrock:bad_output") == nullptr);
 }
 
 } // namespace

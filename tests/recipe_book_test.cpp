@@ -95,7 +95,7 @@ void putInInventory(Inventory& inventory, std::span<const ItemStack> stacks) {
 // --- 1. 「够不够做 / 最多做几次」：二分图匹配，不是整除 -------------------
 
 void testBiggestCraftableStackIsNotDivision() {
-    const CraftingRecipe& table = craftingRecipe("minecraft:crafting_table");
+    const CraftingRecipe& table = craftingRecipe("rebedrock:crafting_table");
     assert(table.ingredients.size() == 4U);
 
     StackedItemContents contents;
@@ -114,7 +114,7 @@ void testBiggestCraftableStackIsNotDivision() {
 
 void testMatchingLetsTwoSlotsShareOneItemType() {
     // 8 块橡木板刚好做 2 个工作台：容量 2 时橡木 8->6->4->2->0 喂饱四格。
-    const CraftingRecipe& table = craftingRecipe("minecraft:crafting_table");
+    const CraftingRecipe& table = craftingRecipe("rebedrock:crafting_table");
     StackedItemContents contents;
     contents.accountStack(blockStack(Block::OakPlanks, 8U));
     assert(contents.biggestCraftableStack(table) == 2);
@@ -124,7 +124,7 @@ void testMatchingLetsTwoSlotsShareOneItemType() {
 
 void testShapedRecipeCountsEveryFilledCell() {
     // 箱子是 3x3 减去正中一格 = 8 格木板。7 块不够，8 块正好做一个。
-    const CraftingRecipe& chest = craftingRecipe("minecraft:chest");
+    const CraftingRecipe& chest = craftingRecipe("rebedrock:chest");
     assert(chest.ingredients.size() == 9U);
     const auto placement = recipePlacement(chest);
     assert(placement.ingredients.size() == 8U);
@@ -145,7 +145,7 @@ void testShapedRecipeCountsEveryFilledCell() {
 
 void testTwoDistinctIngredientsTakeTheMinimum() {
     // 火把 = 1 煤 + 1 木棍。5 煤 + 2 木棍 -> 2 次。
-    const CraftingRecipe& torch = craftingRecipe("minecraft:torch");
+    const CraftingRecipe& torch = craftingRecipe("rebedrock:torch");
     StackedItemContents contents;
     contents.accountStack(itemStack(&items::Coal, 5U));
     contents.accountStack(itemStack(&items::Stick, 2U));
@@ -156,7 +156,7 @@ void testUnusableStacksAreNotAccounted() {
     // `Inventory.isUsableForCrafting`（Inventory.java:144-146）：有损伤 / 有附魔 /
     // 有自定义名的堆不算原料。面包要 3 个小麦；6 个小麦能做 2 个，但其中 3 个被
     // 改过名之后只剩 3 个可用，就只能做 1 个。
-    const CraftingRecipe& bread = craftingRecipe("minecraft:bread");
+    const CraftingRecipe& bread = craftingRecipe("rebedrock:bread");
 
     StackedItemContents plain;
     plain.accountSimpleStack(itemStack(&items::Wheat, 3U));
@@ -175,7 +175,7 @@ void testUnusableStacksAreNotAccounted() {
 void testBlockStackKeysCollapse() {
     // 同一种方块的两种写法（空 item 哨兵 / 它自己的 BlockItem）必须折成同一个键，
     // 否则 4 块木板会被记成两种各 2 块，做不出工作台。
-    const CraftingRecipe& table = craftingRecipe("minecraft:crafting_table");
+    const CraftingRecipe& table = craftingRecipe("rebedrock:crafting_table");
     ItemStack legacy{Block::OakPlanks, 2U, nullptr};
     ItemStack modern = blockStack(Block::OakPlanks, 2U);
     assert(stackedContentsKey(legacy) == stackedContentsKey(modern));
@@ -191,7 +191,7 @@ void testInventoryConvenienceEntryPoints() {
     Inventory inventory;
     const std::array<ItemStack, 1U> planks{blockStack(Block::OakPlanks, 8U)};
     putInInventory(inventory, planks);
-    const CraftingRecipe& table = craftingRecipe("minecraft:crafting_table");
+    const CraftingRecipe& table = craftingRecipe("rebedrock:crafting_table");
     assert(canCraft(inventory, table, 2));
     assert(!canCraft(inventory, table, 3));
     assert(biggestCraftableStack(inventory, table) == 2);
@@ -287,8 +287,8 @@ void testLoadNormalizes() {
     RecipeBook book;
     book.load({"minecraft:torch", "minecraft:chest", "minecraft:torch"}, {"minecraft:chest"});
     assert(book.known().size() == 2U);
-    assert(book.known()[0] == "minecraft:chest");
-    assert(book.known()[1] == "minecraft:torch");
+    assert(book.known()[0] == "rebedrock:chest");
+    assert(book.known()[1] == "rebedrock:torch");
     assert(book.highlighted("minecraft:chest"));
     assert(!book.highlighted("minecraft:torch"));
 }
@@ -354,10 +354,10 @@ void testEntriesRespectTheGridSize() {
             return entry.identifier == id;
         });
     };
-    assert(!has(small, "minecraft:chest"));
-    assert(has(large, "minecraft:chest"));
-    assert(has(small, "minecraft:sticks"));
-    assert(has(large, "minecraft:sticks"));
+    assert(!has(small, "rebedrock:chest"));
+    assert(has(large, "rebedrock:chest"));
+    assert(has(small, "rebedrock:sticks"));
+    assert(has(large, "rebedrock:sticks"));
 
     // 26.1 里箱子/附魔台/铁砧的菜单根本不是 RecipeBookMenu，没有配方书。
     assert(recipeBookEntries(ContainerScreen::Chest, inventory, book).empty());
@@ -399,13 +399,13 @@ void testCraftableAndUnlockedFlags() {
         assert(found != entries.end());
         return *found;
     };
-    const auto& table = find("minecraft:crafting_table");
+    const auto& table = find("rebedrock:crafting_table");
     assert(table.craftable);
     assert(table.unlocked);
     assert(table.result.block == Block::CraftingTable);
     assert(table.result.count == 1U);
 
-    const auto& chest = find("minecraft:chest");
+    const auto& chest = find("rebedrock:chest");
     assert(!chest.craftable);  // 箱子要 8 块木板，只有 4 块
     assert(!chest.unlocked);
 }
@@ -587,7 +587,7 @@ void testFullInventoryRefusesRatherThanDropping() {
     fixture.crafting.tableGridSlot(8U) = blockStack(Block::Cobblestone, 5U);
     const int before = totalItemCount(fixture.inventory, fixture.crafting, 9U);
     // 前置：材料确实够（否则这个夹具分辨不出 testClearGrid 有没有起作用）。
-    assert(canCraft(fixture.inventory, craftingRecipe("minecraft:crafting_table"), 1));
+    assert(canCraft(fixture.inventory, craftingRecipe("rebedrock:crafting_table"), 1));
 
     assert(!placeRecipe(fixture.inventory, fixture.crafting, ContainerScreen::CraftingTable,
                         "minecraft:crafting_table", /*maxStack=*/false));
@@ -617,6 +617,61 @@ void testGridContentsCountAsAvailableMaterial() {
 }
 
 // --- 7. 持久化 ------------------------------------------------------------
+
+// ADV-0b：`minecraft:` 与 `rebedrock:` 在**每一个**解析边界上等价。
+// 这条把边界逐个走一遍——漏掉任何一个都会在这里变红。清单与 RecipeBook.hpp /
+// RecipeTable.hpp 的注释同步。
+void testVanillaNamespaceAcceptedAtEveryBoundary() {
+    // 边界②：配方书的公开入口（add / contains / highlighted / remove /
+    // removeHighlight / addRecipes）。用 vanilla 拼法存，用本作拼法查。
+    RecipeBook book;
+    assert(book.addRecipe("minecraft:torch") == 1);
+    assert(book.contains("rebedrock:torch"));
+    assert(book.highlighted("rebedrock:torch"));
+    // 反向也成立：用本作拼法存，用 vanilla 拼法查。
+    assert(book.addRecipe("rebedrock:chest") == 1);
+    assert(book.contains("minecraft:chest"));
+    // 同一条配方换个拼法**不是**第二条：addRecipes 的去重必须认得出来。
+    assert(book.addRecipe("minecraft:chest") == 0);
+    assert(book.known().size() == 2U);
+    book.removeHighlight("minecraft:torch");
+    assert(!book.highlighted("rebedrock:torch"));
+    book.remove("minecraft:torch");
+    assert(!book.contains("rebedrock:torch"));
+
+    // 边界④：分类查表（二分，查不到只会静默落到 Misc——所以要显式钉住一个
+    // **不是** Misc 的分类，否则漏归一化也看不出来）。
+    assert(craftingRecipeBookCategory("minecraft:oak_planks") ==
+           RecipeBookCategory::CraftingBuildingBlocks);
+    assert(craftingRecipeBookCategory("rebedrock:oak_planks") ==
+           RecipeBookCategory::CraftingBuildingBlocks);
+    assert(furnaceRecipeBookCategory("minecraft:cooked_porkchop") ==
+           RecipeBookCategory::FurnaceFood);
+    assert(furnaceRecipeBookCategory("rebedrock:cooked_porkchop") ==
+           RecipeBookCategory::FurnaceFood);
+
+    // 边界③：placeRecipe 按标识符找配方。两种拼法都要填得进去。
+    {
+        PlaceFixture fixture;
+        const std::array<ItemStack, 1U> planks{blockStack(Block::OakPlanks, 4U)};
+        putInInventory(fixture.inventory, planks);
+        assert(placeRecipe(fixture.inventory, fixture.crafting, ContainerScreen::CraftingTable,
+                           "minecraft:crafting_table", /*maxStack=*/false));
+    }
+    {
+        PlaceFixture fixture;
+        const std::array<ItemStack, 1U> planks{blockStack(Block::OakPlanks, 4U)};
+        putInInventory(fixture.inventory, planks);
+        assert(placeRecipe(fixture.inventory, fixture.crafting, ContainerScreen::CraftingTable,
+                           "rebedrock:crafting_table", /*maxStack=*/false));
+    }
+    // 第三方命名空间不受影响：既不被改写，也不与本作的同名配方混淆。
+    RecipeBook third;
+    assert(third.addRecipe("somemod:torch") == 1);
+    assert(third.known()[0] == "somemod:torch");
+    assert(!third.contains("rebedrock:torch"));
+    assert(!third.contains("minecraft:torch"));
+}
 
 [[nodiscard]] std::filesystem::path scratchRoot(std::string_view name) {
     const auto root = std::filesystem::temp_directory_path() /
@@ -692,6 +747,55 @@ void stripRecipeBookBlock(const std::filesystem::path& worldDat) {
                  static_cast<std::streamsize>(bytes.size()));
 }
 
+// ADV-0b 老存档兼容。RCPB 块存的是**配方标识符字符串**，ADV-0b 之前写的存档里
+// 全是 `minecraft:` 拼法；底座改用 `rebedrock:` 之后，读回来若不归一化，老存档
+// 的已解锁配方就会**整片失配**（配方书里全部退回未解锁，而且不报任何错）。
+//
+// 断言分三层：存档字节本身不动（RCPB 是哑存储）、装回配方书之后按新底座的 id
+// 查得到、以及最后一条——那个 id 在**真配方表**里确实存在，所以这不是字符串
+// 戏法而是真的对上了底座。
+void testLegacyMinecraftNamespacedSaveNormalizes() {
+    const auto root = scratchRoot("legacy_namespace");
+    mc::persistence::SaveRepository repository{root};
+    mc::persistence::SaveGame game;
+    game.summary.identifier = "world";
+    game.summary.displayName = "world";
+    // 一份 ADV-0b 之前的存档：两条已解锁，其中一条还高亮着。
+    game.unlockedRecipes = {"minecraft:chest", "minecraft:torch"};
+    game.highlightedRecipes = {"minecraft:torch"};
+    repository.save(game);
+
+    const auto loaded = repository.load("world");
+    // 存档层不改字符串——归一化是配方书这一层的事，存档只负责把字节搬回来。
+    assert(loaded.unlockedRecipes.size() == 2U);
+    assert(loaded.unlockedRecipes[0] == "minecraft:chest");
+
+    RecipeBook book;
+    book.load(loaded.unlockedRecipes, loaded.highlightedRecipes);
+    // ★ 老存档的两条配方，按**新底座的 id** 都查得到。
+    assert(book.contains("rebedrock:chest"));
+    assert(book.contains("rebedrock:torch"));
+    assert(book.highlighted("rebedrock:torch"));
+    assert(!book.highlighted("rebedrock:chest"));
+    // 集合里存的是规范形本身，不是「两种拼法并存」。
+    assert(book.known().size() == 2U);
+    assert(book.known()[0] == "rebedrock:chest");
+    assert(book.known()[1] == "rebedrock:torch");
+
+    // 半迁移的存档（同一条配方两种拼法各存了一次）读回来必须是一条，不是两条。
+    RecipeBook mixed;
+    mixed.load({"minecraft:torch", "rebedrock:torch"}, {"minecraft:torch"});
+    assert(mixed.known().size() == 1U);
+    assert(mixed.known()[0] == "rebedrock:torch");
+    assert(mixed.highlight().size() == 1U);
+
+    // 最后一层：这个 id 在真配方表里确实是这条配方的 id。
+    assert(std::ranges::any_of(recipeTable().crafting(), [](const CraftingRecipe& recipe) {
+        return recipe.identifier == "rebedrock:torch";
+    }));
+    std::filesystem::remove_all(root);
+}
+
 void testOldSaveWithoutTheBlockLoadsAsAnEmptyBook() {
     const auto root = scratchRoot("legacy");
     mc::persistence::SaveRepository repository{root};
@@ -752,6 +856,8 @@ int main() {
 
     testRecipeBookSurvivesASaveRoundTrip();
     testEmptyRecipeBookRoundTrips();
+    testVanillaNamespaceAcceptedAtEveryBoundary();
+    testLegacyMinecraftNamespacedSaveNormalizes();
     testOldSaveWithoutTheBlockLoadsAsAnEmptyBook();
 
     std::cout << "recipe_book: all checks passed\n";

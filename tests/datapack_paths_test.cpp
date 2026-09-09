@@ -104,7 +104,7 @@ void testRecipeDirectory() {
         mc::assets::StandardPackResourceProvider provider{pack.root()};
         mc::gameplay::RecipeTable table;
         table.load(provider);
-        const auto* planks = findCrafting(table, "minecraft:oak_planks");
+        const auto* planks = findCrafting(table, "rebedrock:oak_planks");
         assert(planks != nullptr);
         // 26.1 的 data/minecraft/recipe/ 是这个目录名；读到了就是 7。
         assert(planks->output.count == 7U);
@@ -118,7 +118,7 @@ void testRecipeDirectory() {
         mc::assets::StandardPackResourceProvider provider{pack.root()};
         mc::gameplay::RecipeTable table;
         table.load(provider);
-        const auto* planks = findCrafting(table, "minecraft:oak_planks");
+        const auto* planks = findCrafting(table, "rebedrock:oak_planks");
         assert(planks != nullptr);
         assert(planks->output.count != 7U); // 内置底座的 4，覆盖没生效
     }

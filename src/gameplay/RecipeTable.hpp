@@ -11,6 +11,12 @@
 // matcher compares — lives here because this is the one place that may reach the
 // item and block registries. An overlay recipe naming an item or block this
 // build has no id for is skipped whole, never resolved to the wrong ingredient.
+//
+// ADV-0b: an overlay file's identifier is normalised to this project's own
+// `rebedrock:` namespace before it is merged (compat::canonicalContentId), so a
+// vanilla pack's `minecraft:oak_planks` *replaces* the baked `rebedrock:oak_planks`
+// instead of appending a duplicate recipe under a second name. This is boundary
+// ① of the list in RecipeBook.hpp; every other boundary is named there too.
 
 #include "assets/ResourceProvider.hpp"
 #include "gameplay/CraftingSystem.hpp"

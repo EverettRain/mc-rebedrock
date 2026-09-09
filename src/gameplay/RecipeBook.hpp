@@ -13,6 +13,25 @@
 //     gameplay/StackedItemContents.hpp。
 //
 // ★ 配方是**怎么被解锁**的（本作与 vanilla 的唯一实质差异，见 unlock 规则那段）。
+//
+// ★★ ADV-0b 命名空间口径。本作的底座 id 一律是 `rebedrock:`（RecipeBakedData.inc
+// 与 RecipeBookCategoryData.inc），而**每一个解析边界**同时接受 `minecraft:` 与
+// `rebedrock:`，两者指同一条配方。归一化只有一处实现：
+// compat/ContentNamespace.hpp 的 `canonicalContentId`。
+//
+// 配方 id 的解析边界清单（加新边界要同步补进来，并在 recipe_book_test 的
+// testVanillaNamespaceAcceptedAtEveryBoundary 里各走一遍）：
+//   ① RecipeTable::applyOverlay —— 数据包文件名给出的 id（RecipeTable.cpp）。
+//      vanilla 包的 `minecraft:oak_planks` 必须**覆盖**我们的同名配方，而不是
+//      追加成第二条。
+//   ② RecipeBook 的每一个公开入口 —— add / contains / remove / removeHighlight /
+//      highlighted / addRecipes / addRecipe / load。RCPB 存档块、命令、成就奖励
+//      走的都是这几个函数。
+//   ③ craftingRecipeByIdentifier（placeRecipe 的入口）。
+//   ④ craftingRecipeBookCategory / furnaceRecipeBookCategory 的二分查表
+//      （RecipeBookCategory.cpp）——★ 最易漏：查不到不报错，只会静默落到 Misc。
+// 本仓在「同名 block/item 双端桥」那次栽过一模一样的坑：codec 层不改、只改命令
+// 层是无效的，因为另一条入口绕过了修好的那一处。
 
 #include "gameplay/CraftingSystem.hpp"
 #include "gameplay/Inventory.hpp"

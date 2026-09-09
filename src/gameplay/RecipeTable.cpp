@@ -1,5 +1,6 @@
 #include "gameplay/RecipeTable.hpp"
 
+#include "compat/ContentNamespace.hpp"
 #include "core/Json.hpp"
 #include "data/DataPackPaths.hpp"
 #include "data/RecipeFile.hpp"
@@ -167,7 +168,10 @@ void RecipeTable::applyOverlay(const assets::ResourceProvider& resources) {
         } catch (const std::exception&) {
             continue; // a malformed recipe must not take the rest of the pack down
         }
-        const std::string name = keyFor(location, data::pack::kRecipeDir);
+        // ADV-0b 归一化边界①：数据包文件名给出的 id。vanilla 包里的
+        // `minecraft:oak_planks` 必须**覆盖**我们的 `rebedrock:oak_planks`，
+        // 而不是被当成第二条重名配方追加进来。
+        const std::string name = compat::canonicalContentId(keyFor(location, data::pack::kRecipeDir));
 
         // A `type` of "smelting" selects the furnace shape; anything else (and the
         // default) is a crafting recipe.

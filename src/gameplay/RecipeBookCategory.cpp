@@ -1,6 +1,9 @@
 #include "gameplay/RecipeBookCategory.hpp"
 
+#include "compat/ContentNamespace.hpp"
+
 #include <algorithm>
+#include <string>
 #include <span>
 #include <string_view>
 
@@ -33,12 +36,18 @@ static_assert(sortedByIdentifier(data::kCraftingRecipeCategories),
 static_assert(sortedByIdentifier(data::kFurnaceRecipeCategories),
               "RecipeBookCategoryData.inc 的熔炉表必须按标识符升序——查表是二分");
 
+// ADV-0b 归一化边界④：分类查表。两张表的 key 已经统一成 `rebedrock:`（且仍然
+// 升序——前缀是统一换的，相对顺序不变，上面的 static_assert 继续成立），所以
+// vanilla 拼法要先换掉才二分得到。★ 这一条是最容易漏的：查不到不会报错，只会
+// 静默落到 Misc 分类。
 [[nodiscard]] RecipeBookCategory lookup(std::span<const data::BakedRecipeCategory> rows,
                                         std::string_view identifier,
                                         RecipeBookCategory fallback) {
+    const std::string canonical = compat::canonicalContentId(identifier);
+    const std::string_view key{canonical};
     const auto row = std::ranges::lower_bound(
-        rows, identifier, {}, &data::BakedRecipeCategory::identifier);
-    if (row == rows.end() || row->identifier != identifier) {
+        rows, key, {}, &data::BakedRecipeCategory::identifier);
+    if (row == rows.end() || row->identifier != key) {
         return fallback;
     }
     return row->category;

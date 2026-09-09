@@ -1,5 +1,6 @@
 #include "gameplay/RecipeBook.hpp"
 
+#include "compat/ContentNamespace.hpp"
 #include "gameplay/RecipeTable.hpp"
 #include "gameplay/StackedItemContents.hpp"
 
@@ -36,7 +37,16 @@ void eraseSorted(std::vector<std::string>& sorted, std::string_view identifier) 
     }
 }
 
+// 存档/外部来的整张列表：先逐条归一化命名空间，再排序去重。
+// ★ 归一化必须在去重**之前**：老存档里同一条配方可能同时以 `minecraft:` 与
+// `rebedrock:` 两种拼法出现（一次是老版本写的、一次是新版本写的），先归一化
+// 才认得出它们是同一条。
 void normalize(std::vector<std::string>& entries) {
+    for (auto& entry : entries) {
+        if (compat::isVanillaNamespaced(entry)) {
+            entry = compat::canonicalContentId(entry);
+        }
+    }
     std::ranges::sort(entries);
     const auto duplicates = std::ranges::unique(entries);
     entries.erase(duplicates.begin(), duplicates.end());
@@ -273,42 +283,60 @@ void placeRecipeIntoGrid(int gridWidth, int gridHeight, int recipeWidth, int rec
     return 1;
 }
 
+// ADV-0b 归一化边界③：按标识符找配方（placeRecipe 的入口）。界面/命令递进来的
+// 可能是 vanilla 拼法。
 [[nodiscard]] const CraftingRecipe* craftingRecipeByIdentifier(std::string_view identifier) {
+    const std::string canonical = compat::canonicalContentId(identifier);
     const auto recipes = recipeTable().crafting();
-    const auto found = std::ranges::find(recipes, identifier, &CraftingRecipe::identifier);
+    const auto found = std::ranges::find(recipes, canonical, &CraftingRecipe::identifier);
     return found == recipes.end() ? nullptr : &*found;
 }
 
 } // namespace
 
+// ADV-0b 归一化边界②：配方书的**每一个**公开入口。两个集合里存的一律是
+// `rebedrock:` 规范形，所以入口把 `minecraft:` 换掉、出口（known()/highlight()）
+// 就只会吐规范形。命令、网络、存档、成就奖励走的都是这几个函数，逐个归一化才
+// 堵得住——只在某一个调用点归一化是无效的（「同名 block/item 双端桥」的教训）。
 bool RecipeBook::add(std::string_view identifier) {
-    return insertSorted(known_, identifier);
+    const std::string canonical = compat::canonicalContentId(identifier);
+    return insertSorted(known_, canonical);
 }
 
 bool RecipeBook::contains(std::string_view identifier) const {
-    return containsSorted(known_, identifier);
+    if (!compat::isVanillaNamespaced(identifier)) {
+        return containsSorted(known_, identifier); // 已是规范形：不分配
+    }
+    return containsSorted(known_, compat::canonicalContentId(identifier));
 }
 
 void RecipeBook::remove(std::string_view identifier) {
-    eraseSorted(known_, identifier);
-    eraseSorted(highlight_, identifier);
+    const std::string canonical = compat::canonicalContentId(identifier);
+    eraseSorted(known_, canonical);
+    eraseSorted(highlight_, canonical);
 }
 
 void RecipeBook::removeHighlight(std::string_view identifier) {
-    eraseSorted(highlight_, identifier);
+    eraseSorted(highlight_, compat::canonicalContentId(identifier));
 }
 
 bool RecipeBook::highlighted(std::string_view identifier) const {
-    return containsSorted(highlight_, identifier);
+    if (!compat::isVanillaNamespaced(identifier)) {
+        return containsSorted(highlight_, identifier);
+    }
+    return containsSorted(highlight_, compat::canonicalContentId(identifier));
 }
 
 int RecipeBook::addRecipes(std::span<const std::string_view> identifiers) {
     int added = 0;
     for (const auto identifier : identifiers) {
+        const std::string canonical = compat::canonicalContentId(identifier);
         // `ServerRecipeBook.addRecipes`（:64-73）：认识的一条都不动。
-        if (contains(identifier)) continue;
-        static_cast<void>(add(identifier));
-        static_cast<void>(insertSorted(highlight_, identifier));
+        // ★ 这一关也是 `recipe_unlocked` 触发器回路的断点（ADV-1）：发了配方 ->
+        // 成就完成 -> 又发同一条配方，第二次在这里被 contains 挡住。
+        if (containsSorted(known_, canonical)) continue;
+        static_cast<void>(insertSorted(known_, canonical));
+        static_cast<void>(insertSorted(highlight_, canonical));
         ++added;
     }
     return added;

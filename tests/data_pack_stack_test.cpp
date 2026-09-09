@@ -62,7 +62,7 @@ void writeOverridePack(const std::filesystem::path& packRoot, std::uint8_t plank
 
 [[nodiscard]] std::uint8_t plankCount() {
     for (const auto& recipe : mc::gameplay::recipeTable().crafting()) {
-        if (recipe.identifier == "minecraft:oak_planks") {
+        if (recipe.identifier == "rebedrock:oak_planks") {
             return recipe.output.count;
         }
     }
