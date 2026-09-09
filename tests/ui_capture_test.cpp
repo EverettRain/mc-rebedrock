@@ -547,6 +547,21 @@ void testFixtureSourceGuards() {
         CHECK(cursor.find("pinnedCursor") != std::string::npos);
     }
 
+    // ★ UI-10 / D24：**两栏各用各的滚动位置**。共用一个的症状是"滚左边右边跟着动"，
+    //   而它是 Vulkan 头里的一行、无头测试进不去——只能读源码守
+    //   （与 UI-8 那次面板层号完全同形）。
+    {
+        const std::string hudSource = readSource(MC_REBEDROCK_HUD_RENDERER_SRC);
+        const std::string body = functionBody(
+            hudSource, "void fillPackContext(ui::MenuBuildContext&");
+        if (!body.empty()) {
+            CHECK(body.find("packAvailableFirstRow") != std::string::npos);
+            CHECK(body.find("packSelectedFirstRow") != std::string::npos);
+            // 钳制归那个纯函数，这里不再自己算上界。
+            CHECK(body.find("packColumnWindow(") != std::string::npos);
+        }
+    }
+
     const std::string hud = readSource(MC_REBEDROCK_HUD_RENDERER_SRC);
     const std::string drawHud = functionBody(hud, "void drawHud(VkCommandBuffer");
     if (!drawHud.empty()) {

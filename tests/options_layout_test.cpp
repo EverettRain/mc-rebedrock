@@ -1648,6 +1648,33 @@ void testPackColumnScrolling() {
     }
 }
 
+// --- 21d. UI-10 / D24：一栏的滚动窗口 ----------------------------------------
+void testPackColumnWindow() {
+    // 装得下：不滚，全显示。
+    CHECK(mc::ui::packColumnWindow(3U, 6U, 0U) == (mc::ui::PackColumnWindow{0U, 3U}));
+    // 装不下：窗口 = 容量。
+    CHECK(mc::ui::packColumnWindow(10U, 6U, 0U) == (mc::ui::PackColumnWindow{0U, 6U}));
+    CHECK(mc::ui::packColumnWindow(10U, 6U, 2U) == (mc::ui::PackColumnWindow{2U, 6U}));
+    // ★ 滚到底就停住：再往下只会露出列表末尾之后的空白（10 - 6 = 4）。
+    CHECK(mc::ui::packColumnWindow(10U, 6U, 4U) == (mc::ui::PackColumnWindow{4U, 6U}));
+    CHECK(mc::ui::packColumnWindow(10U, 6U, 99U) == (mc::ui::PackColumnWindow{4U, 6U}));
+    // 空列表与零容量都不能越界。
+    CHECK(mc::ui::packColumnWindow(0U, 6U, 3U) == (mc::ui::PackColumnWindow{0U, 0U}));
+    CHECK(mc::ui::packColumnWindow(5U, 0U, 3U).rowCount == 0U);
+    // 性质：窗口永远不会伸出列表末尾。
+    for (std::size_t total = 0; total <= 12U; ++total) {
+        for (std::size_t capacity = 0; capacity <= 8U; ++capacity) {
+            for (std::size_t first = 0; first <= 15U; ++first) {
+                const auto window = mc::ui::packColumnWindow(total, capacity, first);
+                check(window.firstRow + window.rowCount <= total,
+                      "a column window may never run past the end of the list", __LINE__);
+                check(window.rowCount <= capacity, "a window never exceeds the capacity",
+                      __LINE__);
+            }
+        }
+    }
+}
+
 // --- 22. 音乐与声音（UI-6e ②，26.1 §7.4）------------------------------------
 void testSoundSettingsPage() {
     const mc::ui::HudLayout layout{1280.0F, 720.0F, 3};
@@ -2083,6 +2110,7 @@ int main() {
     testCreateWorldForm();
     testTransferIconZones();
     testPackColumnScrolling();
+    testPackColumnWindow();
     testSoundSettingsPage();
     testRuntimeLabelsAreActuallyComputed();
     testPageDispatchHasNoDefault();

@@ -379,11 +379,6 @@ class HudRenderer final {
     // UI-6e ③：资源包两栏的行数与选中行。**与输入侧那份必须一致**——
     // 两处各算一遍是 UI-6c/6d 已经栽过两次的形状，所以两边算的都是同一件事：
     // 左栏 = 已注册但不在草稿里的，右栏 = 草稿本身，各自被视口容量夹住。
-    // 一张列表最多能滚到第几行（再往下只会露出末尾之后的空白）。
-    [[nodiscard]] static std::size_t maximumFirstRow(std::size_t total, std::size_t capacity) {
-        return total > capacity ? total - capacity : 0U;
-    }
-
     void fillPackContext(ui::MenuBuildContext& ctx, const ui::HudLayout& layout) const {
         if (menuSystem.pageStack.current() != ui::PageId::ResourcePacks) {
             return;
@@ -399,17 +394,21 @@ class HudRenderer final {
             }
         }
         const std::size_t selectedTotal = packLibrary.draftOrder().size();
+        // ★ 钳制与窗口大小都归 `ui::packColumnWindow`（纯函数、有断言）。两栏各调
+        //   一次，**各传各的 firstRow**——共用一个的后果是滚左边右边跟着动。
+        const auto availableWindow =
+            ui::packColumnWindow(available, capacity, menuSystem.packAvailableFirstRow);
+        const auto selectedWindow =
+            ui::packColumnWindow(selectedTotal, capacity, menuSystem.packSelectedFirstRow);
         // UI-10 / D24：**两栏各自滚动**（偏差的第二半）。从前这里直接把行数截断到
         // 一屏放得下的数量——包多过一屏时，下面那些**根本画不出来也点不到**。
         //
         // ★ 起点在这里钳一次，装配与布局都从 ctx 里取同一个值；钳制只发生在这一处
         //   （与设置列表的 `optionsWindowFor` 同一条规矩）。
-        ctx.availablePackFirstRow =
-            std::min(menuSystem.packAvailableFirstRow, maximumFirstRow(available, capacity));
-        ctx.selectedPackFirstRow =
-            std::min(menuSystem.packSelectedFirstRow, maximumFirstRow(selectedTotal, capacity));
-        ctx.availablePackRowCount = std::min(available - ctx.availablePackFirstRow, capacity);
-        ctx.selectedPackRowCount = std::min(selectedTotal - ctx.selectedPackFirstRow, capacity);
+        ctx.availablePackFirstRow = availableWindow.firstRow;
+        ctx.selectedPackFirstRow = selectedWindow.firstRow;
+        ctx.availablePackRowCount = availableWindow.rowCount;
+        ctx.selectedPackRowCount = selectedWindow.rowCount;
         ctx.selectedPackTotalRows = selectedTotal;
         ctx.selectedPackRow = menuSystem.selectedPackRow;
     }

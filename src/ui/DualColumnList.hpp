@@ -162,6 +162,26 @@ struct TransferIconZones final {
     return widget.debugId == static_cast<std::uint16_t>(WidgetId::PackRowSelected);
 }
 
+// UI-10 / D24：一栏的滚动窗口。
+//
+// ★ 与设置列表的 `optionsWindowFor` 同一条规矩：**钳制只发生在一处**。
+//   两栏各调用一次、各传各的 firstRow——共用一个的后果是滚左边右边跟着动。
+struct PackColumnWindow final {
+    std::size_t firstRow = 0;
+    std::size_t rowCount = 0;
+
+    [[nodiscard]] constexpr bool operator==(const PackColumnWindow&) const = default;
+};
+
+[[nodiscard]] constexpr PackColumnWindow packColumnWindow(std::size_t total,
+                                                          std::size_t capacity,
+                                                          std::size_t firstRow) {
+    const std::size_t maximumFirst = total > capacity ? total - capacity : 0U;
+    const std::size_t clamped = firstRow < maximumFirst ? firstRow : maximumFirst;
+    const std::size_t remaining = total - clamped;
+    return PackColumnWindow{clamped, remaining < capacity ? remaining : capacity};
+}
+
 // 一栏里放得下几行。
 [[nodiscard]] constexpr std::size_t transferVisibleRows(const ScrollList& list) {
     return list.visibleRows();
