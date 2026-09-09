@@ -116,7 +116,7 @@ StandardPackResourceProvider::StandardPackResourceProvider(std::filesystem::path
     std::ostringstream contents;
     contents << input.rdbuf();
     try {
-        languages_ = PackMetadata::parse(contents.str()).languages;
+        metadata_ = PackMetadata::parse(contents.str());
     } catch (const std::exception&) {
         // An invalid metadata file is diagnosed by pack discovery. Resource
         // resolution remains usable, but the pack contributes no languages.

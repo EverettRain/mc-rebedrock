@@ -270,12 +270,15 @@ struct CameraUniform final {
 } // namespace
 
 struct VulkanRenderer::Impl final : public gameplay::SimulationHost {
-    Impl(std::filesystem::path shaderDirectory, const assets::ResourceProvider& provider, world::ChunkStreamer& streamer,
+    Impl(std::filesystem::path shaderDirectory, assets::ResourcePackLibrary& library,
+         world::ChunkStreamer& streamer,
          config::GameOptions initialOptions, std::filesystem::path initialOptionsPath,
          std::filesystem::path saveRoot, std::optional<TestSceneOptions> initialTestScene,
          std::optional<UiCaptureOptions> initialUiCapture)
-        : shaderRoot(std::move(shaderDirectory)),
-          resourceProvider(&provider), languageLoader(provider),
+        : shaderRoot(std::move(shaderDirectory)), packLibrary(&library),
+          // 资源栈的地址在 buildStack 重建前后保持不变（optional 就地 emplace），
+          // 因此这里记下的指针即便将来做了热重载也不会失效
+          resourceProvider(&library.provider()), languageLoader(library.provider()),
           optionsPath(std::move(initialOptionsPath)),
           // `provider` 是 Application 在 `bundled` 之上叠好的资源栈
           // 它同时充当集成式运行时的数据包底座
@@ -287,7 +290,7 @@ struct VulkanRenderer::Impl final : public gameplay::SimulationHost {
           // 这条路径仅限集成式运行，专用服务器改用纯 DirectoryResourceProvider 作底座
           // 客户端资源包因此绝无可能把服务端数据注入服务器
           // **不要**把集成式的数据底座与资源栈硬拆开，否则合并包就失效了
-          runtime(*this, streamer, std::move(saveRoot), &provider),
+          runtime(*this, streamer, std::move(saveRoot), &library.provider()),
           saveRepository(runtime.saveRepository()),
           chunkStreamer(runtime.chunkStreamer()),
           interactionWorld(runtime.world()),
@@ -299,7 +302,7 @@ struct VulkanRenderer::Impl final : public gameplay::SimulationHost {
           worldEpoch(runtime.worldEpoch()),
           options(std::move(initialOptions)),
           testScene(initialTestScene), uiCapture(initialUiCapture),
-          audioSystem(provider, options.masterVolume),
+          audioSystem(library.provider(), options.masterVolume),
           camera(initialTestScene.has_value() && initialTestScene->occlusionScene
                      ? glm::vec3{8.0F, 60.0F, -8.0F}
                      : (initialTestScene.has_value() ? glm::vec3{10.7F, 66.2F, 12.1F}
@@ -8457,6 +8460,10 @@ struct VulkanRenderer::Impl final : public gameplay::SimulationHost {
     }
 
     std::filesystem::path shaderRoot;
+    // 资源包选择界面的后端：packLibrary->packs() 列出，setEnabled / movePriorityUp /
+    // movePriorityDown 改草稿，commit() 落盘。commit() 返回 restartRequired，
+    // 因为换包**不做热重载**（依据见 wiki/architecture/known-debt.md）
+    assets::ResourcePackLibrary* packLibrary = nullptr;
     const assets::ResourceProvider* resourceProvider = nullptr;
     ui::AsyncLanguageLoader languageLoader;
     std::chrono::steady_clock::time_point languageLoadStarted{};
@@ -9023,13 +9030,13 @@ struct VulkanRenderer::Impl final : public gameplay::SimulationHost {
 };
 
 VulkanRenderer::VulkanRenderer(std::filesystem::path shaderRoot,
-                               const assets::ResourceProvider& resourceProvider,
+                               assets::ResourcePackLibrary& packLibrary,
                                world::ChunkStreamer& chunkStreamer, config::GameOptions options,
                                std::filesystem::path optionsPath, std::filesystem::path saveRoot,
                                std::optional<TestSceneOptions> testScene,
                                std::optional<UiCaptureOptions> uiCapture)
     : impl_(std::make_unique<Impl>(std::move(shaderRoot),
-                                   resourceProvider, chunkStreamer, std::move(options),
+                                   packLibrary, chunkStreamer, std::move(options),
                                    std::move(optionsPath), std::move(saveRoot), testScene,
                                    uiCapture)) {
     impl_->initialize();
