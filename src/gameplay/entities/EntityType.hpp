@@ -86,6 +86,12 @@ struct MobCategoryTraits final {
 // switches on (`gameplay/SpawnPlacements.hpp`) — a virtual dispatch that exists
 // to produce one bool is a cost with nothing to show for it, and the set is
 // closed in vanilla too.
+// EXP-3: Creeper's two numbers. `maxSwell` is 30 ticks (a second and a half of
+// hissing) and the blast is radius 3 — smaller than TNT's 4, which is why a
+// creeper hole is shallower than a TNT crater.
+inline constexpr int kCreeperMaxSwell = 30;
+inline constexpr float kCreeperExplosionRadius = 3.0F;
+
 enum class SpawnPlacement : std::uint8_t {
     OnGround,       // ON_GROUND: a valid floor below, two clear cells to stand in
     InWater,        // IN_WATER: the cell is water — squid, fish, dolphins

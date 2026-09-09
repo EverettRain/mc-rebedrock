@@ -624,6 +624,10 @@ inline constexpr Item Flint =
 // MDL-3: the snow layer's drop. Vanilla stacks it to 16 and files it under
 // Ingredients; without it a mined snow layer drops nothing at all — the second
 // clause of the "new block needs three things" rule (tag, loot, item).
+// EXP-3: the creeper's drop. Vanilla's own use for it is TNT and potions;
+// the TNT recipe below is what makes it worth picking up today.
+inline constexpr Item Gunpowder =
+    Item::of("gunpowder").category(CreativeCategory::Ingredients);
 inline constexpr Item Snowball =
     Item::of("snowball").stackSize(16U).category(CreativeCategory::Ingredients);
 inline constexpr Item Feather =
@@ -1082,7 +1086,7 @@ inline constexpr Item DiamondBoots =
 // their constructors need entity headers that sit above us in the include graph.
 // The order sets both the creative-catalog order within each tab and the item
 // texture-array layout the renderer appends. Grouped materials / food / tools.
-inline constexpr std::array<const Item*, 104> kItemRegistry{
+inline constexpr std::array<const Item*, 105> kItemRegistry{
     &items::Bucket,     &items::WaterBucket, &items::LavaBucket, &items::MilkBucket,
     &items::Coal,
     &items::IronIngot,
@@ -1092,6 +1096,7 @@ inline constexpr std::array<const Item*, 104> kItemRegistry{
     &items::LapisLazuli, &items::Redstone,   &items::Quartz,
     &items::Stick,
     &items::Flint,      &items::Feather,     &items::String,     &items::Leather,
+    &items::Gunpowder,
     &items::Snowball,
     &items::Sugar,      &items::Egg,         &items::Bone,       &items::Paper,
     &items::Book,       &items::EnchantedBook, &items::WheatSeeds,  &items::Wheat,
@@ -1137,7 +1142,7 @@ inline constexpr std::array<const Item*, 104> kItemRegistry{
 // versa) is a compile error, not a silent truncation: 57 pre-EQ-0 items + the
 // 20 armor items EQ-0 added + the 2 (arrow, bow) RW-1 adds + the 16 dyes DYE-1
 // adds here.
-static_assert(kItemRegistry.size() == 57U + 20U + 2U + 16U + 1U + 6U + 1U + 1U,
+static_assert(kItemRegistry.size() == 57U + 20U + 2U + 16U + 1U + 6U + 1U + 1U + 1U,
               "kItemRegistry size must track every entry listed above — bump "
               "this alongside the array when adding or removing items "
               "(the +1 is AR-CX4-b's flint_and_steel; the +6 are the mined ore "
