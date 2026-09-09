@@ -1882,7 +1882,8 @@ if(BUILD_TESTING)
     # 而两遍比对在本容器的隐藏窗口下也抓不到（实测记录见测试文件里那段说明）
     target_compile_definitions(mc_rebedrock_ui_capture_test PRIVATE
         MC_REBEDROCK_RENDERER_SRC="${CMAKE_CURRENT_SOURCE_DIR}/src/render/vulkan/VulkanRenderer.cpp"
-        MC_REBEDROCK_HUD_RENDERER_SRC="${CMAKE_CURRENT_SOURCE_DIR}/src/render/vulkan/HudRenderer.hpp")
+        MC_REBEDROCK_HUD_RENDERER_SRC="${CMAKE_CURRENT_SOURCE_DIR}/src/render/vulkan/HudRenderer.hpp"
+        MC_REBEDROCK_APPLICATION_SRC="${CMAKE_CURRENT_SOURCE_DIR}/src/core/Application.cpp")
     add_test(NAME ui_capture COMMAND mc_rebedrock_ui_capture_test)
 
     # UI-2：主菜单背景不得有代码写死的变暗。两层断言：配方本身（constexpr 纯函数），

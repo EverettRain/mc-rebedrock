@@ -794,6 +794,25 @@ void testKnobsAreAllPinned() {
     CHECK(body.find("toastQueue_.clear()") != std::string::npos);
     CHECK(body.find("chatHistory.clear()") != std::string::npos);
 
+    // ★ UI-10：导出也**从不读** options.properties。
+    //
+    //   `applyUiCaptureDeterminism` 钉得住的是**间接**影响画面的开关；它钉不住
+    //   **直接显示在界面上**的那些——视频设置页每一个滑块与循环选项的标签就是选项值
+    //   本身。实测：两棵工作树的 `render.distance` 一个 2 一个 4，同一份代码拍出来的
+    //   `video-settings` 逐字节不同，而那看起来像是"这一轮改坏了什么"。
+    //   一份出厂默认的 options 才让"图只由命令行决定"真正成立。
+    {
+        const std::string application = readSource(MC_REBEDROCK_APPLICATION_SRC);
+        const auto load = application.find("config::GameOptions::load(optionsPath)");
+        check(load != std::string::npos,
+              "Application must still load options for ordinary runs", __LINE__);
+        // 那一处必须是**三元的截图分支**，而不是无条件加载。
+        check(application.find("uiCapture_.has_value()") < load,
+              "the UI capture run must fall back to a default GameOptions", __LINE__);
+        check(application.find("config::GameOptions{}") != std::string::npos,
+              "the UI capture run must use a factory-default GameOptions", __LINE__);
+    }
+
     // ★ 导出**从不写 options.properties**。
     //
     // 这条不是洁癖：UI-2 落地后确实发生过——一次 1280x720 的界面截图把 `window.width`

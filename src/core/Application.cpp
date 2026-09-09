@@ -81,7 +81,20 @@ int Application::run() {
     std::cout << "Resources: " << resourceRoot_ << "\n";
 
     const auto optionsPath = configRoot_ / "options.properties";
-    config::GameOptions options = config::GameOptions::load(optionsPath);
+    // ★ UI-10：**界面截图不读磁盘上的 options**。
+    //
+    //   这条通道的验收条件是"图只由命令行决定"，而 `applyUiCaptureDeterminism` 只钉住了
+    //   一批**间接**影响画面的开关（各向异性、抗锯齿、vsync、模糊强度…）。它钉不住的是
+    //   **直接显示在界面上**的那些：视频设置页每一个滑块与循环选项的标签就是选项值本身。
+    //   实测：两棵工作树的 `render.distance` 一个 2 一个 4，同一份代码拍出来的
+    //   `video-settings` 因此逐字节不同——"基线不变"这句话在跨树对照时直接失效，
+    //   而差异看起来像是这一轮改坏了什么。
+    //
+    //   护栏此前只保证"导出**不写** options.properties"（那条修的是拍摄污染下一次拍摄），
+    //   没保证"不读"。一份出厂默认的 options 才让两件事同时成立。
+    config::GameOptions options = uiCapture_.has_value()
+                                      ? config::GameOptions{}
+                                      : config::GameOptions::load(optionsPath);
     const int loadRadius = testScene_.has_value()
         ? 0 : developmentLoadRadius(options.viewDistance);
     // 卸载半径比加载半径多留几圈迟滞，见 world::kUnloadHysteresisChunks
