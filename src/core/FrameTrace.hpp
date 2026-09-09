@@ -53,6 +53,20 @@ struct FrameTrace final {
     // body 的时间已经被 recordMs 量着，两者是包含关系而不是并列关系
     double graphMs = 0.0;      // BakedGraph::execute（屏障合批 + begin/end renderpass 的编排）
     double drawFrameMs = 0.0;  // drawFrame() 整体（含 record + HUD + acquire/submit/present）
+    // RN-54：帧循环里 drawFrame **之外**那一段。
+    //
+    // 立这三项之前，`cpuMs` 有近八成没有归属：一次实机 trace 里 cpuMs=17.23 而
+    // drawFrameMs=3.62，13.6 ms 落在所有已插桩字段的**外面**（acquireMs=0.018、
+    // presentMs=1.24、imageWaitMs=0.0002 全都不占）。那种状态下「呈现节奏是瓶颈」
+    // 这句话既证不了也证不伪——等待点在哪都不知道。
+    //
+    // 恒等式 `cpuMs == beforeDrawMs + drawFrameMs + afterDrawMs` 是这三项的**自检**：
+    // `unaccMs` 在报告里直接打出来，它不接近 0 就说明有测点错位或漏项，
+    // 而不是「有一段神秘的时间」。别把 unaccMs 当成一个可优化的量。
+    double cpuMs = 0.0;        // 帧循环一次迭代的全部墙钟（与打印的 cpuMs= 同一个数）
+    double beforeDrawMs = 0.0; // 迭代开头 → drawFrame() 调用前（poll/插值/世界更新都在内）
+    double afterDrawMs = 0.0;  // drawFrame() 返回 → 迭代结束
+    double pollMs = 0.0;       // glfwPollEvents（Mac 上它跑 NSRunLoop，是等待的头号嫌疑）
     double inputMs = 0.0;      // processInput()（每帧输入准备）
     double acquireMs = 0.0;    // vkAcquireNextImageKHR（呈现节流/vsync 可能在此阻塞）
     double presentMs = 0.0;    // vkQueueSubmit + vkQueuePresentKHR
@@ -93,6 +107,7 @@ struct FrameTrace final {
     void reset() {
         persistMs = saveChunkMs = lockHoldMs = drainMs = fenceWaitMs = 0.0;
         uploadMs = recordMs = drawFrameMs = inputMs = acquireMs = presentMs = 0.0;
+        cpuMs = beforeDrawMs = afterDrawMs = pollMs = 0.0;
         occlusionReadbackMs = uniformMs = imageWaitMs = graphMs = 0.0;
         particleSimMs = rainSimMs = particleLightMs = translucentResortMs = 0.0;
         translucentResorts = translucentSections = 0;

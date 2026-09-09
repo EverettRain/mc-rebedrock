@@ -2347,6 +2347,17 @@ if(BUILD_TESTING)
         "MC_REBEDROCK_SOURCE_DIR=\"${CMAKE_CURRENT_SOURCE_DIR}\"")
     add_test(NAME frame_graph COMMAND mc_rebedrock_frame_graph_test)
 
+    # RN-54: the frame loop's CPU accounting. Guards the *measurement points*, not the
+    # arithmetic — moving beforeDrawMs past glfwPollEvents, or letting pollMs swallow the
+    # two calls next to it, changes what every segment means while leaving the identity
+    # intact and every numeric assertion green.
+    add_executable(mc_rebedrock_frame_cpu_accounting_test
+        tests/frame_cpu_accounting_test.cpp
+    )
+    target_compile_definitions(mc_rebedrock_frame_cpu_accounting_test PRIVATE
+        "MC_REBEDROCK_SOURCE_DIR=\"${CMAKE_CURRENT_SOURCE_DIR}\"")
+    add_test(NAME frame_cpu_accounting COMMAND mc_rebedrock_frame_cpu_accounting_test)
+
     # 一个 GpuMesh 拥有几条缓冲，只有一张表。释放路径有两条（运行期归还池、退出期销毁），
     # 各自手抄成员名就会漏——RN-22 添第三条缓冲时漏了退出期那条，症状是含半透明的场景
     # 退出时 VMA 断言，而八张预览图全部正常写出。读源码断言那张表覆盖全部成员。

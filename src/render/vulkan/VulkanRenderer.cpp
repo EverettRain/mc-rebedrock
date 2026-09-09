@@ -1731,10 +1731,22 @@ struct VulkanRenderer::Impl final : public gameplay::SimulationHost {
         auto previousFrameTime = std::chrono::steady_clock::now();
         while (glfwWindowShouldClose(window) == GLFW_FALSE) {
             const auto frameCpuStart = std::chrono::steady_clock::now();
+            // RN-54：drawFrame 返回的时刻。声明在这里而不是那个作用域内，因为报告
+            // （在它之后）才需要它——afterDrawMs 量的正是「返回之后还花了多少」。
+            auto afterDrawStart = frameCpuStart;
             if (diag::traceEnabled()) {
                 diag::frameTrace().reset();
             }
-            glfwPollEvents();
+            // RN-54：`glfwPollEvents` 在 Mac 上跑 NSRunLoop，是「帧时间去哪了」的头号
+            // 嫌疑。单独量它，而不是把它混进 beforeDrawMs 的余量里——两者是包含关系，
+            // 报告里一起看才分得出「等在事件循环」与「循环前半真有工作」。
+            {
+                const auto pollStart = std::chrono::steady_clock::now();
+                glfwPollEvents();
+                if (diag::traceEnabled()) {
+                    diag::frameTrace().pollMs += diag::msSince(pollStart);
+                }
+            }
             persistWindowPlacementIfSettled();
             pollLanguageLoad();
             const auto currentFrameTime = std::chrono::steady_clock::now();
@@ -2101,15 +2113,25 @@ struct VulkanRenderer::Impl final : public gameplay::SimulationHost {
             // 它们由上面帧开头那次通道排空施加，来源是服务端逐 tick 事件的解码结果
             {
                 const auto drawStart = std::chrono::steady_clock::now();
+                // RN-54：迭代开头到这里的整段。它与 drawFrameMs、afterDrawMs 三者相加
+                // 必须等于 cpuMs——`unaccMs` 就是那条恒等式的余项，用来发现测点错位。
+                if (diag::traceEnabled()) {
+                    diag::frameTrace().beforeDrawMs +=
+                        std::chrono::duration<double, std::milli>(drawStart - frameCpuStart)
+                            .count();
+                }
                 static_cast<void>(drawFrame());
                 if (diag::traceEnabled()) {
                     diag::frameTrace().drawFrameMs += diag::msSince(drawStart);
+                    afterDrawStart = std::chrono::steady_clock::now();
                 }
             }
             ++renderedFrames;
             if (diag::traceEnabled()) {
                 const double frameMs = diag::msSince(frameCpuStart);
                 if (frameMs >= diag::traceThresholdMs()) {
+                    diag::frameTrace().cpuMs = frameMs;
+                    diag::frameTrace().afterDrawMs = diag::msSince(afterDrawStart);
                     const auto& t = diag::frameTrace();
                     std::cout << "[frametrace] frame=" << renderedFrames
                               << " cpuMs=" << frameMs
@@ -2147,6 +2169,12 @@ struct VulkanRenderer::Impl final : public gameplay::SimulationHost {
                     // 而不是随这行 cout 里的字面量变化——加一趟 pass 不必回来改这里。
                     // 一行都不打，等价于「这台设备不支持时间戳，或诊断刚开还没攒够一帧」，
                     // 那与「GPU 不花时间」是两回事，所以 count 也打出来。
+                    // RN-54：CPU 侧的三段归属加恒等式余项。unaccMs 不接近 0 = 测点错位
+                    // 或漏了一段，**不是**一个可以去优化的量。
+                    std::cout << " beforeDrawMs=" << t.beforeDrawMs
+                              << " pollMs=" << t.pollMs
+                              << " afterDrawMs=" << t.afterDrawMs << " unaccMs="
+                              << (t.cpuMs - t.beforeDrawMs - t.drawFrameMs - t.afterDrawMs);
                     std::cout << " gpuMs=" << t.gpuFrameMs << " gpuSteps=" << t.gpuStepCount;
                     for (std::uint32_t step = 0; step < t.gpuStepCount; ++step) {
                         std::cout << " gpu[" << t.gpuStepName[step] << "]=" << t.gpuStepMs[step];
