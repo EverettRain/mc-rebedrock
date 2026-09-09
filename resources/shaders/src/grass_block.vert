@@ -52,6 +52,9 @@ layout(location = 11) out vec3 fragmentTint;
 // glow billboards one brightness instead of four, since they point six different
 // ways and the falloff would darken four of them.
 layout(location = 12) flat out float fragmentShade;
+// RN-41：1 = 这个四边形是竖直的薄片（十字植物、作物），fragmentNormal 是它的**着色**
+// 法线而不是几何法线。只有阴影接收端读它。
+layout(location = 13) flat out float fragmentThinPlane;
 
 // The opaque and cutout pipelines share this shader, and a grass block's side
 // is drawn once by each: the dirt base, then the tinted overlay quad on exactly
@@ -65,14 +68,18 @@ invariant gl_Position;
 const float kLocalScale = 17.0 / 65535.0;
 const float kUvScale = 2.0 / 65535.0;
 
-const vec3 kVertexNormals[14] = vec3[14](
+// 与 MeshData.hpp 的 kVertexNormals 逐位对拍（sun_shadow_map_test）。
+// 末位是 RN-41 的薄片植物：方向与下标 2 相同，含义多一层「几何是竖直的」。
+const vec3 kVertexNormals[15] = vec3[15](
     vec3(1.0, 0.0, 0.0), vec3(-1.0, 0.0, 0.0), vec3(0.0, 1.0, 0.0), vec3(0.0, -1.0, 0.0),
     vec3(0.0, 0.0, 1.0), vec3(0.0, 0.0, -1.0),
     vec3(0.0, 0.900552, -0.434749), vec3(0.0, -0.434749, -0.900552),
     vec3(0.434749, 0.900552, 0.0), vec3(0.900552, -0.434749, 0.0),
     vec3(0.0, 0.900552, 0.434749), vec3(0.0, -0.434749, 0.900552),
-    vec3(-0.434749, 0.900552, 0.0), vec3(-0.900552, -0.434749, 0.0)
+    vec3(-0.434749, 0.900552, 0.0), vec3(-0.900552, -0.434749, 0.0),
+    vec3(0.0, 1.0, 0.0)
 );
+const int kThinPlaneNormalIndex = 14;
 
 void main() {
     uint posZ = inZNorm.x & 0xFFFFu;
@@ -87,6 +94,7 @@ void main() {
     gl_Position = camera.projection * camera.view * camera.model * vec4(world, 1.0);
     fragmentUv = uv;
     fragmentNormal = normalize(mat3(camera.model) * kVertexNormals[normalIndex]);
+    fragmentThinPlane = normalIndex == kThinPlaneNormalIndex ? 1.0 : 0.0;
     fragmentTextureLayer = layer;
     fragmentCameraDistance = distance(world, camera.cameraPosition.xyz);
     // Water faces carry the optical column depth in the waterDepth channel;

@@ -123,7 +123,8 @@ void main() {
                                                fragmentWorldPosition, normal,
                                                camera.sunDirection.xyz,
                                                camera.lightingSettings.z,
-                                       camera.weatherSettings.xy);
+                                               // 下落的方块是实心盒，没有薄片
+                                               camera.weatherSettings.xy, 0.0);
             }
             // RN-38：下落方块这里本来就是「环境 + 直射」的雏形（0.72 + 0.28），只是
             // 那两个数与地形那一套各写各的。现在共用 kSkyAmbientFraction，

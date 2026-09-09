@@ -114,6 +114,28 @@ float sunSkyFactor(float skyLightFactor, float weatherDimming, float visibility,
                                               ambientShare);
 }
 
+// RN-41：竖直薄片（十字植物、作物）自己遮自己。
+//
+// 现场（用户实机，正午前后）：草上有明显的斑马纹。成因不在阴影图，在**法线是假的**：
+// 十字植物四个角的法线写的是朝上（ChunkMesher 的 appendPlantQuad），光照按 vanilla 的
+// 观感算，可几何是竖直的。接收端的法线抬升按 sin(入射角) 推，正午 sin(0) = 0，于是
+// 一格高的薄片一点偏置都没有，而它在阴影图里横跨的深度是它自己的整个高度。
+//
+// 要的偏置正是那个高度沿光线的投影：植物高 1 格，其深度跨度 = 1 x sin(太阳仰角)，
+// 而 sin(太阳仰角) 就是朝上法线的入射角余弦，也就是这里的 incidence。于是：
+//
+//   * 正午（incidence = 1）偏置 1 格 —— 整株草被当成**一个光照单元**，与它的 Light
+//     等级、它的生物群系着色一样按格给，不再自己遮自己；
+//   * 日出日落（incidence -> 0）偏置 -> 0 —— 那时光线几乎垂直于薄片，本来就不自遮，
+//     也就不该付 peter-panning 的代价。
+//
+// 这个偏置**只给薄片**。给普通的朝上面（方块顶面）加它会吃掉一格以内的接触阴影。
+const float kThinPlaneHeightBlocks = 1.0F;
+
+float sunShadowThinPlaneBiasBlocks(float thinPlane, float incidenceCosine) {
+    return thinPlane * kThinPlaneHeightBlocks * clamp(incidenceCosine, 0.0F, 1.0F);
+}
+
 float sunShadowPenumbraTexels(float blockerDistanceBlocks, float texelSizeBlocks) {
     float penumbraBlocks = max(blockerDistanceBlocks, 0.0F) * kSunPenumbraTangent;
     return min(penumbraBlocks / texelSizeBlocks, kSunMaxPenumbraTexels);

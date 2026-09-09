@@ -17,6 +17,8 @@ layout(location = 10) flat in uint fragmentBiomeMask;
 layout(location = 11) in vec3 fragmentTint;
 // RN-13: the model json's per-element `"shade"` (see grass_block.vert).
 layout(location = 12) flat in float fragmentShade;
+// RN-41：1 = 竖直薄片（十字植物、作物），fragmentNormal 是着色法线不是几何法线
+layout(location = 13) flat in float fragmentThinPlane;
 
 layout(location = 0) out vec4 outColor;
 
@@ -100,7 +102,7 @@ void main() {
         shadowFactor = sunShadowFactor(shadowDepth, shadowDepthRaw, camera.lightViewProj[0],
                                        camera.lightViewProj[1], fragmentWorldPosition, normal,
                                        camera.sunDirection.xyz, camera.lightingSettings.z,
-                                       camera.weatherSettings.xy);
+                                       camera.weatherSettings.xy, fragmentThinPlane);
     }
     // CardinalLighting.DEFAULT, from the shared lightmap include — skipped for a
     // face whose model element declares `"shade": false` (RN-13). Vanilla's

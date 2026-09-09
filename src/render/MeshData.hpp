@@ -64,7 +64,7 @@ inline constexpr float kUvScale = kUvWindowSize / 65535.0F;
 
 // 轴对齐的面法线，外加墙上火把的斜向法线，朝向北东南西时分别指向上方与前方
 // 顺序与顶点着色器里那张表一致
-inline constexpr std::array<glm::vec3, 14> kVertexNormals{{
+inline constexpr std::array<glm::vec3, 15> kVertexNormals{{
     {1.0F, 0.0F, 0.0F},   { -1.0F, 0.0F, 0.0F}, {0.0F, 1.0F, 0.0F},
     {0.0F, -1.0F, 0.0F},  {0.0F, 0.0F, 1.0F},  {0.0F, 0.0F, -1.0F},
     // 朝北的火把
@@ -75,7 +75,18 @@ inline constexpr std::array<glm::vec3, 14> kVertexNormals{{
     {0.0F, 0.900552F, 0.434749F}, {0.0F, -0.434749F, 0.900552F},
     // 朝西的火把
     {-0.434749F, 0.900552F, 0.0F}, {-0.900552F, -0.434749F, 0.0F},
+    // RN-41：薄片植物。方向与下标 2 逐位相同，是**同一个着色法线**——十字草与作物
+    // 的光照一直按「朝上」算（cardinalShade 因此给它们 1.0，与 vanilla 的观感一致）。
+    // 分出一个下标只为了让着色器认出**几何是竖直的薄片**：它的真实法线是水平的，
+    // 而接收端偏置是按着色法线推的，于是正午那一档偏置恰好是 0，草在自己身上投出
+    // 一片斑马纹。顶点格式没有空位可放这一位，法线下标本来就是「这是哪一种朝向的面」，
+    // 多一种朝向是它该表达的东西。
+    {0.0F, 1.0F, 0.0F},
 }};
+
+// 上一条的下标。nearestNormalIndex 永远取不到它（点积相等时保留先出现的下标 2），
+// 所以它只能由 packVertex 的 thinPlane 显式选中——有断言钉着这一点。
+inline constexpr std::uint8_t kThinPlaneNormalIndex = 14U;
 
 // 法线表里与 normal 最接近的那个下标，按点积最大取
 // 网格化器产出的就是轴对齐的面法线与火把斜向法线，上面那张表两者都有
@@ -109,7 +120,9 @@ inline constexpr std::array<glm::vec3, 14> kVertexNormals{{
     std::uint8_t tintG = 255U,
     std::uint8_t tintB = 255U,
     std::uint8_t biomeMask = 0U,
-    bool shade = true) {
+    bool shade = true,
+    // RN-41：这个四边形是竖直的薄片（十字植物、作物），而 normal 是它的**着色**法线。
+    bool thinPlane = false) {
     const auto quantizePosition = [](float value) {
         return static_cast<std::uint16_t>(std::clamp(
             static_cast<long>(std::lround((value - kLocalWindowBase) / kLocalScale)), 0L,
@@ -127,7 +140,7 @@ inline constexpr std::array<glm::vec3, 14> kVertexNormals{{
         quantizePosition(localPosition.x),
         quantizePosition(localPosition.y),
         quantizePosition(localPosition.z),
-        nearestNormalIndex(normal),
+        thinPlane ? kThinPlaneNormalIndex : nearestNormalIndex(normal),
         biomeMask,
         quantizeUv(uv.x),
         quantizeUv(uv.y),
@@ -161,6 +174,10 @@ inline constexpr std::array<glm::vec3, 14> kVertexNormals{{
 }
 [[nodiscard]] inline glm::vec3 decodeNormal(const VoxelVertex& vertex) {
     return kVertexNormals[vertex.normalIndex];
+}
+// RN-41：竖直薄片（十字植物、作物）。着色法线朝上，几何不是。
+[[nodiscard]] inline bool isThinPlaneVertex(const VoxelVertex& vertex) {
+    return vertex.normalIndex == kThinPlaneNormalIndex;
 }
 [[nodiscard]] inline glm::vec2 decodeUv(const VoxelVertex& vertex) {
     return {static_cast<float>(vertex.uvX) * kUvScale + kUvWindowBase,

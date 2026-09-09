@@ -520,6 +520,31 @@ int main() {
     expectNear(worldPos(plantVertices[16]).z, 8.0F, "sapling z");
     expectNear(worldPos(plantVertices[16]).y, 2.0F, "sapling y");
 
+    // RN-41：十字植物的每一个顶点都必须带薄片下标。着色法线仍旧朝上（vanilla 的观感
+    // 靠它），带的是「几何是竖直的」这一位——接收端据此把整株草当成一个光照单元，
+    // 不再自己在自己身上投斑马纹。
+    //
+    // 逐个顶点断言，不是「至少有一个」：网格化那条路上任何一个出口漏掉它，症状都是
+    // 「有的草有斑马纹、有的没有」，而源码读起来毫无异样。
+    for (std::size_t i = 0; i < plantVertices.size(); ++i) {
+        assert(mc::render::isThinPlaneVertex(plantVertices[i]));
+        // 而它解出来的法线仍然是朝上的那一个
+        assert(mc::render::decodeNormal(plantVertices[i]) == glm::vec3(0.0F, 1.0F, 0.0F));
+    }
+    // ★ 反面：实心方块的顶面**不能**是薄片。给方块顶面加那一格偏置会吃掉一格以内的
+    // 全部接触阴影——一个方块压在另一个方块上，上面那个不再投影
+    {
+        mc::world::World cubeWorld;
+        mc::world::Chunk cubeChunk;
+        cubeChunk.setBlock(2, mc::world::kMinY + 0, 2, mc::world::Block::Stone);
+        cubeWorld.setChunk({0, 0}, std::move(cubeChunk));
+        const auto cubeMesh = mc::world::ChunkMesher::buildSection(cubeWorld, {0, 0}, 0);
+        assert(!cubeMesh.mesh.vertices.empty());
+        for (const auto& vertex : cubeMesh.mesh.vertices) {
+            assert(!mc::render::isThinPlaneVertex(vertex));
+        }
+    }
+
     // RN-2: every shaped block (stairs/door/fence-gate/trapdoor/button/pressure
     // plate/wall) now meshes from the one `BlockShape` box set the pick ray and
     // collision already read, instead of the old full-cube fallthrough. A lone

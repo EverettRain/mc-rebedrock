@@ -50,7 +50,7 @@ bool sunShadowInsideCascade(vec3 shadowUv) {
 float sunShadowFactor(sampler2DArrayShadow shadowMap, sampler2DArray shadowDepth,
                       mat4 lightViewProjNear, mat4 lightViewProjFar,
                       vec3 worldPosition, vec3 normal, vec3 sunDirection,
-                      float nearCascadeEnabled, vec2 weather) {
+                      float nearCascadeEnabled, vec2 weather, float thinPlane) {
     // 三个接收者统一：没有太阳直射的面不受此方向的遮挡影响，也无需 PCF。
     // 受光面的光照权重保持原样；合并 sky 通道仍包含环境天光，这是待拆分的近似。
     float incidence = dot(normal, normalize(sunDirection));
@@ -94,7 +94,11 @@ float sunShadowFactor(sampler2DArrayShadow shadowMap, sampler2DArray shadowDepth
     float layer = float(cascade);
 
     float texel = 1.0 / kSunShadowMapResolution;
-    float reference = shadowUv.z - kSunShadowDepthBiasBlocks / kSunShadowDepthRangeBlocks;
+    // RN-41：薄片植物再加一层，见 sunShadowThinPlaneBiasBlocks。普通面上 thinPlane 是 0，
+    // 这一项整个消失
+    float biasBlocks = kSunShadowDepthBiasBlocks +
+        sunShadowThinPlaneBiasBlocks(thinPlane, incidence);
+    float reference = shadowUv.z - biasBlocks / kSunShadowDepthRangeBlocks;
 
     // RN-34：先找遮挡物，再决定糊多宽（接触硬化）。
     //

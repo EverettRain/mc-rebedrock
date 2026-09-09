@@ -1789,7 +1789,12 @@ void appendPlantQuad(
             tint[0],
             tint[1],
             tint[2],
-            biomeMask));
+            biomeMask,
+            true,
+            // RN-41：这里是十字植物与作物**唯一**的顶点出口。四个角的法线写的是朝上
+            // （光照按 vanilla 的观感走），而几何是竖直的薄片——两者不一致这件事必须
+            // 传下去，否则接收端的阴影偏置会按「朝上的面」去推，正午推出 0
+            true));
     }
     // Cross models must remain visible from both directions after enabling
     // Java-style back-face culling for the shared cutout render layer.

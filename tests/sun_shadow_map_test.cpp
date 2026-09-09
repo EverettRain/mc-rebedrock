@@ -110,6 +110,11 @@ const float kNearCascadeOff = 0.0F;
 // 之前逐位相同——既有的每一条断言都靠这一点继续成立
 const glm::vec2 kClearWeather{0.0F, 0.0F};
 
+// RN-41：thinPlane。普通的实心面是 0，既有的每一条断言都在这一档上——薄片那一档
+// （十字植物、作物）由 checkThinPlaneBias 单独钉
+const float kSolidFace = 0.0F;
+const float kThinPlane = 1.0F;
+
 void require(bool condition, const std::string& message, int line) {
     if (!condition) {
         throw std::runtime_error{"sun_shadow_map_test line " + std::to_string(line) + ": " +
@@ -194,7 +199,7 @@ void checkShadowFacing() {
                 samples.blockerDepth = {0.0F, 0.0F, 0.0F, 0.0F};
                 const float factor = shaderReceiver::sunShadowFactor(
                     &samples, &samples, kMissNearCascade, glm::mat4{1.0F},
-                    glm::vec3{0, 0, 0.5F}, normal, sun, kNearCascadeOn, kClearWeather);
+                    glm::vec3{0, 0, 0.5F}, normal, sun, kNearCascadeOn, kClearWeather, kSolidFace);
                 const std::string context = " at N.L=" + std::to_string(incidence);
                 if (incidence <= 0.0F) {
                     REQUIRE(factor == 1.0F && samples.count == 0,
@@ -242,7 +247,7 @@ void checkShadowFacing() {
     shaderReceiver::Samples outside;
     REQUIRE(shaderReceiver::sunShadowFactor(&outside, &outside, kMissNearCascade, glm::mat4{1.0F},
                 glm::vec3{3, 0, 0.5F}, glm::vec3{0, 1, 0}, glm::vec3{0, 1, 0},
-                kNearCascadeOn, kClearWeather) == 1.0F && outside.count == 0,
+                kNearCascadeOn, kClearWeather, kSolidFace) == 1.0F && outside.count == 0,
             "sun-facing receiver outside the shadow map must remain fully lit without PCF");
 }
 
@@ -989,7 +994,7 @@ void checkCascades() {
     samples.blockerDepth = {0.0F, 0.0F, 0.0F, 0.0F};
     const float factor = shaderReceiver::sunShadowFactor(
         &samples, &samples, glm::mat4{1.0F}, kMissNearCascade, glm::vec3{0, 0, 0.5F},
-        glm::vec3{0, 1, 0}, glm::vec3{0, 1, 0}, kNearCascadeOn, kClearWeather);
+        glm::vec3{0, 1, 0}, glm::vec3{0, 1, 0}, kNearCascadeOn, kClearWeather, kSolidFace);
     REQUIRE(samples.count == 4 && factor == 1.0F,
             "a receiver inside the near box must take the near cascade and still do four taps");
     for (std::size_t tap = 0; tap < samples.count; ++tap) {
@@ -1015,7 +1020,7 @@ void checkCascades() {
         grazing.blockerDepth = {0.0F, 0.0F, 0.0F, 0.0F};
         static_cast<void>(shaderReceiver::sunShadowFactor(
             &grazing, &grazing, glm::mat4{1.0F}, kMissNearCascade, glm::vec3{0, 0, 0.5F}, up,
-            grazingSun, kNearCascadeOn, kClearWeather));
+            grazingSun, kNearCascadeOn, kClearWeather, kSolidFace));
         REQUIRE(grazing.count == 4, "the grazing near-cascade probe must reach the PCF taps");
         const float nearLift = shaderBias::sunShadowNormalOffsetBlocks(
             incidence, shaderBias::kSunShadowNearTexelBlocks);
@@ -1052,7 +1057,7 @@ void checkCascades() {
         static_cast<void>(shaderReceiver::sunShadowFactor(&off, &off, glm::mat4{1.0F},
                                                           glm::mat4{1.0F}, glm::vec3{0, 0, 0.5F},
                                                           glm::vec3{0, 1, 0}, glm::vec3{0, 1, 0},
-                                                          kNearCascadeOff, kClearWeather));
+                                                          kNearCascadeOff, kClearWeather, kSolidFace));
         REQUIRE(off.count == 4, "switching cascades off must still shadow, just from the far map");
         for (std::size_t tap = 0; tap < off.count; ++tap) {
             REQUIRE(off.coordinates[tap].z == 1.0F,
@@ -1070,7 +1075,7 @@ void checkCascades() {
         static_cast<void>(shaderReceiver::sunShadowFactor(&on, &on, glm::mat4{1.0F},
                                                           glm::mat4{1.0F}, glm::vec3{0, 0, 0.5F},
                                                           glm::vec3{0, 1, 0}, glm::vec3{0, 1, 0},
-                                                          kNearCascadeOn, kClearWeather));
+                                                          kNearCascadeOn, kClearWeather, kSolidFace));
         REQUIRE(on.count == 4 && on.coordinates[0].z == 0.0F,
                 "fixture check: with the same matrices, cascades on must select layer 0 — "
                 "otherwise the assertion above passes for the wrong reason");
@@ -1176,7 +1181,7 @@ void checkWeatherResponse() {
         samples.blockerDepth = {0.0F, 0.0F, 0.0F, 0.0F};
         const float factor = shaderReceiver::sunShadowFactor(
             &samples, &samples, kMissNearCascade, glm::mat4{1.0F}, glm::vec3{0, 0, 0.5F},
-            glm::vec3{0, 1, 0}, glm::vec3{0, 1, 0}, kNearCascadeOn, weather);
+            glm::vec3{0, 1, 0}, glm::vec3{0, 1, 0}, kNearCascadeOn, weather, kSolidFace);
         return std::pair{factor, samples.count};
     };
     const auto [clearFactor, clearTaps] = run(kClearWeather);
@@ -1277,6 +1282,106 @@ void checkBias() {
 //
 // 夹具让接收点落在 z = 0.5、法线朝 +Y、太阳正上方（入射角 0 ⇒ 法线偏移为 0，
 // 投影出来的 z 正好是 0.5），于是「遮挡物深度」可以直接换算成「离接收面多少格」。
+// RN-41：竖直薄片（十字植物、作物）的自遮。
+void checkThinPlaneBias() {
+    // ---- 1. 偏置本身 -------------------------------------------------------
+    // 正午（朝上法线的入射角余弦 = 1）要抬满一格：那正是一株草在阴影图里横跨的深度。
+    REQUIRE(std::abs(shaderBias::sunShadowThinPlaneBiasBlocks(1.0F, 1.0F) - 1.0F) < 1e-6F,
+            "a thin plane at noon must be lifted by its own height");
+    // 日出日落光线几乎垂直于薄片，本来就不自遮 ⇒ 偏置必须归零，否则那一档白付
+    // peter-panning
+    REQUIRE(shaderBias::sunShadowThinPlaneBiasBlocks(1.0F, 0.0F) == 0.0F,
+            "a grazing sun must not lift a thin plane at all");
+    // ★ 实心面**一格都不能抬**。给方块顶面加这一格会吃掉一格以内的全部接触阴影
+    for (const float incidence : {0.0F, 0.25F, 0.5F, 0.75F, 1.0F}) {
+        REQUIRE(shaderBias::sunShadowThinPlaneBiasBlocks(0.0F, incidence) == 0.0F,
+                "a solid face must never take the thin-plane bias");
+    }
+
+    // ---- 2. 它真的接进了比较参考值 -----------------------------------------
+    // 遮挡物摆在接收点前方 0.001 个 NDC 深度单位 = 0.32 格。实心面的偏置只有 0.005 格，
+    // 所以它**找得到**这个遮挡物并跑满四次 PCF；薄片抬了一整格（0.0031 个深度单位），
+    // 参考值越过遮挡物 ⇒ 一次采样都不做。
+    //
+    // 数遮挡物搜索的结果而不是最终亮度：斑马纹的成因正是「草把自己判成了遮挡物」。
+    const auto run = [](float thinPlane) {
+        shaderReceiver::Samples samples{};
+        samples.visibility = {0, 0, 0, 0, 0, 0, 0, 0, 0};
+        samples.blockerDepth = {0.499F, 0.499F, 0.499F, 0.499F};
+        const float factor = shaderReceiver::sunShadowFactor(
+            &samples, &samples, kMissNearCascade, glm::mat4{1.0F}, glm::vec3{0, 0, 0.5F},
+            glm::vec3{0, 1, 0}, glm::vec3{0, 1, 0}, kNearCascadeOn, kClearWeather, thinPlane);
+        return std::pair{factor, samples.count};
+    };
+    const auto [solidFactor, solidTaps] = run(kSolidFace);
+    REQUIRE(solidTaps == 4 && solidFactor == 0.0F,
+            "a solid face 0.32 blocks under a blocker must still be shadowed");
+    const auto [plantFactor, plantTaps] = run(kThinPlane);
+    REQUIRE(plantTaps == 0 && plantFactor == 1.0F,
+            "a thin plane must not shadow itself: the same blocker is inside its own height");
+
+    // ---- 3. 两张法线表逐位一致 ---------------------------------------------
+    // 薄片这一档靠**下标**传递（顶点格式没有空位），所以两张表一旦错位，植物会拿到
+    // 另一个方向的法线，而症状是「草的亮度变了」，读源码看不出来。
+    const std::filesystem::path shaderDir{MC_REBEDROCK_SHADER_SRC_DIR};
+    const std::string vertex = stripLineComments(readFile(shaderDir / "grass_block.vert"));
+    const auto from = vertex.find("vec3 kVertexNormals[");
+    REQUIRE(from != std::string::npos, "grass_block.vert must still declare the normal table");
+    const auto to = vertex.find(");", from);
+    REQUIRE(to != std::string::npos, "the normal table must be terminated");
+    std::vector<float> numbers;
+    {
+        const std::string body = vertex.substr(from, to - from);
+        std::size_t cursor = body.find('(');
+        while ((cursor = body.find("vec3(", cursor)) != std::string::npos) {
+            cursor += 5;
+            const auto end = body.find(')', cursor);
+            std::string triple = body.substr(cursor, end - cursor);
+            for (char& c : triple) {
+                if (c == ',') c = ' ';
+            }
+            std::istringstream in{triple};
+            float value = 0.0F;
+            while (in >> value) numbers.push_back(value);
+            cursor = end;
+        }
+    }
+    REQUIRE(numbers.size() == mc::render::kVertexNormals.size() * 3U,
+            "the shader normal table has " + std::to_string(numbers.size() / 3U) +
+                " entries, C++ has " + std::to_string(mc::render::kVertexNormals.size()));
+    for (std::size_t i = 0; i < mc::render::kVertexNormals.size(); ++i) {
+        const glm::vec3& expected = mc::render::kVertexNormals[i];
+        REQUIRE(std::abs(numbers[i * 3U + 0U] - expected.x) < 1e-6F &&
+                    std::abs(numbers[i * 3U + 1U] - expected.y) < 1e-6F &&
+                    std::abs(numbers[i * 3U + 2U] - expected.z) < 1e-6F,
+                "normal table entry " + std::to_string(i) + " differs between C++ and the shader");
+    }
+    // 薄片那个下标必须是**表尾那一项**，且它的方向与「朝上」逐位相同：它表达的是
+    // 「几何是竖直的」，不是一个新方向
+    REQUIRE(mc::render::kThinPlaneNormalIndex + 1U == mc::render::kVertexNormals.size(),
+            "the thin-plane index must be the last entry of the normal table");
+    REQUIRE(mc::render::kVertexNormals[mc::render::kThinPlaneNormalIndex] ==
+                glm::vec3(0.0F, 1.0F, 0.0F),
+            "the thin-plane entry must still shade as an upward face");
+    // 而 nearestNormalIndex 永远取不到它——否则每一个朝上的面都会变成薄片，
+    // 整个世界的顶面都会丢掉一格以内的接触阴影
+    for (const glm::vec3& normal : mc::render::kVertexNormals) {
+        REQUIRE(mc::render::nearestNormalIndex(normal) != mc::render::kThinPlaneNormalIndex,
+                "nearestNormalIndex must never return the thin-plane index on its own");
+    }
+    // 三个采样者都得把这一档传下去。漏一个的症状是「有的草有斑马纹、有的没有」
+    for (const char* name : {"grass_block.frag", "block_cutout.frag", "item_entity.frag"}) {
+        const std::string source = stripLineComments(readFile(shaderDir / name));
+        const auto call = source.find("sunShadowFactor(");
+        REQUIRE(call != std::string::npos, std::string{name} + " must still call sunShadowFactor");
+        const auto argsEnd = source.find(");", call);
+        const std::string args = source.substr(call, argsEnd - call);
+        const bool terrain = std::string{name} != "item_entity.frag";
+        REQUIRE(args.find(terrain ? "fragmentThinPlane" : "0.0") != std::string::npos,
+                std::string{name} + " must pass the thin-plane flag to sunShadowFactor");
+    }
+}
+
 void checkContactHardening() {
     const auto run = [](float blockerDepth) {
         shaderReceiver::Samples samples{};
@@ -1284,7 +1389,7 @@ void checkContactHardening() {
         samples.blockerDepth = {blockerDepth, blockerDepth, blockerDepth, blockerDepth};
         const float factor = shaderReceiver::sunShadowFactor(
             &samples, &samples, kMissNearCascade, glm::mat4{1.0F}, glm::vec3{0, 0, 0.5F},
-            glm::vec3{0, 1, 0}, glm::vec3{0, 1, 0}, kNearCascadeOn, kClearWeather);
+            glm::vec3{0, 1, 0}, glm::vec3{0, 1, 0}, kNearCascadeOn, kClearWeather, kSolidFace);
         return std::pair{factor, samples};
     };
     const auto tapSpreadTexels = [](const shaderReceiver::Samples& samples) {
@@ -1493,6 +1598,7 @@ int main() {
         checkWeatherResponse();
         checkBias();
         checkContactHardening();
+        checkThinPlaneBias();
         checkEntityWiring();
         checkDepthConvention();
         checkTexelSnapping();
