@@ -116,6 +116,18 @@ using SupportRuleFn = bool (*)(const World&, glm::ivec3, BlockOrientation);
     return false;
 }
 
+// MDL-3: SnowLayerBlock#canSurvive — a full upward collision face below, or a
+// snow layer below that is already at its full eight. The second clause is why
+// this is not supportGround: it reads the block below's STATE, which no other
+// support rule does.
+[[nodiscard]] bool supportSnowLayer(const World& world, glm::ivec3 position, BlockOrientation) {
+    const BlockState below = world.state(position.x, position.y - 1, position.z);
+    if (below.block() == Block::Snow) {
+        return below.layers() == 8;
+    }
+    return isFaceSturdy(below.block());
+}
+
 // MDL-2: CarpetBlock#canSurvive — `!belowState.isAir()`. Any non-air cell will
 // hold a carpet, sturdy or not: it lies on a slab, a fence post or another
 // carpet just as happily as on stone. Weaker than supportGround on purpose.
@@ -152,7 +164,7 @@ static_assert(static_cast<std::size_t>(HorizontalPlacement::TowardPlayer) == 0U)
 static_assert(static_cast<std::size_t>(HorizontalPlacement::AwayFromPlayer) == 1U);
 static_assert(static_cast<std::size_t>(HorizontalPlacement::Clockwise) == 2U);
 
-inline constexpr std::array<SupportRuleFn, 8> kSupportRules{{
+inline constexpr std::array<SupportRuleFn, 9> kSupportRules{{
     &supportAlways,    // BlockSupport::None
     &supportGround,    // BlockSupport::Ground
     &supportWall,      // BlockSupport::Wall
@@ -160,6 +172,7 @@ inline constexpr std::array<SupportRuleFn, 8> kSupportRules{{
     &supportFarmland,  // BlockSupport::Farmland
     &supportSugarCane, // BlockSupport::SugarCane
     &supportAnyBelow,  // BlockSupport::AnyBelow (MDL-2: carpet)
+    &supportSnowLayer, // BlockSupport::SnowLayer (MDL-3)
     &supportFire,      // BlockSupport::Fire
 }};
 static_assert(static_cast<std::size_t>(BlockSupport::None) == 0U);
@@ -169,7 +182,8 @@ static_assert(static_cast<std::size_t>(BlockSupport::Soil) == 3U);
 static_assert(static_cast<std::size_t>(BlockSupport::Farmland) == 4U);
 static_assert(static_cast<std::size_t>(BlockSupport::SugarCane) == 5U);
 static_assert(static_cast<std::size_t>(BlockSupport::AnyBelow) == 6U);
-static_assert(static_cast<std::size_t>(BlockSupport::Fire) == 7U);
+static_assert(static_cast<std::size_t>(BlockSupport::SnowLayer) == 7U);
+static_assert(static_cast<std::size_t>(BlockSupport::Fire) == 8U);
 static_assert(kSupportRules.size() == static_cast<std::size_t>(BlockSupport::Fire) + 1U,
               "every BlockSupport must have a rule — a missing entry is an "
               "out-of-bounds function-pointer read");

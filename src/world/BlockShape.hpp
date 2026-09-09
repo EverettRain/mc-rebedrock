@@ -817,6 +817,13 @@ inline constexpr std::array<ShapeBox, 4> kFenceGateCollisionByFacing = [] {
 
 // MDL-2: CarpetBlock#getShape — `Block.column(16, 0, 1)`. A Column, so it goes
 // down the same mesh/pick/collision path a pressure plate does.
+// MDL-3: SnowLayerBlock's `SHAPES[layers]` — `Block.column(16, 0, layers * 2)`.
+// The COLLISION shape reads SHAPES[layers - 1] instead (`collisionShape` below),
+// which is why one layer of snow is walked over without stepping up.
+[[nodiscard]] constexpr BlockShape shapeLayered(BlockState state) {
+    return {ShapeKind::Column, 0.0F, static_cast<float>(state.layers()) * 2.0F / 16.0F, {}};
+}
+
 [[nodiscard]] constexpr BlockShape shapeCarpet(BlockState) {
     return {ShapeKind::Column, 0.0F, 1.0F / 16.0F, {}};
 }
@@ -888,7 +895,7 @@ using BlockShapeFn = BlockShape (*)(BlockState);
 // The per-model shape handlers indexed by BlockModel ordinal — shape dispatch as
 // data. `blockShape` loads the block's model and calls through this, so the shape
 // stays a single source with no switch(block...) to drift.
-inline constexpr std::array<BlockShapeFn, 19> kShapeByModel{{
+inline constexpr std::array<BlockShapeFn, 20> kShapeByModel{{
     &shapeCube,          // BlockModel::Cube
     &shapeCross,         // BlockModel::Cross
     &shapeCrop,          // BlockModel::Crop
@@ -908,6 +915,7 @@ inline constexpr std::array<BlockShapeFn, 19> kShapeByModel{{
     &shapeFire,          // BlockModel::Fire (RN-7: empty — no interaction box)
     &shapeCrossCollision, // BlockModel::CrossCollision (MDL-1: fence / bars / pane)
     &shapeCarpet,        // BlockModel::Carpet (MDL-2: the 1/16 floor slice)
+    &shapeLayered,       // BlockModel::Layered (MDL-3: snow, height = LAYERS)
 }};
 static_assert(static_cast<std::size_t>(BlockModel::Cube) == 0U);
 static_assert(static_cast<std::size_t>(BlockModel::Cross) == 1U);
@@ -928,9 +936,10 @@ static_assert(static_cast<std::size_t>(BlockModel::RedstoneWire) == 15U);
 static_assert(static_cast<std::size_t>(BlockModel::Fire) == 16U);
 static_assert(static_cast<std::size_t>(BlockModel::CrossCollision) == 17U);
 static_assert(static_cast<std::size_t>(BlockModel::Carpet) == 18U);
+static_assert(static_cast<std::size_t>(BlockModel::Layered) == 19U);
 // Every BlockModel ordinal must have a shape handler; a missing entry is the
 // out-of-bounds function-pointer read (a SIGBUS) that a new model would cause.
-static_assert(kShapeByModel.size() == static_cast<std::size_t>(BlockModel::Carpet) + 1U);
+static_assert(kShapeByModel.size() == static_cast<std::size_t>(BlockModel::Layered) + 1U);
 
 } // namespace detail
 
@@ -1158,6 +1167,15 @@ struct BlockCollisionSpan final {
     // and then asking the definition again for the closed case measured as a
     // real cost on the shape path — the open/closed split belongs inside the
     // single lookup, not across two.
+    // MDL-3: a snow layer collides ONE LAYER SHORTER than it draws (26.1
+    // getCollisionShape reads SHAPES[layers - 1] while getShape reads
+    // SHAPES[layers]). That is why a single layer is walked straight over and
+    // why eight layers stop you at 14/16, not 16/16 — losing this is the
+    // difference between snow you can walk on and snow you trip over.
+    if (blockDefinition(state.block()).model == BlockModel::Layered) {
+        return {ShapeKind::Column, 0.0F,
+                static_cast<float>(state.layers() - 1) * 2.0F / 16.0F, {}};
+    }
     // MDL-1: a fence collides 1.5 cells tall (26.1 FenceBlock's collisionHeight
     // 24) while it draws one cell tall — the same visual/collision split the
     // closed gate below makes, and the reason a fence line holds animals in.

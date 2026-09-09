@@ -88,6 +88,17 @@ class BlockState final {
         return value(StateProperty::ComparatorMode) != 0U;
     }
     // The light this state emits: a furnace's 13 only while it burns.
+    // MDL-3: SnowLayerBlock.LAYERS, 1..8. Stored as 0..7 (see StateSchema), so
+    // the default state is one layer and a block that never declared the axis
+    // still answers 1 rather than 0 — which is what the shape table wants.
+    [[nodiscard]] constexpr int layers() const {
+        return static_cast<int>(value(StateProperty::Layers)) + 1;
+    }
+    [[nodiscard]] constexpr BlockState withLayers(int count) const {
+        const int clamped = count < 1 ? 1 : (count > 8 ? 8 : count);
+        return with(StateProperty::Layers, static_cast<std::uint8_t>(clamped - 1));
+    }
+
     [[nodiscard]] constexpr std::uint8_t emittedLight() const {
         return emittedLightOfState(id_);
     }

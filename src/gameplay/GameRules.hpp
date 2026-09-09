@@ -45,6 +45,7 @@ enum class GameRuleId : std::uint8_t {
     MaxBlockModifications,
     MaxCommandForks,
     MaxCommandSequenceLength,
+    MaxSnowAccumulationHeight,
     MobDrops,
     NaturalHealthRegeneration,
     RandomTickSpeed,
@@ -81,7 +82,7 @@ inline constexpr std::int32_t kUnboundedRuleMaximum = 2147483647;
 // lock, so a typo'd `/gamerule random_tick_speed 100000` would stall the render
 // thread rather than merely making the world grow fast. It clamps rather than
 // rejects, so the command still succeeds.
-inline constexpr std::array<GameRuleDefinition, 16> kGameRuleDefinitions{{
+inline constexpr std::array<GameRuleDefinition, 17> kGameRuleDefinitions{{
     //     name                              type              default  min  max  category
     {"advance_time",                    GameRuleType::Boolean, true, 0, 0, "updates"},
     {"advance_weather",                 GameRuleType::Boolean, true, 0, 0, "updates"},
@@ -112,6 +113,11 @@ inline constexpr std::array<GameRuleDefinition, 16> kGameRuleDefinitions{{
      kUnboundedRuleMaximum, "misc"},
     {"max_command_sequence_length",     GameRuleType::Int, std::int32_t{65536}, 0,
      kUnboundedRuleMaximum, "misc"},
+    // MDL-3: how deep falling snow may pile up. Vanilla's default is 1 — snow
+    // settles as a single layer unless a pack or a player raises it — and 8 is
+    // the ceiling the LAYERS property can hold. 0 turns accumulation off without
+    // touching the freezing half of the same tick.
+    {"max_snow_accumulation_height",    GameRuleType::Int,     std::int32_t{1}, 0, 8, "updates"},
     {"mob_drops",                       GameRuleType::Boolean, true, 0, 0, "drops"},
     {"natural_health_regeneration",     GameRuleType::Boolean, true, 0, 0, "player"},
     {"random_tick_speed",               GameRuleType::Int,     std::int32_t{3}, 0, 1000, "updates"},

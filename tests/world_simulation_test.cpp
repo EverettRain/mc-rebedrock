@@ -1095,6 +1095,9 @@ int main() {
             Block::SpruceSapling, Block::BirchSapling,  Block::JungleSapling,
             Block::AcaciaSapling, Block::DarkOakSapling, Block::SugarCane,
             Block::Fire,
+            // MDL-3: the snow layer melts on a random tick when the BLOCK light
+            // passes 11.
+            Block::Snow,
         };
         for (const auto block : ticking) {
             assert(mc::gameplay::WorldSimulation::isRandomlyTicking(block));
