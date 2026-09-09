@@ -561,6 +561,46 @@ int main() {
         assert(sawSubmerged && sawDry);
     }
 
+    // RN-48：水面比整格低 1/9，所以上面压一块石头也挡不住它。
+    //
+    // vanilla 的 `FluidRenderer.isFaceOccludedByState` 写得明明白白：整块的遮挡体
+    // **只有在液面正好是 1.0 时**才挡得住向上那一面（`direction != UP || fullBlock`）。
+    // 我们的邻居 `faceOccludes` 位回答的是「封不封得住格墙」，而水面根本不在格墙上。
+    {
+        mc::world::World cappedWorld;
+        mc::world::Chunk capped;
+        // 一格水，头顶压石头：水面在 8/9，石头底面在 1.0，中间那道缝看得见水
+        capped.setBlock(5, mc::world::kMinY + 0, 5, mc::world::Block::Water);
+        capped.setBlock(5, mc::world::kMinY + 1, 5, mc::world::Block::Stone);
+        // 对照：一格水头顶还是水 —— 那时液面才是 1.0，顶面必须**照旧被剔除**
+        capped.setBlock(11, mc::world::kMinY + 0, 11, mc::world::Block::Water);
+        capped.setBlock(11, mc::world::kMinY + 1, 11, mc::world::Block::Water);
+        cappedWorld.setChunk({0, 0}, std::move(capped));
+        const auto cappedMesh = mc::world::ChunkMesher::buildSection(cappedWorld, {0, 0}, 0);
+        int cappedTopFaces = 0;
+        int stackedTopFaces = 0;
+        for (const auto& vertex : cappedMesh.translucentMesh.vertices) {
+            if (mc::render::decodeNormal(vertex) != glm::vec3(0.0F, 1.0F, 0.0F)) {
+                continue;
+            }
+            const auto position = worldPos(vertex);
+            if (std::fabs(position.x - 5.5F) < 1.0F && std::fabs(position.z - 5.5F) < 1.0F) {
+                ++cappedTopFaces;
+            }
+            if (std::fabs(position.x - 11.5F) < 1.0F && std::fabs(position.z - 11.5F) < 1.0F &&
+                position.y < 1.5F) {
+                ++stackedTopFaces;
+            }
+        }
+        // 八个顶点而不是四个：水面是双面的（RN-22——从水下也要看得见），
+        // 网格发的是两组反向绕序的 quad
+        assert(cappedTopFaces == 8 &&
+               "water under a solid block must still draw its surface: the surface is a ninth of "
+               "a block lower, so the block above does not reach it");
+        assert(stackedTopFaces == 0 &&
+               "water under water is full height, and that face is culled as before");
+    }
+
     // ★ 反面：实心方块的顶面**不能**是薄片。给方块顶面加那一格偏置会吃掉一格以内的
     // 全部接触阴影——一个方块压在另一个方块上，上面那个不再投影
     {

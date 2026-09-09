@@ -269,18 +269,52 @@ void checkWaterSurfaceIsVisibleFromBelow() {
 }
 
 void checkSubmergedWaterHasNoSurface() {
-    // 顶上盖住的水没有顶面，也就不该有那片背面 —— 反向 quad 是跟着顶面走的，
-    // 不是每格水都发一片。
-    const auto mesh = mc::world::ChunkMesher::buildSection(
-        worldWith({{{8, kY + 0, 8}, BlockState{Block::Water}},
-                   {{8, kY + 1, 8}, BlockState{Block::Water}},
-                   {{8, kY + 2, 8}, BlockState{Block::Stone}}}),
-        {0, 0}, 0);
-    // 相机在最下面那格水**里面**（局部 y = 1.5），所以脚下那片水底面在它身后，
-    // 视线朝上扫到的只可能是水面。
-    const glm::vec3 camera{8.5F, 1.5F, 8.5F};
-    const auto ray = quadsOnRay(quadsOf(mesh.translucentMesh), 1, camera);
-    REQUIRE(ray.empty(), "被石头盖住的水柱不该有任何水平面，实得 " + std::to_string(ray.size()));
+    // ★ RN-48：这条断言原来写的是「被石头盖住的水柱不该有任何水平面」——**那是错的**，
+    // 它把「邻居封得住格墙」当成了「邻居挡得住液面」。液面在 8/9 处，石头底面在 1.0 处，
+    // 中间还隔着 1/9 格。vanilla 的 `FluidRenderer.isFaceOccludedByState` 明写：
+    //
+    //     } else if (occluder == Shapes.block()) {
+    //         boolean fullBlock = height == 1.0F;
+    //         return direction != Direction.UP || fullBlock;
+    //
+    // 整块的遮挡体只有在液面正好是 1.0（也就是上面还是水）时才挡得住向上那一面。
+    // 现场是用户从 RN-46a 的出图里看出来的：水池上盖一块石头，水面整片消失。
+    {
+        const auto mesh = mc::world::ChunkMesher::buildSection(
+            worldWith({{{8, kY + 0, 8}, BlockState{Block::Water}},
+                       {{8, kY + 1, 8}, BlockState{Block::Water}},
+                       {{8, kY + 2, 8}, BlockState{Block::Stone}}}),
+            {0, 0}, 0);
+        // 相机在最下面那格水**里面**（局部 y = 1.5），所以脚下那片水底面在它身后，
+        // 视线朝上扫到的只可能是水面。
+        const glm::vec3 camera{8.5F, 1.5F, 8.5F};
+        const auto ray = quadsOnRay(quadsOf(mesh.translucentMesh), 1, camera);
+        REQUIRE(!ray.empty(),
+                "石头盖不住比它低 1/9 格的液面：那道缝里看得见水面，vanilla 也画");
+        REQUIRE(ray[0].shadingNormal.y > 0.9F,
+                "而它必须是一片朝上的水面，不是别的什么水平面");
+    }
+    // 反面：**水**盖住的水才没有顶面——那时液面才是 1.0，格墙与液面重合
+    {
+        const auto mesh = mc::world::ChunkMesher::buildSection(
+            worldWith({{{8, kY + 0, 8}, BlockState{Block::Water}},
+                       {{8, kY + 1, 8}, BlockState{Block::Water}},
+                       {{8, kY + 2, 8}, BlockState{Block::Water}}}),
+            {0, 0}, 0);
+        // 中间那格（局部 y = 1）的顶面必须不存在。相机放在它下面那格里朝上看，
+        // 扫到的应当是**最上面那格**的水面，而不是中间那格的
+        const glm::vec3 camera{8.5F, 0.5F, 8.5F};
+        const auto ray = quadsOnRay(quadsOf(mesh.translucentMesh), 1, camera);
+        for (const auto& quad : ray) {
+            // 只看**朝上**的那些：水格之间还有各自的底面，那是另一回事
+            if (quad.shadingNormal.y < 0.9F) {
+                continue;
+            }
+            REQUIRE(quad.centre.y > 2.0F,
+                    "水下面还是水的那几格不该发顶面，实得一片在 y = " +
+                        std::to_string(quad.centre.y));
+        }
+    }
 }
 
 // --- 三、绕序与着色法线的关系 -------------------------------------------------
