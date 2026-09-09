@@ -447,6 +447,7 @@ add_executable(mc_rebedrock
     src/render/PerspectiveCamera.cpp
     src/render/TestScene.cpp
     src/render/UiCapture.cpp
+    src/render/UiCaptureFixture.cpp
     src/render/vulkan/VulkanRenderer.cpp
     src/render/vulkan/VulkanResources.cpp
     src/render/vulkan/TextureManager.cpp
@@ -1835,6 +1836,7 @@ if(BUILD_TESTING)
     add_executable(mc_rebedrock_ui_capture_test
         tests/ui_capture_test.cpp
         src/render/UiCapture.cpp
+        src/render/UiCaptureFixture.cpp
         src/ui/PageStack.cpp
         src/ui/MenuGeometry.cpp
         src/ui/TitleScreenLayout.cpp

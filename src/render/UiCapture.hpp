@@ -15,6 +15,7 @@
 // 确定性是这条通道的验收条件，不是对它的描述——同一条命令行跑两遍必须逐字节相同。
 // 所以输出路径只能是命令行的函数，与时钟、鼠标、options 文件一概无关。
 
+#include "gameplay/ScreenTypes.hpp"
 #include "ui/PageStack.hpp"
 
 #include <cstddef>
@@ -49,9 +50,36 @@ inline constexpr int kMaxUiCaptureGuiScale = 8;
 inline constexpr float kUiCaptureCursorX = -1.0F;
 inline constexpr float kUiCaptureCursorY = -1.0F;
 
+// 一次拍摄的**目标**。
+//
+// ★ 它不是 `PageId`，因为容器界面根本不是一个 PageId：背包、箱子、工作台……都是
+//   `PageId::Game` **之上**的 `inventoryOpen + containerScreen` 组合（drawHud 走完
+//   `PageDrawKind::InGame` 之后那三条 if）。把目标写成 PageId，容器屏就永远拍不到——
+//   这正是 A0-0 之前的状态，也是偏差表 D14 的余项。
+//
+// 三个字段刻意都是**命令行的函数**：拍什么必须只由命令行决定，这条规矩一直管到文件名。
+struct UiCaptureTarget final {
+    ui::PageId page = ui::PageId::Title;
+    // 有值 = 在游戏内 HUD 之上开着这一块容器界面。
+    std::optional<gameplay::ContainerScreen> container{};
+    // 创造模式。★ **创造背包不是一个独立的枚举值**，它是
+    // `ContainerScreen::PlayerInventory + GameMode::Creative`（HudRenderer 里那三条
+    // if 就是这么判的）。所以它在这里是一根**独立的轴**，不是第七块容器屏。
+    bool creative = false;
+    // 创造背包的哪一个页签。只在 `creative` 为真时有意义。
+    //
+    // ★ 它必须是一根**自己的轴**：创造背包的绘制分成两支——背包页签（玩家 36 格 +
+    //   护甲/副手 + 删除框）与内容页签（9x5=45 格的只读目录 + 页签行 + 滚动条），
+    //   两支画的东西几乎没有交集。只给一个"创造"目标，另一支就一张图都没有，
+    //   而 A1 要拆的正是这两支。
+    bool creativeCatalog = false;
+
+    [[nodiscard]] bool operator==(const UiCaptureTarget&) const = default;
+};
+
 struct UiCaptureOptions final {
-    // 要拍的页面，按命令行给出的顺序，不去重（重复会被解析拒绝）
-    std::vector<ui::PageId> pages;
+    // 要拍的目标，按命令行给出的顺序，不去重（重复会被解析拒绝）
+    std::vector<UiCaptureTarget> targets;
     // 要拍的 GUI 缩放档，0 表示 Auto
     std::vector<int> guiScales{2, 3};
     std::uint32_t width = 1280U;
@@ -61,9 +89,13 @@ struct UiCaptureOptions final {
     [[nodiscard]] bool operator==(const UiCaptureOptions&) const = default;
 };
 
-// 页名与 PageId 的双向映射。名字是命令行拼写，短横线分词。
-[[nodiscard]] std::string_view uiCapturePageName(ui::PageId page);
-[[nodiscard]] std::optional<ui::PageId> uiCapturePageFromName(std::string_view name);
+// 目标名与目标的双向映射。名字是命令行拼写，短横线分词。
+//
+// 一张表两个方向读，于是名字与目标不可能各说各话；表的覆盖性由两条 constexpr 断言
+// 钉住（每个 PageId 一个目标、每块 ContainerScreen 至少一个目标），**用 `Count`
+// 哨兵而不是"当时的最后一个枚举值"**——后者在追加时静默通过（README 护栏 25）。
+[[nodiscard]] std::string_view uiCaptureTargetName(const UiCaptureTarget& target);
+[[nodiscard]] std::optional<UiCaptureTarget> uiCaptureTargetFromName(std::string_view name);
 
 // 这个页面要不要一个打开着的世界才成立。
 //
@@ -92,10 +124,11 @@ struct UiCaptureOptions final {
 // 「如果一处改动不改变任何函数的返回值，它就还没有被任何断言覆盖」（护栏 12）。
 [[nodiscard]] bool uiCapturePageShowsWorld(ui::PageId page);
 
-// 一张图的输出路径：<root>/<页名>/scale-<档>.png，Auto 档写作 scale-auto.png。
+// 一张图的输出路径：<root>/<目标名>/scale-<档>.png，Auto 档写作 scale-auto.png。
 // 路径必须只由命令行决定——确定性这条规则一直管到文件名。
 [[nodiscard]] std::filesystem::path uiCaptureImagePath(const UiCaptureOptions& options,
-                                                       ui::PageId page, int guiScale);
+                                                       const UiCaptureTarget& target,
+                                                       int guiScale);
 
 // 一次运行应当写出多少张图。少写一张而静默退出 0，是自动化对照最坏的结果。
 [[nodiscard]] std::size_t uiCaptureImageCount(const UiCaptureOptions& options);

@@ -7,6 +7,7 @@
 //   - 参数写错必须抛。悄悄拍了另一个屏幕再退出 0，是自动化对照最坏的结果。
 
 #include "render/UiCapture.hpp"
+#include "render/UiCaptureFixture.hpp"
 
 #include "ui/HudLayout.hpp"
 #include "ui/MenuGeometry.hpp"
@@ -40,6 +41,17 @@ void check(bool condition, const std::string& what, int line) {
 [[nodiscard]] std::optional<mc::render::UiCaptureOptions> parse(
     const std::vector<std::string_view>& arguments) {
     return mc::render::parseUiCaptureArguments(arguments);
+}
+
+// 一个前端页面的目标（容器为空）。
+[[nodiscard]] constexpr mc::render::UiCaptureTarget pageTarget(mc::ui::PageId page) {
+    return mc::render::UiCaptureTarget{page};
+}
+
+// 一块容器界面的目标。容器屏全挂在 PageId::Game 之上——它们不是 PageId。
+[[nodiscard]] constexpr mc::render::UiCaptureTarget containerTarget(
+    mc::gameplay::ContainerScreen screen, bool creative = false, bool catalog = false) {
+    return mc::render::UiCaptureTarget{mc::ui::PageId::Game, screen, creative, catalog};
 }
 
 // 解析这组参数必须抛，且抛的是 invalid_argument。
@@ -76,35 +88,39 @@ void testAbsent() {
 void testDefaults() {
     const auto parsed = parse({"--ui-shot", "title"});
     CHECK(parsed.has_value());
-    CHECK(parsed->pages.size() == 1U);
-    CHECK(parsed->pages.front() == mc::ui::PageId::Title);
+    CHECK(parsed->targets.size() == 1U);
+    CHECK(parsed->targets.front() == pageTarget(mc::ui::PageId::Title));
     // ★ 默认就拍两档：同一个屏幕在不同 GUI scale 下是不同的版面，只拍一档等于没拍。
     CHECK(parsed->guiScales.size() >= 2U);
     CHECK(parsed->width == 1280U);
     CHECK(parsed->height == 720U);
     CHECK(mc::render::uiCaptureImageCount(*parsed) ==
-          parsed->pages.size() * parsed->guiScales.size());
+          parsed->targets.size() * parsed->guiScales.size());
 }
 
 // --- 3. 页名 ---------------------------------------------------------------
 void testPageNames() {
     // 名字与 PageId 双向一致：一张表两个方向读，两边不可能各说各话。
-    for (int raw = 0; raw <= static_cast<int>(mc::ui::PageId::AdvancedGraphics); ++raw) {
+    // ★ 上界用 `Count` 哨兵，**不是**"当时的最后一个枚举值"。这里原本写的是
+    //   `<= PageId::AdvancedGraphics`——而 AdvancedGraphics 后面还有 KeyBinds /
+    //   Accessibility / SoundSettings / ResourcePacks 四页，它们的双向映射
+    //   **从来没有被这条循环检查过**（README 护栏 25 的同一个招，第三次出现）。
+    for (int raw = 0; raw < static_cast<int>(mc::ui::PageId::Count); ++raw) {
         const auto page = static_cast<mc::ui::PageId>(raw);
-        const auto name = mc::render::uiCapturePageName(page);
+        const auto name = mc::render::uiCaptureTargetName(pageTarget(page));
         CHECK(name != "unknown");
-        const auto roundTrip = mc::render::uiCapturePageFromName(name);
-        CHECK(roundTrip.has_value() && *roundTrip == page);
+        const auto roundTrip = mc::render::uiCaptureTargetFromName(name);
+        CHECK(roundTrip.has_value() && *roundTrip == pageTarget(page));
     }
-    CHECK(!mc::render::uiCapturePageFromName("Title").has_value());     // 大小写敏感
-    CHECK(!mc::render::uiCapturePageFromName("world_list").has_value()); // 分词用短横线
+    CHECK(!mc::render::uiCaptureTargetFromName("Title").has_value());     // 大小写敏感
+    CHECK(!mc::render::uiCaptureTargetFromName("world_list").has_value()); // 分词用短横线
 
     const auto parsed = parse({"--ui-shot", "title,options", "--ui-shot", "language"});
     CHECK(parsed.has_value());
-    CHECK(parsed->pages.size() == 3U);
-    CHECK(parsed->pages[0] == mc::ui::PageId::Title);
-    CHECK(parsed->pages[1] == mc::ui::PageId::Options);
-    CHECK(parsed->pages[2] == mc::ui::PageId::Language);
+    CHECK(parsed->targets.size() == 3U);
+    CHECK(parsed->targets[0] == pageTarget(mc::ui::PageId::Title));
+    CHECK(parsed->targets[1] == pageTarget(mc::ui::PageId::Options));
+    CHECK(parsed->targets[2] == pageTarget(mc::ui::PageId::Language));
 
     EXPECT_THROWS({"--ui-shot", "not-a-screen"});
     EXPECT_THROWS({"--ui-shot", "title,title"});            // 同一页给两次
@@ -122,9 +138,9 @@ void testPageNames() {
     // 混着给也可以：无世界的页面会整屏铺全景，把夹具的世界画面盖掉。
     const auto mixed = parse({"--ui-shot", "title,pause"});
     CHECK(mixed.has_value());
-    CHECK(mixed->pages.size() == 2U);
-    CHECK(mixed->pages[0] == mc::ui::PageId::Title);
-    CHECK(mixed->pages[1] == mc::ui::PageId::Pause);
+    CHECK(mixed->targets.size() == 2U);
+    CHECK(mixed->targets[0] == pageTarget(mc::ui::PageId::Title));
+    CHECK(mixed->targets[1] == pageTarget(mc::ui::PageId::Pause));
 
     // 哪些页要夹具，以及拍它们时游戏暂不暂停。两张表必须互相说得通：
     // 只有游戏内 HUD 是"世界在跑"的那一页，其余三页都是盖在世界上的界面。
@@ -152,13 +168,222 @@ void testPageNames() {
     CHECK(!mc::render::uiCapturePageShowsWorld(mc::ui::PageId::Loading));
     CHECK(mc::render::uiCapturePageNeedsWorld(mc::ui::PageId::Loading));
     // 看得见世界的页面必然需要夹具；反过来不成立（loading）
-    for (std::size_t i = 0; i <= static_cast<std::size_t>(mc::ui::PageId::AdvancedGraphics); ++i) {
+    for (std::size_t i = 0; i < static_cast<std::size_t>(mc::ui::PageId::Count); ++i) {
         const auto page = static_cast<mc::ui::PageId>(i);
         if (mc::render::uiCapturePageShowsWorld(page)) {
             check(mc::render::uiCapturePageNeedsWorld(page),
                   "a page that shows the world must ask for the fixture", __LINE__);
         }
     }
+}
+
+
+// --- 3c. A0-0：容器界面也是拍摄目标 -------------------------------------------
+//
+// 容器屏此前一张都拍不到，原因是拍摄目标的类型是 PageId，而背包/箱子/工作台
+// **不是** PageId——它们是 PageId::Game 之上的 `inventoryOpen + containerScreen`。
+// 于是 A 路线要改的那 1351 行零测试代码，连一张能对照的照片都没有。
+void testContainerTargets() {
+    // 每一块容器界面都点得到名。★ 上界用 ContainerScreen::Count 哨兵：
+    //   写"当时的最后一个枚举值"（Anvil）会在追加第七块屏时静默通过。
+    for (int raw = 0; raw < static_cast<int>(mc::gameplay::ContainerScreen::Count); ++raw) {
+        const auto screen = static_cast<mc::gameplay::ContainerScreen>(raw);
+        const auto name = mc::render::uiCaptureTargetName(containerTarget(screen));
+        check(name != "unknown",
+              "every ContainerScreen must have a capture name", __LINE__);
+        const auto roundTrip = mc::render::uiCaptureTargetFromName(name);
+        check(roundTrip.has_value() && *roundTrip == containerTarget(screen),
+              "container target names must round-trip", __LINE__);
+    }
+
+    // ★ 创造背包是 PlayerInventory 的**创造那一档**，不是第七块屏。两个目标同一块
+    //   容器、不同的 creative，因此必须是两个**不同**的名字与两条不同的输出路径——
+    //   否则第二张图会覆盖第一张，而两遍比对仍然全绿（少的那一张从来没存在过）。
+    const auto survival = containerTarget(mc::gameplay::ContainerScreen::PlayerInventory, false);
+    const auto creative = containerTarget(mc::gameplay::ContainerScreen::PlayerInventory, true);
+    CHECK(!(survival == creative));
+    CHECK(mc::render::uiCaptureTargetName(survival) != mc::render::uiCaptureTargetName(creative));
+    CHECK(mc::render::uiCaptureTargetName(creative) == "inventory-creative");
+
+    // ★ 创造背包的两个页签也是两个目标：背包页签画的是玩家 36 格 + 护甲 + 删除框，
+    //   内容页签画的是 45 格只读目录 + 页签行 + 滚动条——两支几乎没有交集。
+    //   只拍一支，另一支在 A1 拆分绘制链时一张可对照的图都没有。
+    const auto catalog =
+        containerTarget(mc::gameplay::ContainerScreen::PlayerInventory, true, true);
+    CHECK(!(catalog == creative));
+    CHECK(mc::render::uiCaptureTargetName(catalog) == "creative-catalog");
+    const auto parsedCatalog = parse({"--ui-shot", "creative-catalog"});
+    CHECK(parsedCatalog.has_value() && parsedCatalog->targets.front() == catalog);
+    // 生存背包没有页签这一说：那一维只在 creative 为真时有意义，所以它不该
+    // 给生存目标造出第二个名字来。
+    CHECK(mc::render::uiCaptureTargetName(
+              containerTarget(mc::gameplay::ContainerScreen::PlayerInventory, false, true)) ==
+          "unknown");
+
+    // 前端页面的目标与"同一页 + 开着容器"是两个目标：game 与 inventory 都挂在
+    // PageId::Game 上，只有容器那一维分得开它们。
+    CHECK(mc::render::uiCaptureTargetName(pageTarget(mc::ui::PageId::Game)) == "game");
+    CHECK(mc::render::uiCaptureTargetName(survival) == "inventory");
+
+    // 命令行认得它们，而且能与前端页面混着给。
+    const auto parsed = parse({"--ui-shot", "title,inventory,chest,inventory-creative"});
+    CHECK(parsed.has_value());
+    CHECK(parsed->targets.size() == 4U);
+    CHECK(parsed->targets[1] == survival);
+    CHECK(parsed->targets[2] == containerTarget(mc::gameplay::ContainerScreen::Chest));
+    CHECK(parsed->targets[3] == creative);
+    EXPECT_THROWS({"--ui-shot", "inventory,inventory"});
+
+    // 容器屏画在世界之上，所以它要夹具、看得见世界、而且**不暂停**（paused 会让
+    // drawHud 掉进暂停菜单那条分支，拍到的是一张正确的暂停菜单，只是文件名写着
+    // inventory）。这三条都由 PageId::Game 那一页答，容器只是叠在它上面的一层。
+    for (int raw = 0; raw < static_cast<int>(mc::gameplay::ContainerScreen::Count); ++raw) {
+        const auto target = containerTarget(static_cast<mc::gameplay::ContainerScreen>(raw));
+        check(mc::render::uiCapturePageNeedsWorld(target.page),
+              "a container target must ask for the world fixture", __LINE__);
+        check(mc::render::uiCapturePageShowsWorld(target.page),
+              "a container target must show the world", __LINE__);
+        check(!mc::render::uiCapturePageIsPaused(target.page),
+              "a container target must not be captured paused", __LINE__);
+    }
+}
+
+// --- 3d. A0-0：容器夹具的内容 -------------------------------------------------
+//
+// ★ 这些断言钉的不是"某个格子里放的是钻石镐"，而是**每一条绘制路径都有东西喂给它**。
+//   一张全空的背包截图看着也"挺对"，但它对图标、堆叠数字、耐久条、附魔提示框
+//   一条都没说——而那正是 A1 要改的那 825 行绘制代码。
+void testContainerFixture() {
+    // 非容器目标拿到的是默认快照：既有十八屏的基线因此逐字节不变。
+    const auto frontend = mc::render::uiCaptureWorldSnapshot(pageTarget(mc::ui::PageId::Title));
+    CHECK(frontend == mc::gameplay::WorldSnapshot{});
+
+    for (int raw = 0; raw < static_cast<int>(mc::gameplay::ContainerScreen::Count); ++raw) {
+        const auto screen = static_cast<mc::gameplay::ContainerScreen>(raw);
+        const auto snapshot = mc::render::uiCaptureWorldSnapshot(containerTarget(screen));
+        // 打开的那一屏必须是目标说的那一屏——渲染器就是从这个字段派生
+        // uiFrameData_.containerScreen 的。
+        check(snapshot.openContainerScreen == screen,
+              "the fixture must open the target's screen", __LINE__);
+
+        // 每一屏都画玩家自己那 36 格，所以它们在每一屏都要有内容。
+        std::size_t filled = 0;
+        std::size_t stacked = 0;
+        std::size_t damaged = 0;
+        std::size_t enchanted = 0;
+        std::size_t blockIcons = 0;
+        std::size_t itemIcons = 0;
+        for (const auto& stack : snapshot.inventorySlots) {
+            if (stack.empty()) continue;
+            ++filled;
+            if (stack.count > 1U) ++stacked;
+            if (stack.damage > 0U) ++damaged;
+            if (stack.enchantmentCount > 0U) ++enchanted;
+            if (stack.item == nullptr) ++blockIcons; else ++itemIcons;
+        }
+        check(filled >= 12U, "the fixture must fill most of the player's slots", __LINE__);
+        // 每一条都对应一条只有它才走得到的绘制路径。
+        check(stacked > 0U, "a stack of >1 draws the count text", __LINE__);
+        check(damaged > 0U, "a damaged tool draws the durability bar", __LINE__);
+        check(enchanted > 0U, "an enchanted item drives the tooltip's extra lines", __LINE__);
+        // ★ 方块图标与物品图标是**两条管线**（hudBlockIconPipeline 与图集分支）。
+        //   只填一类，另一条管线的图一张都没拍到。
+        check(blockIcons > 0U, "block icons go through their own pipeline", __LINE__);
+        check(itemIcons > 0U, "item icons go through the atlas path", __LINE__);
+        // 留白也要有：空槽画成什么样同样是一条绘制路径。
+        check(filled < snapshot.inventorySlots.size(),
+              "some slots must stay empty so the empty-slot path is captured", __LINE__);
+
+        // 装备槽在背包屏（生存与创造）上都画，内容与容器无关，所以每一屏都填。
+        std::size_t worn = 0;
+        for (const auto& stack : snapshot.equipmentSlots) {
+            if (!stack.empty()) ++worn;
+        }
+        check(worn == mc::gameplay::kEquipmentSlotCount,
+              "all five equipment slots must be worn", __LINE__);
+    }
+
+    // 逐屏：容器那一半也要有东西，否则那一屏拍到的是一个空壳。
+    const auto chest = mc::render::uiCaptureWorldSnapshot(
+        containerTarget(mc::gameplay::ContainerScreen::Chest));
+    CHECK(chest.openChest.has_value());   // 没有它，drawWorkContainer 一个箱子格都不画
+    std::size_t chestFilled = 0;
+    for (const auto& stack : chest.chestItems) {
+        if (!stack.empty()) ++chestFilled;
+    }
+    CHECK(chestFilled >= 8U);
+
+    const auto furnace = mc::render::uiCaptureWorldSnapshot(
+        containerTarget(mc::gameplay::ContainerScreen::Furnace));
+    CHECK(!furnace.furnaceInput.empty());
+    CHECK(!furnace.furnaceFuel.empty());
+    CHECK(!furnace.furnaceOutput.empty());
+    // ★ 两条进度必须**既非 0 也非 1**：0 那一档整条不画，1 那一档画满——
+    //   两者都绕过了"按比例裁切精灵"这条真正要看的路径。
+    CHECK(furnace.furnaceFuelProgress > 0.0F && furnace.furnaceFuelProgress < 1.0F);
+    CHECK(furnace.furnaceCookProgress > 0.0F && furnace.furnaceCookProgress < 1.0F);
+
+    const auto table = mc::render::uiCaptureWorldSnapshot(
+        containerTarget(mc::gameplay::ContainerScreen::CraftingTable));
+    std::size_t gridFilled = 0;
+    for (const auto& stack : table.tableCraftingGrid) {
+        if (!stack.empty()) ++gridFilled;
+    }
+    CHECK(gridFilled > 0U && gridFilled < table.tableCraftingGrid.size());
+    CHECK(!table.tableCraftingOutput.empty());
+
+    const auto enchanting = mc::render::uiCaptureWorldSnapshot(
+        containerTarget(mc::gameplay::ContainerScreen::EnchantingTable));
+    CHECK(!enchanting.enchantingItem.empty());
+    CHECK(!enchanting.enchantingLapis.empty());
+    for (std::size_t bar = 0; bar < enchanting.enchantingRequiredLevels.size(); ++bar) {
+        // 0 是"死条"那一档。三条都死，这一屏的主体就没进画。
+        check(enchanting.enchantingRequiredLevels[bar] > 0,
+              "every enchanting bar must be live", __LINE__);
+        check(enchanting.enchantingClueLevels[bar] > 0U,
+              "every enchanting bar must carry a clue", __LINE__);
+    }
+    // 乱码名是这个种子的函数：不钉住它，两遍拍出来的字就可能不同。
+    CHECK(enchanting.enchantingSeed != 0);
+
+    const auto anvil = mc::render::uiCaptureWorldSnapshot(
+        containerTarget(mc::gameplay::ContainerScreen::Anvil));
+    CHECK(!anvil.anvilLeft.empty());
+    CHECK(!anvil.anvilRight.empty());
+    CHECK(!anvil.anvilResult.empty());
+    CHECK(anvil.anvilCost > 0);
+
+    // 生存背包有 2x2 合成格，创造背包没有——这条差异是 ScreenHandler 里那句
+    // "creative has no crafting at all"，夹具要跟它一致，否则拍出来的创造背包
+    // 会摆着一份根本不存在的合成网格。
+    const auto survival = mc::render::uiCaptureWorldSnapshot(
+        containerTarget(mc::gameplay::ContainerScreen::PlayerInventory, false));
+    const auto creative = mc::render::uiCaptureWorldSnapshot(
+        containerTarget(mc::gameplay::ContainerScreen::PlayerInventory, true));
+    CHECK(!survival.playerCraftingGrid[0].empty());
+    CHECK(!survival.playerCraftingOutput.empty());
+    CHECK(creative.playerCraftingGrid[0].empty());
+    CHECK(creative.playerCraftingOutput.empty());
+
+    // 玩家快照：创造那一档要真的是创造，否则拍到的"创造背包"其实是生存背包。
+    CHECK(mc::render::uiCapturePlayerSnapshot(
+              containerTarget(mc::gameplay::ContainerScreen::PlayerInventory, true))
+              .gameMode == mc::gameplay::GameMode::Creative);
+    // ★ 非容器目标拿到的是**默认**玩家快照。这条断言守的是既有十八屏基线：
+    //   ui::UiFrameData 的默认值与默认 PlayerTickSnapshot 逐字段相等，所以
+    //   "从默认快照同步一次"与 A0-0 之前的"从不同步"结果相同——一旦这里开始返回
+    //   非默认值，game/pause/death 三页的图就会静默改变。
+    CHECK(mc::render::uiCapturePlayerSnapshot(pageTarget(mc::ui::PageId::Title)) ==
+          mc::gameplay::PlayerTickSnapshot{});
+    CHECK(mc::render::uiCapturePlayerSnapshot(pageTarget(mc::ui::PageId::Game)) ==
+          mc::gameplay::PlayerTickSnapshot{});
+    const auto player = mc::render::uiCapturePlayerSnapshot(
+        containerTarget(mc::gameplay::ContainerScreen::PlayerInventory, false));
+    // ★ 状态条取**非满**值：满血满饥饿只画得出"整排实心图标"，半颗心与半块肉
+    //   那两张精灵一张都进不了画。
+    CHECK(player.health > 0.0F && player.health < 20.0F);
+    CHECK(player.foodLevel > 0 && player.foodLevel < 20);
+    CHECK(player.experienceProgress > 0.0F && player.experienceProgress < 1.0F);
 }
 
 // --- 3b. 源码护栏：夹具的两处"改了图但不改任何返回值"的地方 -------------------
@@ -230,6 +455,39 @@ void testFixtureSourceGuards() {
         CHECK(fixture.find("snapshotCameraEye") == std::string::npos);
     }
 
+    // A0-0：容器目标的四件事全都"只改像素、不改任何函数的返回值"——删掉哪一件，
+    // 全套断言照样全绿，只是拍出来的图不是那一屏了。只能读源码守。
+    const std::string targetState = functionBody(renderer, "void applyUiCaptureTargetState(");
+    if (!targetState.empty()) {
+        // ★ 容器屏是靠这个标志打开的，不是靠页面栈。写死 false（A0-0 之前就是
+        //   `inventoryOpen = false;`）会让每个容器目标都拍成一张普通的游戏内 HUD——
+        //   一张完全正确的 HUD，只是文件名写着 chest。
+        CHECK(targetState.find("inventoryOpen = target.container.has_value()") !=
+              std::string::npos);
+        // 容器内容来自注入的快照。少了这一步，每一个槽位都是空的。
+        CHECK(targetState.find("publishUiCaptureSnapshots(target)") != std::string::npos);
+        // 创造背包开在哪个页签是屏幕状态；不钉它，creative-catalog 与 inventory-creative
+        // 会拍成同一屏。
+        CHECK(targetState.find("menuSystem.creativeTab =") != std::string::npos);
+        // ★ 滚动行不钉住就会**跨目标串扰**：拍完目录页再拍别的，下一次的目录停在
+        //   上一次滚到的地方，而两遍比对**发现不了**（两遍的串扰顺序一模一样）。
+        CHECK(targetState.find("menuSystem.creativeScrollRow = 0U") != std::string::npos);
+        // ★ 玩家模型的骨骼姿态要动画器求值过一次才绑定。少了它，背包屏那口黑井
+        //   （vanilla inventory.png 自带的）里一次都没出现过人物。
+        CHECK(targetState.find("playerModelAnimator.update(") != std::string::npos);
+    }
+
+    const std::string publish = functionBody(renderer, "void publishUiCaptureSnapshots(");
+    if (!publish.empty()) {
+        // ★ 快照走**生产的编解码通道**注入，而不是给 ClientMirror 开一个截图专用的
+        //   setter：镜像的写入者因此仍然只有一个。
+        CHECK(publish.find("makeLoopbackPair()") != std::string::npos);
+        CHECK(publish.find("clientMirror_.pump(") != std::string::npos);
+        // 而 uiFrameData_ 必须走生产路径那**同一个**函数填，不许在这里再判一次目标。
+        CHECK(publish.find("syncUiFrameDataFromMirror()") != std::string::npos);
+        CHECK(publish.find("target.creative") == std::string::npos);
+    }
+
     const std::string hud = readSource(MC_REBEDROCK_HUD_RENDERER_SRC);
     const std::string drawHud = functionBody(hud, "void drawHud(VkCommandBuffer");
     if (!drawHud.empty()) {
@@ -296,25 +554,26 @@ void testPaths() {
     CHECK(mc::render::uiCaptureImageCount(*parsed) == 4U);
 
     const auto titleAtTwo =
-        mc::render::uiCaptureImagePath(*parsed, mc::ui::PageId::Title, 2);
+        mc::render::uiCaptureImagePath(*parsed, pageTarget(mc::ui::PageId::Title), 2);
     CHECK(titleAtTwo == std::filesystem::path{"/tmp/shots/title/scale-2.png"});
-    CHECK(mc::render::uiCaptureImagePath(*parsed, mc::ui::PageId::Options, 3) ==
+    CHECK(mc::render::uiCaptureImagePath(*parsed, pageTarget(mc::ui::PageId::Options), 3) ==
           std::filesystem::path{"/tmp/shots/options/scale-3.png"});
     // Auto 档要有自己的名字，否则它会和 "scale-0" 撞在一起看不出是哪一档。
-    CHECK(mc::render::uiCaptureImagePath(*parsed, mc::ui::PageId::Title, 0) ==
+    CHECK(mc::render::uiCaptureImagePath(*parsed, pageTarget(mc::ui::PageId::Title), 0) ==
           std::filesystem::path{"/tmp/shots/title/scale-auto.png"});
 
     // 同一条命令行解析两遍，得到完全相同的参数与路径——确定性从这里就开始。
     const auto again = parse({"--ui-shot", "title,options", "--ui-scale", "2,3", "--ui-out",
                               "/tmp/shots"});
     CHECK(again.has_value() && *again == *parsed);
-    CHECK(mc::render::uiCaptureImagePath(*again, mc::ui::PageId::Title, 2) == titleAtTwo);
+    CHECK(mc::render::uiCaptureImagePath(*again, pageTarget(mc::ui::PageId::Title), 2) ==
+          titleAtTwo);
 
     // 每一张图的路径互不相同：页与档都进了路径，所以四张图落在四个位置。
     std::vector<std::filesystem::path> written;
-    for (const auto page : parsed->pages) {
+    for (const auto& target : parsed->targets) {
         for (const int scale : parsed->guiScales) {
-            written.push_back(mc::render::uiCaptureImagePath(*parsed, page, scale));
+            written.push_back(mc::render::uiCaptureImagePath(*parsed, target, scale));
         }
     }
     CHECK(written.size() == mc::render::uiCaptureImageCount(*parsed));
@@ -465,6 +724,8 @@ int main() {
     testAbsent();
     testDefaults();
     testPageNames();
+    testContainerTargets();
+    testContainerFixture();
     testFixtureSourceGuards();
     testScales();
     testSize();

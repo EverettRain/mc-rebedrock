@@ -10,31 +10,47 @@
 namespace mc::render {
 namespace {
 
-struct PageName final {
-    ui::PageId page;
+struct TargetName final {
+    UiCaptureTarget target;
     std::string_view name;
 };
 
-// 一张表，两个方向都读它，于是名字与 PageId 不可能各说各话。
-constexpr std::array kPageNames{
-    PageName{ui::PageId::Title, "title"},
-    PageName{ui::PageId::WorldList, "world-list"},
-    PageName{ui::PageId::CreateWorld, "create-world"},
-    PageName{ui::PageId::EditWorld, "edit-world"},
-    PageName{ui::PageId::ConfirmDelete, "confirm-delete"},
-    PageName{ui::PageId::Loading, "loading"},
-    PageName{ui::PageId::Game, "game"},
-    PageName{ui::PageId::Pause, "pause"},
-    PageName{ui::PageId::Death, "death"},
-    PageName{ui::PageId::Options, "options"},
-    PageName{ui::PageId::VideoSettings, "video-settings"},
-    PageName{ui::PageId::Controls, "controls"},
-    PageName{ui::PageId::Language, "language"},
-    PageName{ui::PageId::AdvancedGraphics, "advanced-graphics"},
-    PageName{ui::PageId::KeyBinds, "key-binds"},
-    PageName{ui::PageId::Accessibility, "accessibility"},
-    PageName{ui::PageId::SoundSettings, "sound-settings"},
-    PageName{ui::PageId::ResourcePacks, "resource-packs"},
+// 一张表，两个方向都读它，于是名字与目标不可能各说各话。
+//
+// 前 18 行是前端页面（容器为空）；后 7 行是容器界面——它们全都挂在 `PageId::Game`
+// 之上，因为容器屏**不是一个 PageId**（见 UiCaptureTarget 的注释）。
+constexpr std::array kTargetNames{
+    TargetName{{ui::PageId::Title}, "title"},
+    TargetName{{ui::PageId::WorldList}, "world-list"},
+    TargetName{{ui::PageId::CreateWorld}, "create-world"},
+    TargetName{{ui::PageId::EditWorld}, "edit-world"},
+    TargetName{{ui::PageId::ConfirmDelete}, "confirm-delete"},
+    TargetName{{ui::PageId::Loading}, "loading"},
+    TargetName{{ui::PageId::Game}, "game"},
+    TargetName{{ui::PageId::Pause}, "pause"},
+    TargetName{{ui::PageId::Death}, "death"},
+    TargetName{{ui::PageId::Options}, "options"},
+    TargetName{{ui::PageId::VideoSettings}, "video-settings"},
+    TargetName{{ui::PageId::Controls}, "controls"},
+    TargetName{{ui::PageId::Language}, "language"},
+    TargetName{{ui::PageId::AdvancedGraphics}, "advanced-graphics"},
+    TargetName{{ui::PageId::KeyBinds}, "key-binds"},
+    TargetName{{ui::PageId::Accessibility}, "accessibility"},
+    TargetName{{ui::PageId::SoundSettings}, "sound-settings"},
+    TargetName{{ui::PageId::ResourcePacks}, "resource-packs"},
+    // A0-0：容器界面。★ 创造背包是 PlayerInventory 的**创造那一档**，不是第七块屏。
+    TargetName{{ui::PageId::Game, gameplay::ContainerScreen::PlayerInventory, false},
+               "inventory"},
+    TargetName{{ui::PageId::Game, gameplay::ContainerScreen::PlayerInventory, true, false},
+               "inventory-creative"},
+    TargetName{{ui::PageId::Game, gameplay::ContainerScreen::PlayerInventory, true, true},
+               "creative-catalog"},
+    TargetName{{ui::PageId::Game, gameplay::ContainerScreen::CraftingTable}, "crafting-table"},
+    TargetName{{ui::PageId::Game, gameplay::ContainerScreen::Furnace}, "furnace"},
+    TargetName{{ui::PageId::Game, gameplay::ContainerScreen::Chest}, "chest"},
+    TargetName{{ui::PageId::Game, gameplay::ContainerScreen::EnchantingTable},
+               "enchanting-table"},
+    TargetName{{ui::PageId::Game, gameplay::ContainerScreen::Anvil}, "anvil"},
 };
 
 // 表必须覆盖 PageId 的每一个取值，否则 --ui-shot 会对某个真实存在的屏幕说"不认识"。
@@ -42,8 +58,62 @@ constexpr std::array kPageNames{
 //   `PageId::Accessibility + 1`，于是 UI-6e 在 Accessibility 之后加一页时，
 //   这条断言仍然比较同一个数字、静默通过——表少一行，而 `--ui-shot` 会对一个真实
 //   存在的屏幕说"不认识"。护栏本身失效了却不会有人知道，这是最坏的一种。
-static_assert(kPageNames.size() == static_cast<std::size_t>(ui::PageId::Count),
-              "the capture page-name table must cover every PageId");
+//
+// ★ A0-0 起断言的是**逐个枚举值都在表里**，不再是"表有多少行"。行数断言在
+//   加一行容器目标的同时漏掉一页时**照样通过**（两个错误互相抵消），而这里的
+//   两条循环会指着那个缺的取值不放。
+constexpr bool everyPageHasATarget() {
+    for (std::size_t raw = 0; raw < static_cast<std::size_t>(ui::PageId::Count); ++raw) {
+        const auto page = static_cast<ui::PageId>(raw);
+        bool found = false;
+        for (const TargetName& entry : kTargetNames) {
+            if (entry.target.page == page && !entry.target.container.has_value()) {
+                found = true;
+            }
+        }
+        if (!found) {
+            return false;
+        }
+    }
+    return true;
+}
+
+// 每一块容器界面也要能点名拍。它与上面那条是两个问题：容器屏全都挂在 PageId::Game
+// 上，所以"每个 PageId 都有目标"对容器一个字都没说。
+constexpr bool everyContainerHasATarget() {
+    for (std::size_t raw = 0; raw < static_cast<std::size_t>(gameplay::ContainerScreen::Count);
+         ++raw) {
+        const auto screen = static_cast<gameplay::ContainerScreen>(raw);
+        bool found = false;
+        for (const TargetName& entry : kTargetNames) {
+            if (entry.target.container == screen) {
+                found = true;
+            }
+        }
+        if (!found) {
+            return false;
+        }
+    }
+    return true;
+}
+
+// 名字不能重复：两行同名时 uiCaptureTargetFromName 只会交出先出现的那一个，
+// 而另一个目标就此永远拍不到——一条静默的覆盖漏洞。
+constexpr bool everyNameIsUnique() {
+    for (std::size_t i = 0; i < kTargetNames.size(); ++i) {
+        for (std::size_t j = i + 1U; j < kTargetNames.size(); ++j) {
+            if (kTargetNames[i].name == kTargetNames[j].name) {
+                return false;
+            }
+        }
+    }
+    return true;
+}
+
+static_assert(everyPageHasATarget(), "the capture target table must cover every PageId");
+static_assert(everyContainerHasATarget(),
+              "the capture target table must cover every ContainerScreen");
+static_assert(everyNameIsUnique(), "capture target names must be unique");
 
 [[nodiscard]] std::vector<std::string_view> splitOnCommas(std::string_view value) {
     std::vector<std::string_view> parts;
@@ -72,19 +142,19 @@ static_assert(kPageNames.size() == static_cast<std::size_t>(ui::PageId::Count),
 
 } // namespace
 
-std::string_view uiCapturePageName(ui::PageId page) {
-    for (const PageName& entry : kPageNames) {
-        if (entry.page == page) {
+std::string_view uiCaptureTargetName(const UiCaptureTarget& target) {
+    for (const TargetName& entry : kTargetNames) {
+        if (entry.target == target) {
             return entry.name;
         }
     }
     return "unknown";
 }
 
-std::optional<ui::PageId> uiCapturePageFromName(std::string_view name) {
-    for (const PageName& entry : kPageNames) {
+std::optional<UiCaptureTarget> uiCaptureTargetFromName(std::string_view name) {
+    for (const TargetName& entry : kTargetNames) {
         if (entry.name == name) {
-            return entry.page;
+            return entry.target;
         }
     }
     return std::nullopt;
@@ -105,22 +175,22 @@ bool uiCapturePageIsPaused(ui::PageId page) {
     return page != ui::PageId::Game;
 }
 
-std::filesystem::path uiCaptureImagePath(const UiCaptureOptions& options, ui::PageId page,
-                                         int guiScale) {
+std::filesystem::path uiCaptureImagePath(const UiCaptureOptions& options,
+                                         const UiCaptureTarget& target, int guiScale) {
     const std::string leaf =
         guiScale == 0 ? std::string{"scale-auto.png"}
                       : "scale-" + std::to_string(guiScale) + ".png";
-    return options.root / std::string{uiCapturePageName(page)} / leaf;
+    return options.root / std::string{uiCaptureTargetName(target)} / leaf;
 }
 
 std::size_t uiCaptureImageCount(const UiCaptureOptions& options) {
-    return options.pages.size() * options.guiScales.size();
+    return options.targets.size() * options.guiScales.size();
 }
 
 std::optional<UiCaptureOptions> parseUiCaptureArguments(
     std::span<const std::string_view> arguments) {
     std::optional<UiCaptureOptions> result;
-    bool requestedPages = false;
+    bool requestedTargets = false;
     bool requestedScales = false;
 
     for (std::size_t index = 0; index < arguments.size(); ++index) {
@@ -131,11 +201,11 @@ std::optional<UiCaptureOptions> parseUiCaptureArguments(
             if (!result.has_value()) {
                 result = UiCaptureOptions{};
             }
-            requestedPages = true;
+            requestedTargets = true;
             for (const std::string_view name : splitOnCommas(arguments[index])) {
-                const auto page = uiCapturePageFromName(name);
-                if (!page.has_value()) {
-                    throw std::invalid_argument("--ui-shot does not know the page name: " +
+                const auto target = uiCaptureTargetFromName(name);
+                if (!target.has_value()) {
+                    throw std::invalid_argument("--ui-shot does not know the screen name: " +
                                                 std::string{name});
                 }
                 // UI-6-0：需要世界的页面**现在可以拍了**。
@@ -146,12 +216,12 @@ std::optional<UiCaptureOptions> parseUiCaptureArguments(
                 // 固定光照、固定日时、不启动模拟线程），方块预览的八角图已经用它
                 // 逐字节复现过很多轮。渲染器按 uiCapturePageNeedsWorld 决定这一页
                 // 要不要打开那个夹具，见 VulkanRenderer::Impl::runUiCapture。
-                if (std::find(result->pages.begin(), result->pages.end(), *page) !=
-                    result->pages.end()) {
+                if (std::find(result->targets.begin(), result->targets.end(), *target) !=
+                    result->targets.end()) {
                     throw std::invalid_argument("--ui-shot names '" + std::string{name} +
                                                 "' twice");
                 }
-                result->pages.push_back(*page);
+                result->targets.push_back(*target);
             }
         } else if (arguments[index] == "--ui-scale") {
             if (++index >= arguments.size()) {
@@ -218,7 +288,7 @@ std::optional<UiCaptureOptions> parseUiCaptureArguments(
 
     // --ui-scale / --ui-size / --ui-out 单独出现是没有意义的：它们描述一次拍摄的
     // 参数，而拍什么由 --ui-shot 说了算。给了参数却没给页面，报错而不是默默不拍。
-    if (result.has_value() && !requestedPages) {
+    if (result.has_value() && !requestedTargets) {
         throw std::invalid_argument("--ui-scale, --ui-size and --ui-out require --ui-shot");
     }
     if (result.has_value() && result->guiScales.empty()) {
