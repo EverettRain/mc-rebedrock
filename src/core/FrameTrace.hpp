@@ -9,6 +9,8 @@
 //   MC_REBEDROCK_FRAME_TRACE     置任意值即开启
 //   MC_REBEDROCK_FRAME_TRACE_MS  帧 CPU 时间阈值，单位毫秒，默认 16.67
 //                                只有超过阈值的帧才打印，避免逐帧日志自己制造卡顿
+//   MC_REBEDROCK_GRAPH_GAP_PROBE 置任意值即在世界那趟与界面那趟之间插入**两个空步**
+//                                （RN-53 的判别仪器，见下面 graphGapProbeEnabled）
 //
 // 最初的验证目标是证明 25 到 150ms 的长帧确实落在区块卸载的同步落盘上
 // 判定标准是超阈值帧里 persistMs 占 frameMs 的比例达到 70% 且 unloaded 大于 0
@@ -112,6 +114,34 @@ struct FrameTrace final {
 
 [[nodiscard]] inline bool traceEnabled() {
     static const bool enabled = std::getenv("MC_REBEDROCK_FRAME_TRACE") != nullptr;
+    return enabled;
+}
+
+// RN-53 的判别仪器：世界那趟与界面那趟之间那 1 ms 归谁。
+//
+// 实机 frametrace 里 `gpu[menu_background]` 稳定 0.96–1.27 ms，而那一步在没有界面
+// 打开时**一条命令都不录**，帧图也不为它下屏障（frame_graph_test 的
+// testMenuBackgroundSampleOnlyAddsUsage 把这两条钉住了）。于是那段时间只可能来自
+// 它两侧的边界，而不是它自己。开着这个开关，图会在 world → menu_background → gui
+// 之间插入两个**同样空**的步：
+//
+//   gpu[probe_after_world]  world 那趟之后、menu_background 之前
+//   gpu[menu_background]    原来那一步
+//   gpu[probe_before_gui]   menu_background 之后、gui 那趟之前
+//
+// 三个读数一次分辨三种假说：
+//   ① 只有 probe_after_world 有值   → 代价是世界那趟的收尾（Apple 上 21 MB 的 tile
+//                                     store flush），被归到它后面第一个空隙上
+//   ② 只有 probe_before_gui 有值    → 代价是界面那趟的开场（LOAD 把 scene_color 读回 tile）
+//   ③ 三个都有值、大致均分或各自 ~1 ms → 代价是**时间戳边界本身**，即仪器自己造的
+//
+// ③ 尤其要排除：这些 `vkCmdWriteTimestamp` 只在 MC_REBEDROCK_FRAME_TRACE 开着时
+// 存在，而那 1 ms 正是在 trace 开着时量到的。「先修仪器再信画面」在这条线上兑现过五次。
+//
+// 只在图**编译期**读一次（`buildFrameGraphTables`），因此关着时热路径上连一个恒假的
+// if 都没有——那一步是被编译期剪枝剪掉的，不是运行期跳过的。
+[[nodiscard]] inline bool graphGapProbeEnabled() {
+    static const bool enabled = std::getenv("MC_REBEDROCK_GRAPH_GAP_PROBE") != nullptr;
     return enabled;
 }
 

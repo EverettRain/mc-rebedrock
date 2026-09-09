@@ -2403,6 +2403,16 @@ class WorldRenderer final {
         args.self->recordTemporalResolve(*args.frame, context.imageIndex);
     }
 
+    // RN-53 的判别仪器（diag::graphGapProbeEnabled）。它必须**真的什么都不做**：
+    // 连 ScopedAccumulate 都不要——那会往 graphBodyMs_ 上加一笔，而这个探针要量的
+    // 恰恰是「一个零成本的步在两个 renderpass 之间值多少 GPU 时间」。
+    // 关着时这一步在编译期就被剪掉，这个函数根本不会被调用。
+    static void graphGapProbeStep(VkCommandBuffer commandBuffer,
+                                  const graph::PassContext& context) {
+        static_cast<void>(commandBuffer);
+        static_cast<void>(context);
+    }
+
     static void graphMenuBackgroundStep(VkCommandBuffer commandBuffer,
                                         const graph::PassContext& context) {
         static_cast<void>(commandBuffer);

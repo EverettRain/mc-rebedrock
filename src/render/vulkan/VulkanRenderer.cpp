@@ -7468,6 +7468,9 @@ struct VulkanRenderer::Impl final : public gameplay::SimulationHost {
     static constexpr std::string_view kWorldPassName = "world";
     static constexpr std::string_view kGuiPassName = "gui";
     static constexpr std::string_view kMenuBackgroundPassName = "menu_background";
+    // RN-53 的两个判别探针。名字进 gpu[...] 报告，所以要一眼看出它们夹在谁和谁之间。
+    static constexpr std::string_view kProbeAfterWorldPassName = "probe_after_world";
+    static constexpr std::string_view kProbeBeforeGuiPassName = "probe_before_gui";
     static constexpr std::string_view kTemporalResolvePassName = "taa_resolve";
 
     void buildFrameGraphTables(FrameGraphTables& tables, bool withHandles) const {
@@ -7724,9 +7727,22 @@ struct VulkanRenderer::Impl final : public gameplay::SimulationHost {
             // box_blur，各有各的 renderpass 与靶，塞不进一个附件表；步身自己 begin/end。
             // 附件表里那条 Sample 不是装饰——推导正是靠它给 scene_color 加上 SAMPLED
             // 用途位，少了它这一步第一次采样 scene_color 就是未定义行为。
+            // RN-53：两个**空**步，默认在编译期被剪掉（diag::graphGapProbeEnabled）。
+            // 它们与 menu_background 同形——非渲染步、无附件、无屏障、body 什么都不做
+            // ——差别只有位置。三个读数放在一起就能分辨那 1 ms 是世界那趟的收尾、
+            // 界面那趟的开场，还是时间戳边界本身的代价。判别表在 core/FrameTrace.hpp。
+            //
+            // ⚠ 探针**不得**声明附件：一旦声明，它就会参与推导（哪怕只是加一个
+            // usage 位），三个步就不再同形，读数之间也不再可比。
+            {.name = kProbeAfterWorldPassName,
+             .record = &WorldRenderer::graphGapProbeStep,
+             .enabled = diag::graphGapProbeEnabled()},
             {.name = kMenuBackgroundPassName,
              .attachments = tables.menuBackgroundAttachments,
              .record = &WorldRenderer::graphMenuBackgroundStep},
+            {.name = kProbeBeforeGuiPassName,
+             .record = &WorldRenderer::graphGapProbeStep,
+             .enabled = diag::graphGapProbeEnabled()},
             {.name = kGuiPassName,
              .attachments = tables.guiAttachments,
              .record = &WorldRenderer::graphGuiStep,
