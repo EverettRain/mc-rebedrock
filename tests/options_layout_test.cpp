@@ -18,6 +18,7 @@
 #include "ui/PageBuilder.hpp"
 #include "ui/PageLayoutKind.hpp"
 #include "ui/PageTitles.hpp"
+#include "ui/ScrollingText.hpp"
 #include "ui/TextMetrics.hpp"
 #include "ui/ListRow.hpp"
 #include "ui/CreateWorldLayout.hpp"
@@ -1508,6 +1509,37 @@ void testRuntimeLabelsAreActuallyComputed() {
     }
     check(volumeCases == mc::ui::kFloatSliders.size(),
           "every float slider needs a case in widgetLabel or its label is blank", __LINE__);
+    // ★ UI-6f（D17）：按钮与滑块的标签都必须走剪裁+滚动那条路，不能直接 drawHudText。
+    //   放不下的标签直接画会溢出控件（"Rain Mode: Asynchronous Particle Rain" 在
+    //   150 宽的小格里就是这样）。**这条只能源码守**：溢出的标签要把滚动列表滚下去
+    //   才看得见，而截图通道没有滚动参数；滚动本身又是时间驱动的，出图时被钉住。
+    // ★ 判据用**调用点计数**而不是截函数体：剥注释后的文本上做花括号配对不可靠
+    //   （字符串字面量里的括号会把配对带偏，第一次就是这么假红的）。
+    //   `drawScrollingLabel` 应当出现三次：一次定义 + 按钮与滑块各一次调用。
+    std::size_t scrollingCalls = 0;
+    for (std::size_t at = hud.find("drawScrollingLabel"); at != std::string::npos;
+         at = hud.find("drawScrollingLabel", at + 1U)) {
+        ++scrollingCalls;
+    }
+    check(scrollingCalls >= 3U,
+          "button and slider labels must both go through the clip-and-scroll path", __LINE__);
+
+    // 滚动是时间驱动的动画：出图必须钉住，否则截图通道不再逐字节相同。
+    CHECK(hud.find("ui::kPinnedTime") != std::string::npos);
+    CHECK(hud.find("uiCaptureActive") != std::string::npos);
+    // scissor 是动态状态，设了必须恢复——不恢复的话后面每一次绘制都被裁在那个按钮里。
+    // scissor 是动态状态，设了必须恢复——不恢复的话后面每一次绘制都被裁在那个按钮里。
+    // 所以 drawScrollingLabel 里 vkCmdSetScissor 必须成对出现（设 + 复位）。
+    {
+        std::size_t setScissor = 0;
+        for (std::size_t at = hud.find("vkCmdSetScissor"); at != std::string::npos;
+             at = hud.find("vkCmdSetScissor", at + 1U)) {
+            ++setScissor;
+        }
+        // 玩家预览那里本来就有一次，加上这里的一对 = 至少 3 次
+        check(setScissor >= 3U, "scissor must be restored after clipping a label", __LINE__);
+    }
+
     // 两侧的回调都要填 floatSliderFor
     CHECK(hud.find("drawCallbacks_.floatSliderFor") != std::string::npos);
     const std::string renderer = read(MC_REBEDROCK_RENDERER_SRC);
@@ -1691,7 +1723,7 @@ void testOptionsScrollbarDrag() {
     const std::size_t maximum = mc::ui::optionsMaximumFirstRow(layout, page);
     CHECK(maximum > 0U);   // 这一屏确实滚得动，否则下面是空转
 
-    const auto track = mc::ui::optionsScrollbarTrack(layout);
+    const auto track = mc::ui::optionsScrollbarTrack(layout, page);
     // 光标在轨道顶端 → 第 0 行
     CHECK(mc::ui::optionsScrollIndexFromCursor(layout, page, track.y) == 0U);
     // 光标在轨道底端 → **最后一屏**，不是别的数
@@ -1716,6 +1748,55 @@ void testOptionsScrollbarDrag() {
         check(mc::ui::optionsScrollIndexFromCursor(layout, page, centre) == k,
               "the thumb position and the drag mapping must be inverses", __LINE__);
     }
+}
+
+// --- 28. 超宽文字的来回滚动（UI-6f / D17）------------------------------------
+//
+// 26.1 对放不下的标签**不是截断加省略号**，是剪裁在控件里左右缓动来回滚
+// （`ActiveTextCollector.defaultScrollingHelper`）。
+void testScrollingText() {
+    using mc::ui::scrollingTextAt;
+    // 装得下：不滚，偏移 0
+    CHECK(scrollingTextAt(50.0F, 100.0F, 0.0) == (mc::ui::ScrollingText{false, 0.0F}));
+    CHECK(scrollingTextAt(100.0F, 100.0F, 0.0) == (mc::ui::ScrollingText{false, 0.0F}));
+    // 宽度为 0 的格子不该被当成"要滚"（除零/无意义）
+    CHECK(!scrollingTextAt(50.0F, 0.0F, 0.0).scrolls);
+
+    // 放不下：滚，且**偏移永远在 [0, maxPosition] 内**——超出就是把文字滚出格子外，
+    // 而 26.1 的 lerp 两端正是 0 与 maxPosition。
+    constexpr float kText = 300.0F;
+    constexpr float kRoom = 100.0F;
+    constexpr float kMax = kText - kRoom;
+    for (double t = 0.0; t < 30.0; t += 0.13) {
+        const auto state = scrollingTextAt(kText, kRoom, t);
+        check(state.scrolls, "an overlong label must scroll", __LINE__);
+        check(state.offset >= 0.0F, "the offset must never go negative", __LINE__);
+        check(state.offset <= kMax + 0.01F, "the offset must not exceed maxPosition", __LINE__);
+    }
+
+    // ★ 出图必须钉得住：这是**时间驱动的动画**，不钉住截图通道就不再逐字节相同。
+    const auto pinned = scrollingTextAt(kText, kRoom, mc::ui::kPinnedTime);
+    CHECK(pinned.scrolls);
+    CHECK(pinned.offset == 0.0F);   // 停在文字开头
+    // 任意负数都算钉住（调用方只需传 kPinnedTime，但语义要稳）
+    CHECK(scrollingTextAt(kText, kRoom, -42.0).offset == 0.0F);
+
+    // 周期：26.1 是 max(maxPosition * 0.5, 3.0)。maxPosition = 200 → 100 秒。
+    // 取半周期处与 0 处，两者应当明显不同（否则等于没在动）。
+    const float atZero = scrollingTextAt(kText, kRoom, 0.0).offset;
+    const float atHalf = scrollingTextAt(kText, kRoom, 50.0).offset;
+    check(std::abs(atZero - atHalf) > kMax * 0.5F,
+          "the two ends of a period must be far apart", __LINE__);
+    // t = 0 时 cos = 1、sin(pi/2) = 1 → alpha = 1 → 滚到末尾
+    check(atZero > kMax - 0.01F, "at t=0 the text is scrolled to its end", __LINE__);
+
+    // 装得下时的左缘：**不是简单居中**，中心被夹在 [left + w/2, right - w/2]。
+    using mc::ui::centredTextLeft;
+    CHECK(centredTextLeft(0.0F, 100.0F, 50.0F) == 25.0F);      // 正常居中
+    // 文字比格子宽时夹住，左缘不会为负（那会探出格子左边）
+    CHECK(centredTextLeft(0.0F, 100.0F, 100.0F) == 0.0F);
+    // 贴在画布右侧的格子同理
+    CHECK(centredTextLeft(200.0F, 100.0F, 50.0F) == 225.0F);
 }
 
 } // namespace
@@ -1749,6 +1830,7 @@ int main() {
     testTruncateToWidth();
     testHeaderAndFooterClassification();
     testOptionsScrollbarDrag();
+    testScrollingText();
     if (failures != 0) {
         std::printf("options_layout_test: %d checks failed\n", failures);
         return 1;

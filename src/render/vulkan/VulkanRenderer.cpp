@@ -3261,7 +3261,7 @@ struct VulkanRenderer::Impl final : public gameplay::SimulationHost {
         case ui::PageId::SoundSettings:
         case ui::PageId::Options:
             if (ui::optionsMaximumFirstRow(layout, menuSystem.pageStack.current()) > 0U) {
-                return ui::optionsScrollbarTrack(layout);
+                return ui::optionsScrollbarTrack(layout, menuSystem.pageStack.current());
             }
             return std::nullopt;
         case ui::PageId::Title:

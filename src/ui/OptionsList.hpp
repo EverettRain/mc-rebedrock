@@ -361,8 +361,17 @@ inline constexpr std::array<OptionsGroup, 5> kSoundSettingsGroups{
 //   内容区一张 2 列 GridLayout，十个跳转按钮
 // ★ 本作把副页眉那两项放进内容区第一行（26.1 在页眉里，偏差 D23）。
 // 项数恒定 12（不随"在不在世界里"变），行数恒定 6。
-inline constexpr std::array<OptionsGroup, 2> kOptionsHubGroups{
-    {{2U, OptionsGroupKind::Small}, {10U, OptionsGroupKind::Small}}};
+// ★ UI-6f（D23）：只剩十个跳转。fov 与 Difficulty/Online 那两项**搬进了副页眉**，
+//   与 26.1 一致（`OptionsScreen.init()` 的 header 是 vertical layout：标题 + 一行控件）。
+inline constexpr std::array<OptionsGroup, 1> kOptionsHubGroups{{{10U, OptionsGroupKind::Small}}};
+
+// 这一页有几个控件摆在**副页眉**里（页眉那一行），其余才进内容区。
+//
+// ★ 这样版式仍是 HeaderFooterList，不必为 Options 单开一种——副页眉是"页眉里有几个
+//   控件"这一个数，不是另一种版面。大多数页面是 0。
+[[nodiscard]] constexpr std::size_t optionsSubHeaderCount(PageId page) {
+    return page == PageId::Options ? 2U : 0U;
+}
 
 // 高级图形：本项目自有页，两项一组。
 inline constexpr std::array<OptionsGroup, 1> kAdvancedGraphicsGroups{

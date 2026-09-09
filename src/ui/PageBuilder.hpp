@@ -241,11 +241,18 @@ inline void addSlider(Page& page, const MenuBuildContext& ctx,
 // rowCount == 0 是"不滚"：装得下的页面不必给窗口，也就不必在每个装配点写条件。
 [[nodiscard]] inline bool optionVisible(const MenuBuildContext& ctx, PageId page,
                                         std::size_t optionIndex) {
+    // ★ UI-6f（D23）：副页眉里的那几个控件不在滚动列表里，**永远可见**。
+    //   它们也不占内容区的设置项序号——布局侧同样减掉这个数（MenuGeometry 的
+    //   `index - subHeader`）。两侧对序号的含义必须一致，这与滚动窗口那次同族。
+    const std::size_t subHeader = optionsSubHeaderCount(page);
+    if (optionIndex < subHeader) {
+        return true;
+    }
     if (ctx.optionsWindow.rowCount == 0U) {
         return true;
     }
     return ctx.optionsWindow.contains(
-        optionsGroupedSlot(optionsGroupsOf(page), optionIndex).row);
+        optionsGroupedSlot(optionsGroupsOf(page), optionIndex - subHeader).row);
 }
 
 // 三段式设置页的装配游标：按**设置项**序号推进，只发射落在滚动窗口里的那些。
