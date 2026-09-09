@@ -1650,7 +1650,12 @@ void appendBox(
     // glass pane's post draws `down` and `up` only, and drawing its four sides
     // puts a visible square column through the middle of the pane. Defaults to
     // all six, so every existing caller is unchanged.
-    std::uint8_t faceMask = 0x3FU) {
+    std::uint8_t faceMask = 0x3FU,
+    // MDL-1: an explicit UV rect for the up/down faces, the way a model json
+    // writes one. Null means "derive it from the box", which is what every
+    // other caller wants. A pane's rim is a two-texel column in the texture, so
+    // a derived rect loses it the moment the box is rotated a quarter turn.
+    const bake::FaceUv* topBottomUv = nullptr) {
     const glm::vec3 origin{
         static_cast<float>(x), static_cast<float>(y), static_cast<float>(z)};
     const glm::vec3 boxMin{box.minX, box.minY, box.minZ};
@@ -1692,7 +1697,12 @@ void appendBox(
             : static_cast<float>(outsideLight.block) /
                   static_cast<float>(ChunkLightSampler::kMaximumLightLevel);
         const float layer = textureLayer(world, current.block, face.face, x, y, z);
-        const std::array<glm::vec2, 4> faceUv = boxFaceUv(from16, to16, face.face);
+        const bool verticalFace =
+            face.face == Face::PositiveY || face.face == Face::NegativeY;
+        const std::array<glm::vec2, 4> faceUv =
+            (topBottomUv != nullptr && verticalFace)
+                ? faceUvCorners(*topBottomUv, face.face)
+                : boxFaceUv(from16, to16, face.face);
         std::array<float, 4> ambientOcclusion{};
         // RN-18: this loop is where the banding lived. It asked for the lighting
         // at the UNIT cube corner (0 or 1) and only afterwards remapped the
@@ -2680,7 +2690,7 @@ bool buildSectionImpl(
                     for (const auto& entry :
                          crossCollisionMeshBoxes(chunk->state(localX, worldY, localZ))) {
                         appendBox(targetMesh, world, cull, entry.box, worldX, worldY, worldZ,
-                                  lighting, sectionOrigin, tints, entry.faces);
+                                  lighting, sectionOrigin, tints, entry.faces, &entry.edgeUv);
                     }
                     continue;
                 }

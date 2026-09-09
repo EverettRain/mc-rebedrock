@@ -369,6 +369,27 @@ int main() {
         assert(omitted == static_cast<std::uint8_t>(
                               1U << static_cast<unsigned>(mc::world::Face::NegativeX)));
 
+        // The up/down faces carry vanilla's WRITTEN uv rect, and it must not
+        // rotate with the box. `#edge` (glass_pane_top) is opaque only in the
+        // two-texel column at u 7..9; a rect derived from the box follows the
+        // box, so a quarter turn sends the top face to u 9..16 and the rim
+        // disappears on that axis — which is exactly what a real client showed
+        // on a four-way pane: one axis had a solid top, the other did not.
+        const auto uvOf = [](const mc::world::detail::CrossMeshBox& entry) {
+            return std::array<float, 4>{entry.edgeUv.minU, entry.edgeUv.minV, entry.edgeUv.maxU,
+                                        entry.edgeUv.maxV};
+        };
+        const std::array<float, 4> sideEdgeUv{7.0F, 0.0F, 9.0F, 7.0F};
+        assert(uvOf(paneBoxes[1]) == sideEdgeUv);            // north arm
+        assert(uvOf(eastBoxes[1]) == sideEdgeUv);            // east arm: SAME rect
+        assert((uvOf(paneBoxes[0]) == std::array<float, 4>{7.0F, 7.0F, 9.0F, 9.0F}));
+        // All four arms of a cross agree, which is the reported case.
+        const auto crossBoxes = mc::world::crossCollisionMeshBoxes(paneAll);
+        assert(crossBoxes.size() == 5U); // post + four arms
+        for (std::size_t index = 1; index < crossBoxes.size(); ++index) {
+            assert(uvOf(crossBoxes[index]) == sideEdgeUv);
+        }
+
         // Iron bars share the pane's SHAPE row but not its MODEL: two
         // zero-thickness crossed planes, not one box.
         assert(near(blockShape(BlockState{Block::IronBars}).boxes[0].minX, 7.0F / 16.0F));

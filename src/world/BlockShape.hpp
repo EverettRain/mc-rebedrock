@@ -2,6 +2,7 @@
 
 #include "world/Block.hpp"
 #include "world/BlockState.hpp"
+#include "world/FaceBakery.hpp" // MDL-1: bake::FaceUv for the explicit edge rects
 
 #include <array>
 #include <cstddef>
@@ -501,6 +502,18 @@ inline constexpr std::uint8_t kUpDownFaces = static_cast<std::uint8_t>(
 struct CrossMeshBox final {
     ShapeBox box{};
     std::uint8_t faces = kAllFaces;
+    // The up/down faces' UV rect, in vanilla's 0..16 model units, as the model
+    // json writes it — NOT the rect derived from the box.
+    //
+    // These two faces show `#edge` (glass_pane_top), whose only opaque pixels
+    // are the two-texel column at u 7..9; every other texel is transparent. A
+    // derived rect follows the box, so the moment the box is rotated a quarter
+    // turn the top face samples u 9..16 and the pane's rim vanishes on that
+    // axis — reported from a real client as "only one direction has an opaque
+    // top". Vanilla writes `[7,0,9,7]` on the side and `[7,7,9,9]` on the post
+    // and never rotates them (the blockstate's `y` has no `uvlock`), so this is
+    // a constant, not something to re-derive.
+    bake::FaceUv edgeUv{};
 };
 struct CrossMeshTemplate final {
     // Up to two post boxes: one for a fence or a pane, two crossed planes for
@@ -526,23 +539,30 @@ inline constexpr std::array<CrossMeshTemplate, 3> kCrossMeshTemplates{{
     // Fence: block/fence_post (all six faces) + block/fence_side's two bars.
     // A bar omits the face pointing at the cell centre (+Z for the north arm),
     // which is buried in the post anyway.
-    {{CrossMeshBox{box16(6.0F, 0.0F, 6.0F, 10.0F, 16.0F, 10.0F), kAllFaces}, CrossMeshBox{}},
+    {{CrossMeshBox{box16(6.0F, 0.0F, 6.0F, 10.0F, 16.0F, 10.0F), kAllFaces,
+                   bake::FaceUv{6.0F, 6.0F, 10.0F, 10.0F, false}},
+      CrossMeshBox{}},
      1U,
      false,
      {CrossMeshBox{box16(7.0F, 12.0F, 0.0F, 9.0F, 15.0F, 9.0F),
-                   static_cast<std::uint8_t>(kAllFaces & ~faceBit(Face::PositiveZ))},
+                   static_cast<std::uint8_t>(kAllFaces & ~faceBit(Face::PositiveZ)),
+                   bake::FaceUv{7.0F, 0.0F, 9.0F, 9.0F, false}},
       CrossMeshBox{box16(7.0F, 6.0F, 0.0F, 9.0F, 9.0F, 9.0F),
-                   static_cast<std::uint8_t>(kAllFaces & ~faceBit(Face::PositiveZ))}},
+                   static_cast<std::uint8_t>(kAllFaces & ~faceBit(Face::PositiveZ)),
+                   bake::FaceUv{7.0F, 0.0F, 9.0F, 9.0F, false}}},
      2U},
     // Glass panes: template_glass_pane_post is up/down ONLY (drawing its sides
     // puts a square column through the middle of every connected pane); an
     // unconnected pane adds the north and east faces (noside + noside_alt); a
     // side omits the face pointing at the centre.
-    {{CrossMeshBox{box16(7.0F, 0.0F, 7.0F, 9.0F, 16.0F, 9.0F), kUpDownFaces}, CrossMeshBox{}},
+    {{CrossMeshBox{box16(7.0F, 0.0F, 7.0F, 9.0F, 16.0F, 9.0F), kUpDownFaces,
+                   bake::FaceUv{7.0F, 7.0F, 9.0F, 9.0F, false}},
+      CrossMeshBox{}},
      1U,
      true,
      {CrossMeshBox{box16(7.0F, 0.0F, 0.0F, 9.0F, 16.0F, 7.0F),
-                   static_cast<std::uint8_t>(kAllFaces & ~faceBit(Face::PositiveZ))},
+                   static_cast<std::uint8_t>(kAllFaces & ~faceBit(Face::PositiveZ)),
+                   bake::FaceUv{7.0F, 0.0F, 9.0F, 7.0F, false}},
       CrossMeshBox{}},
      1U},
     // Iron bars: `template_bars_post` is two ZERO-THICKNESS planes — x = 8
@@ -552,9 +572,11 @@ inline constexpr std::array<CrossMeshTemplate, 3> kCrossMeshTemplates{{
     // a double-sided sheet here: neither of its two opposing faces reaches a
     // cell wall, so both are drawn, which is exactly what a bar is.
     {{CrossMeshBox{box16(8.0F, 0.0F, 7.0F, 8.0F, 16.0F, 9.0F),
-                   static_cast<std::uint8_t>(faceBit(Face::PositiveX) | faceBit(Face::NegativeX))},
+                   static_cast<std::uint8_t>(faceBit(Face::PositiveX) | faceBit(Face::NegativeX)),
+                   bake::FaceUv{7.0F, 7.0F, 9.0F, 9.0F, false}},
       CrossMeshBox{box16(7.0F, 0.0F, 8.0F, 9.0F, 16.0F, 8.0F),
-                   static_cast<std::uint8_t>(faceBit(Face::PositiveZ) | faceBit(Face::NegativeZ))}},
+                   static_cast<std::uint8_t>(faceBit(Face::PositiveZ) | faceBit(Face::NegativeZ)),
+                   bake::FaceUv{7.0F, 7.0F, 9.0F, 9.0F, false}}},
      2U,
      false,
      {CrossMeshBox{box16(8.0F, 0.0F, 0.0F, 8.0F, 16.0F, 8.0F),
