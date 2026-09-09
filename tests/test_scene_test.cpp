@@ -108,6 +108,39 @@ int main() {
                                          "--sun-shadows"sv, "--outline"sv});
         assert(mc::render::previewDirectoryName(sunOnly) !=
                mc::render::previewDirectoryName(sunOutlined));
+
+        // RN-44：抗锯齿档同样是一个参数。它从前被钉成常量 Off，于是 MSAA 那条路在
+        // 出图里根本拍不到——「开 MSAA 时描边仍旧闪」这类缺陷只能靠肉眼报。
+        const auto msaa = accept({"--test-scene"sv, "stone"sv, "--export-preview"sv,
+                                  "--anti-aliasing"sv, "msaa"sv});
+        const auto taa = accept({"--test-scene"sv, "stone"sv, "--export-preview"sv,
+                                 "--anti-aliasing"sv, "taa"sv});
+        const auto off = accept({"--test-scene"sv, "stone"sv, "--export-preview"sv,
+                                 "--anti-aliasing"sv, "off"sv});
+        assert(msaa.antiAliasing == mc::config::AntiAliasingMode::Msaa);
+        assert(taa.antiAliasing == mc::config::AntiAliasingMode::Taa);
+        assert(off.antiAliasing == mc::config::AntiAliasingMode::Off);
+        assert(dry.antiAliasing == mc::config::AntiAliasingMode::Off);
+        // 默认档的名字**不带**后缀：既有的每一条基线因此不作废
+        assert(mc::render::previewDirectoryName(off) == mc::render::previewDirectoryName(dry));
+        // 三档两两不同，且两边只差这一处（RN-39 学到的：early return 会让弱断言全绿）
+        const auto sunMsaa = accept({"--test-scene"sv, "stone"sv, "--export-preview"sv,
+                                     "--sun-shadows"sv, "--anti-aliasing"sv, "msaa"sv});
+        const auto sunTaa = accept({"--test-scene"sv, "stone"sv, "--export-preview"sv,
+                                    "--sun-shadows"sv, "--anti-aliasing"sv, "taa"sv});
+        assert(mc::render::previewDirectoryName(sunOnly) !=
+               mc::render::previewDirectoryName(sunMsaa));
+        assert(mc::render::previewDirectoryName(sunMsaa) !=
+               mc::render::previewDirectoryName(sunTaa));
+        // 取值必须是那三个之一
+        bool rejected = false;
+        try {
+            static_cast<void>(accept({"--test-scene"sv, "stone"sv, "--export-preview"sv,
+                                      "--anti-aliasing"sv, "fxaa"sv}));
+        } catch (const std::invalid_argument&) {
+            rejected = true;
+        }
+        assert(rejected);
     }
 
     using mc::world::Block;

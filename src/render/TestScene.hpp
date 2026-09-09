@@ -5,6 +5,7 @@
 // 场景可以是单个方块的各生长阶段，也可以是受控的遮挡场景
 // 正常游戏不经过这里
 
+#include "config/GameOptions.hpp"
 #include "render/BlockPreviewCamera.hpp"
 #include "world/Block.hpp"
 #include "world/BlockState.hpp"
@@ -95,6 +96,14 @@ struct TestSceneOptions final {
     // 打开」，而导出只要前者。这里不去拆那个语义（影响面在 UI 线），改成让导出
     // 显式说明「这一张要画选择框」。
     bool outline = false;
+    // RN-44：出图的抗锯齿档。
+    //
+    // 这一档是**初始化期读一次**的（TAA-1 §2：钉在 applyPreviewDeterminism 里是空话，
+    // 钉死已移到 initialize() 里 glfwInit 之前）。钉死本身没错，错在钉成了一个常量：
+    // MSAA 那条路因此**在出图里根本拍不到**，而「开 MSAA 时描边仍旧闪」正是那条路上
+    // 的缺陷。改成钉成**命令行的函数**——仍然与机器上的 options.properties 无关，
+    // 但可以指定。进目录名，和其余每一项一样。
+    config::AntiAliasingMode antiAliasing = config::AntiAliasingMode::Off;
     // Square, and fixed rather than taken from the window: an export whose size
     // depends on the monitor it ran on cannot be compared with one from another
     // machine, and RN-15 is a comparison tool before it is anything else.

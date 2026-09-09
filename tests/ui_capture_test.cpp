@@ -448,8 +448,14 @@ void testKnobsAreAllPinned() {
     CHECK(prologue.find("options.anisotropy = 1") != std::string::npos);
     // TAA 之后这一档是三态枚举。截图通道要的仍是"最不改变边缘的那一档"——
     // MSAA 会动几何边，TAA 还会让画面取决于前面拍了几帧
-    CHECK(prologue.find("options.antiAliasing = config::AntiAliasingMode::Off") !=
+    // RN-44：钉的是**与 options.properties 无关**，不是钉成一个常量。常量那一版的
+    // 代价是 MSAA 与 TAA 两条路在离屏通道里根本拍不到。界面截图没有 testScene，
+    // 于是仍旧落在 Off 那一支
+    CHECK(prologue.find("options.antiAliasing = testScene.has_value() ? testScene->antiAliasing") !=
           std::string::npos);
+    CHECK(prologue.find(": config::AntiAliasingMode::Off;") != std::string::npos);
+    // 而它绝不能来自持久化的那份配置——那正是这一整条护栏要挡的东西
+    CHECK(prologue.find("options.antiAliasing = options.") == std::string::npos);
     CHECK(prologue.find("options.vsync = false") != std::string::npos);
 }
 

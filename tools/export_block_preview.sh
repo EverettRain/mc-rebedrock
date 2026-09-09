@@ -22,6 +22,10 @@
 #   tools/export_block_preview.sh --scene 's;s' \
 #       --key 's=oak_stairs[facing=north,half=bottom]' --pack ~/packs/vanilla
 #
+# RN-44：--anti-aliasing off|msaa|taa 固定抗锯齿档（默认 off）。也进输出目录名。
+#   出图一直把这一档钉死在 off，于是 MSAA 那条路拍不到——描边在 MSAA 下的行为
+#   只能靠肉眼报。钉死的本意是「与机器上的 options.properties 无关」，不是「只能是 off」。
+#
 # RN-38：--rain 0..1 / --thunder 0..1 固定降雨与雷暴强度（默认 0 = 晴）。
 # 天气进输出目录名，所以晴天那一版与雨天那一版不会互相覆盖。
 #
@@ -50,6 +54,7 @@ while [[ $# -gt 0 ]]; do
         --verify) VERIFY=1; shift ;;
         --sun-shadows|--shadow-entities|--outline) SHADOW_ARGS+=("$1"); shift ;;
         --sun-tick) SHADOW_ARGS+=("$1" "$2"); shift 2 ;;
+        --anti-aliasing) SHADOW_ARGS+=("$1" "$2"); shift 2 ;;
         --rain|--thunder) SHADOW_ARGS+=("$1" "$2"); shift 2 ;;
         --scene)  SCENE="$2"; shift 2 ;;
         --key)    KEYS+=(--key "$2"); shift 2 ;;

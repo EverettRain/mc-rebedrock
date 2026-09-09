@@ -584,10 +584,16 @@ struct VulkanRenderer::Impl final : public gameplay::SimulationHost {
         // 那三档从此在这里一起钉，导出与截图共用同一段。
         if (uiCapture.has_value() || (testScene.has_value() && testScene->exportPreview)) {
             options.anisotropy = 1;
-            // 抗锯齿档要钉成 Off 而不是随便哪一档：MSAA 会动几何边，而 TAA 还会
-            // 让画面取决于「拍之前跑了几帧」——出图先跑 kPreviewWarmupFrames 帧才截，
-            // 于是一张吃历史的图片连"同一台机器上跑两次"都不保证相同
-            options.antiAliasing = config::AntiAliasingMode::Off;
+            // 抗锯齿档默认钉成 Off：MSAA 会动几何边，而 TAA 还会让画面取决于
+            // 「拍之前跑了几帧」——出图先跑 kPreviewWarmupFrames 帧才截，于是一张吃
+            // 历史的图片连"同一台机器上跑两次"都不保证相同。
+            //
+            // RN-44：钉的是**与 options.properties 无关**，不是钉成一个常量。钉成常量
+            // 的代价是 MSAA 那条路在出图里根本拍不到，而「开 MSAA 时描边仍旧闪」正是
+            // 那条路上的缺陷——RN-39 量到的饱和点是单采样点的结论。
+            // `--anti-aliasing off|msaa|taa` 进目录名，两次同参数运行仍然逐字节相同。
+            options.antiAliasing = testScene.has_value() ? testScene->antiAliasing
+                                                         : config::AntiAliasingMode::Off;
             options.vsync = false;
             // RN-35：级联也属于这一类——帧图在建交换链资源时编译，近段那一步是编译期
             // 剪枝。钉成**开**（默认档）：出图要展示玩家实际看到的那一档，而不是

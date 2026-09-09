@@ -200,10 +200,19 @@ int main() {
         if (eatsHistory && warmupFrames > 1 && reachableTaa && initialize != std::string::npos &&
             glfwInitCall != std::string::npos) {
             const std::string prologue = clean.substr(initialize, glfwInitCall - initialize);
-            require(prologue.find("options.antiAliasing = config::AntiAliasingMode::Off;") !=
+            // RN-44：钉死的含义是「取值是命令行的函数，与机器上的 options.properties
+            // 无关」，不是「只能是 Off」。TAA 吃历史没错，但导出从固定初态跑固定帧数，
+            // 同参数两次运行仍然逐字节相同；而**档位进目录名**（test_scene_test 钉着），
+            // 所以 TAA 那一版不会静默覆盖 off 那一版
+            require(prologue.find(
+                        "options.antiAliasing = testScene.has_value() ? testScene->antiAliasing") !=
                         std::string::npos,
-                    "导出必须在 glfwInit 之前把抗锯齿钉成 Off——它是初始化期读一次的，"
-                    "钉晚了一个字节都改不动已经建好的交换链与管线");
+                    "导出必须在 glfwInit 之前把抗锯齿钉成命令行给的那一档——它是初始化期"
+                    "读一次的，钉晚了一个字节都改不动已经建好的交换链与管线");
+            require(prologue.find("options.antiAliasing = options.") == std::string::npos,
+                    "抗锯齿档绝不能取自持久化的那份配置");
+            require(prologue.find(": config::AntiAliasingMode::Off;") != std::string::npos,
+                    "没有 testScene 的那条路（界面截图）仍然必须落在 Off");
             // 光有那一行不够：它必须真的管到**方块预览导出**，而不是只管界面截图。
             // 那正是本轮查出来的缺陷——导出从来没进过这个条件
             require(prologue.find("testScene->exportPreview") != std::string::npos,
