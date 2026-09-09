@@ -507,10 +507,18 @@ struct CrossMeshTemplate final {
     // iron bars.
     std::array<CrossMeshBox, 2> post{};
     std::uint8_t postCount = 0U;
-    // The face(s) the FIRST post box gains when NOTHING is connected — vanilla's
-    // `noside`/`noside_alt` pair for a pane, and nothing for a fence or bars
-    // (whose posts already draw what they need).
-    std::uint8_t lonePostFaces = 0U;
+    // Whether the FIRST post box draws a face on every side that is NOT
+    // connected — vanilla's `noside` / `noside_alt` rule, which reads
+    // `{"north":"false"} -> noside`, one part per open side.
+    //
+    // This is not a "lonely block" special case, which is what it was first
+    // written as, and the difference is visible on any straight run: a pane
+    // connected north+south has its east and west open, and those two faces are
+    // the ONLY geometry covering the middle 2/16 of the sheet — the side boxes
+    // stop at z 7 and resume at z 9. Without them the pane has a hole exactly
+    // where the post used to be. A fence and iron bars do not do this (their own
+    // posts already draw what they need), so they leave it false.
+    bool postDrawsOpenFaces = false;
     std::array<CrossMeshBox, 2> side{};
     std::uint8_t sideCount = 0U;
 };
@@ -520,7 +528,7 @@ inline constexpr std::array<CrossMeshTemplate, 3> kCrossMeshTemplates{{
     // which is buried in the post anyway.
     {{CrossMeshBox{box16(6.0F, 0.0F, 6.0F, 10.0F, 16.0F, 10.0F), kAllFaces}, CrossMeshBox{}},
      1U,
-     0U,
+     false,
      {CrossMeshBox{box16(7.0F, 12.0F, 0.0F, 9.0F, 15.0F, 9.0F),
                    static_cast<std::uint8_t>(kAllFaces & ~faceBit(Face::PositiveZ))},
       CrossMeshBox{box16(7.0F, 6.0F, 0.0F, 9.0F, 9.0F, 9.0F),
@@ -532,7 +540,7 @@ inline constexpr std::array<CrossMeshTemplate, 3> kCrossMeshTemplates{{
     // side omits the face pointing at the centre.
     {{CrossMeshBox{box16(7.0F, 0.0F, 7.0F, 9.0F, 16.0F, 9.0F), kUpDownFaces}, CrossMeshBox{}},
      1U,
-     static_cast<std::uint8_t>(faceBit(Face::NegativeZ) | faceBit(Face::PositiveX)),
+     true,
      {CrossMeshBox{box16(7.0F, 0.0F, 0.0F, 9.0F, 16.0F, 7.0F),
                    static_cast<std::uint8_t>(kAllFaces & ~faceBit(Face::PositiveZ))},
       CrossMeshBox{}},
@@ -548,7 +556,7 @@ inline constexpr std::array<CrossMeshTemplate, 3> kCrossMeshTemplates{{
       CrossMeshBox{box16(7.0F, 0.0F, 8.0F, 9.0F, 16.0F, 8.0F),
                    static_cast<std::uint8_t>(faceBit(Face::PositiveZ) | faceBit(Face::NegativeZ))}},
      2U,
-     0U,
+     false,
      {CrossMeshBox{box16(8.0F, 0.0F, 0.0F, 8.0F, 16.0F, 8.0F),
                    static_cast<std::uint8_t>(faceBit(Face::PositiveX) | faceBit(Face::NegativeX))},
       CrossMeshBox{box16(7.0F, 0.0F, 0.0F, 9.0F, 16.0F, 7.0F),
@@ -562,10 +570,19 @@ struct CrossMeshBoxSet final {
 [[nodiscard]] constexpr CrossMeshBoxSet buildCrossMeshBoxSet(const CrossMeshTemplate& tmpl,
                                                              unsigned mask) {
     CrossMeshBoxSet set;
+    // The connection-bit order the mask uses (wallConnectionMask), paired with
+    // the post face that covers that side when it is open.
+    constexpr std::array<Face, 4> openFaceBySide{Face::NegativeZ, Face::PositiveX,
+                                                 Face::PositiveZ, Face::NegativeX};
     for (std::uint8_t index = 0; index < tmpl.postCount; ++index) {
         CrossMeshBox post = tmpl.post[index];
-        if (index == 0U && mask == 0U) {
-            post.faces = static_cast<std::uint8_t>(post.faces | tmpl.lonePostFaces);
+        if (index == 0U && tmpl.postDrawsOpenFaces) {
+            for (unsigned side = 0; side < 4U; ++side) {
+                if ((mask & (1U << side)) == 0U) {
+                    post.faces =
+                        static_cast<std::uint8_t>(post.faces | faceBit(openFaceBySide[side]));
+                }
+            }
         }
         set.boxes[set.count++] = post;
     }
