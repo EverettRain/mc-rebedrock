@@ -785,8 +785,14 @@ enum class BlockModel : std::uint8_t {
 // fence and a pane is entirely these five numbers (BlockShape.hpp's
 // kCrossCollisionParams), never a second model.
 enum class CrossCollisionFamily : std::uint8_t {
-    Fence,      // 26.1 FenceBlock: 4/16/4/16, collision 24 (1.5 cells)
-    PaneOrBars, // 26.1 IronBarsBlock (and GlassPaneBlock under it): 2/16/2/16/16
+    Fence, // 26.1 FenceBlock: 4/16/4/16, collision 24 (1.5 cells)
+    Pane,  // 26.1 GlassPaneBlock: 2/16/2/16/16
+    // Iron bars share the pane's five shape numbers exactly, but NOT its model:
+    // `template_bars_*` is a pair of ZERO-THICKNESS crossed planes (x = 8 and
+    // z = 8) where `template_glass_pane_*` is a 2/16 box. Meshing bars from the
+    // pane's template draws almost nothing — the sides face the wrong way. So
+    // the shape table repeats the row and the mesh table does not.
+    Bars,
 };
 
 // MDL-1: the "connects to its own kind" family, vanilla's `isSameFence`
@@ -1844,7 +1850,15 @@ class BlockProperties final {
     // draw the face they share. The caller sets the render layer: iron bars are
     // cutout, glass panes follow their block (translucent).
     [[nodiscard]] constexpr BlockProperties pane() const {
-        return crossCollision(CrossCollisionFamily::PaneOrBars, ConnectFamily::PaneOrBars)
+        return crossCollision(CrossCollisionFamily::Pane, ConnectFamily::PaneOrBars)
+            .skipsRenderingAgainstSelf()
+            .submerges();
+    }
+
+    // MDL-1: IronBarsBlock. Same shape numbers as a pane, different model —
+    // crossed planes rather than a box (see CrossCollisionFamily::Bars).
+    [[nodiscard]] constexpr BlockProperties bars() const {
+        return crossCollision(CrossCollisionFamily::Bars, ConnectFamily::PaneOrBars)
             .skipsRenderingAgainstSelf()
             .submerges();
     }
@@ -3882,7 +3896,7 @@ inline constexpr std::array<BlockDefinition, static_cast<std::size_t>(Block::Cou
     // MDL-1: iron bars — the pane geometry on its own cutout texture,
     // strength 5.0/6.0 (Blocks.java: `ofFullCopy(IRON_BLOCK)` family numbers).
     BlockProperties::of(Block::IronBars, "iron_bars", "Iron Bars")
-        .texture("iron_bars").strength(5.0F, 6.0F).pane()
+        .texture("iron_bars").strength(5.0F, 6.0F).bars()
         .renderLayer(BlockRenderLayer::Cutout)
         .creative(CreativeCategory::BuildingBlocks),
     // MDL-1: glass panes. Same render treatment as the glass block they are cut
