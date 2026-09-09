@@ -14,17 +14,15 @@ layout(location = 0) in vec2 fragmentUv;
 layout(location = 1) flat in float fragmentTextureLayer;
 layout(location = 2) flat in float fragmentCasterFacing;
 
-// RN-51：薄投射者（玻璃那一层）侧对光到这个程度就不投影了。
+// RN-51/52：薄投射者（玻璃那一层）侧对光到判不出来的程度就不投影了。
 //
-// 玻璃边框宽 1/16 格，挡光的投影宽度是 1/16 x |N·L|。取 0.25 ⇒ 至少 1/64 格，
-// 也就是默认档近段纹素（1/128 格）的两倍——刚好够被采样到。低于它渲出来的是噪声：
-// 一条随纹素中心通断的发丝影。非薄投射者的这一档恒为 1，这条判断对它们不存在。
-const float kThinCasterMinFacing = 0.25;
+// 判断本身在 shadow.vert 里做完——它要用**这一级的纹素**（门槛随近段距离那一档变），
+// 而纹素是从矩阵推的。这里收到的是结论：0 = 这一面渲进去只会是噪声。
 
 layout(binding = 1) uniform sampler2DArray blockTextures;
 
 void main() {
-    if (fragmentCasterFacing < kThinCasterMinFacing) {
+    if (fragmentCasterFacing < 0.5) {
         discard;
     }
     if (texture(blockTextures, vec3(fragmentUv, fragmentTextureLayer)).a < 0.5) {

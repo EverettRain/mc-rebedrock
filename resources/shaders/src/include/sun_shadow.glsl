@@ -26,8 +26,7 @@
 // 从前它返回的是「天光该乘多少」，把 0.35 那个全影系数烘在里面；那让「挡住了多少」
 // 与「影子里该有多亮」变成同一个数，而后者其实是天空散射的份额（见 sunSkyFactor）。
 
-// 阴影图边长（纹素），必须与 SunShadowMap.hpp 的 kSunShadowMapResolution 一致
-const float kSunShadowMapResolution = 2048.0;
+#include "shadow_map.glsl"
 
 // 1.0 个 NDC 深度单位等于多少格 = 正交的 far - near。偏置以「格」表达再除以它，
 // 于是偏置是一个能和方块尺寸对照的量。注意这个换算在换成 orthoRH_ZO 前后**相同**：
@@ -37,20 +36,7 @@ const float kSunShadowDepthRangeBlocks = 319.9;
 
 #include "sun_shadow_bias.glsl"
 
-// RN-47：一个纹素在世界里的边长（格），**从正在采的那张矩阵里推出来**，不再是常量。
-//
-// 近段框的半边长成了玩家可调的一档（8/16/24），而着色器里的偏置、法线抬升、逐 tap 平面
-// 修正、半影半径全都以「纹素」表达。把它做成 uniform 是一条路；从矩阵推是更短的一条：
-// 正交投影的 x 轴缩放正好是 1/半边长，而 lightViewProj = ortho x 旋转，旋转的行是单位
-// 向量，所以 length(vec3(m[0][0], m[1][0], m[2][0])) 就是那个缩放。
-//
-// ★ 这样纹素与它所属的那张矩阵**结构上不可能脱钩**——从前是 C++ 一份常量、GLSL 一份
-// 常量，靠一条测试把两边钉在一起，而那种钉法只挡得住「改了一边忘了另一边」，挡不住
-// 「两边都改了但改错了」。
-float sunShadowTexelBlocksOf(mat4 lightViewProj) {
-    float scale = length(vec3(lightViewProj[0][0], lightViewProj[1][0], lightViewProj[2][0]));
-    return 2.0 / (scale * kSunShadowMapResolution);
-}
+// 纹素怎么从矩阵推出来，见 shadow_map.glsl。
 
 // 一级的投影结果落在它的框里吗。三个轴都要判：横向出框是「没有阴影图可查」，
 // 深度出框是「这个点比光源还近或比远平面还远」，两者都只能按全亮处理。

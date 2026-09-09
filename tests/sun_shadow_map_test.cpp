@@ -844,8 +844,12 @@ void checkShaderSourceGuards() {
     const std::string expected =
         "const float kSunShadowMapResolution = " +
         std::to_string(static_cast<int>(mc::render::kSunShadowMapResolution)) + ".0;";
-    REQUIRE(include.find(expected) != std::string::npos,
-            "sun_shadow.glsl's shadow map resolution must match SunShadowMap.hpp; expected \"" +
+    // RN-52：分辨率搬进了 shadow_map.glsl——投射端也要它（门槛随纹素走）
+    const std::string shadowMapInclude = stripLineComments(
+        readFile(std::filesystem::path{MC_REBEDROCK_SHADER_SRC_DIR} / "include" /
+                 "shadow_map.glsl"));
+    REQUIRE(shadowMapInclude.find(expected) != std::string::npos,
+            "shadow_map.glsl's resolution must match SunShadowMap.hpp; expected \"" +
                 expected + "\"");
     // 深度换算也必须一致
     std::ostringstream range;
@@ -1789,7 +1793,7 @@ void checkNearDistanceOption() {
 
 // RN-49：级联**不混合**。RN-43 加过一条过渡带，本节点删了它——理由见 docs。
 // 这条测试因此从「带内两级各采一次」整个反过来：**任何时候都只采一级**。
-// RN-51：薄投射者侧对光时不投影。
+// RN-51/52：薄投射者侧对光到判不出来的程度就不投影，而门槛随**这一级的纹素**走。
 void checkThinCasterFacing() {
     const std::filesystem::path shaderDir{MC_REBEDROCK_SHADER_SRC_DIR};
     const std::string vertexSource = stripLineComments(readFile(shaderDir / "shadow.vert"));
@@ -1797,42 +1801,83 @@ void checkThinCasterFacing() {
         stripLineComments(readFile(shaderDir / "shadow_cutout.frag"));
 
     // ---- 1. 筛子必须在 ----------------------------------------------------
-    // 去掉它，玻璃侧对光的那些面又会往阴影图里渲一条随纹素通断的发丝影——
-    // 用户两次报的「阴影线条上的光斑」
-    REQUIRE(cutoutSource.find("fragmentCasterFacing < kThinCasterMinFacing") != std::string::npos,
-            "the cutout shadow pass must drop thin casters that are edge-on to the light");
-    REQUIRE(cutoutSource.find("discard") != std::string::npos, "and it must discard, not fade");
+    REQUIRE(cutoutSource.find("fragmentCasterFacing < 0.5") != std::string::npos &&
+                cutoutSource.find("discard") != std::string::npos,
+            "the cutout shadow pass must drop thin casters the map cannot resolve");
 
-    // ---- 2. 判据是 |N·L|，而光的方向从矩阵里取 -----------------------------
-    // 取自 uniform 或另算一次太阳方向，就又有一个会与真正用的那张矩阵脱钩的地方
-    REQUIRE(vertexSource.find("abs(dot(normal, lightForward))") != std::string::npos,
-            "facing must be the absolute cosine between the face and the light");
-    REQUIRE(vertexSource.find("shadow.lightViewProj[0][2]") != std::string::npos,
-            "the light direction must come from the matrix this draw actually projects with");
+    // ---- 2. 判据是 |N·L| 与**这一级的纹素**比 -----------------------------
+    // ★ 这是 RN-52 的整条：门槛从前写死 0.25，那是按默认档（纹素 1/128 格）算的。
+    //   用户把近段距离调到 24 格之后纹素变成 1/42.7，边框只盖得住 1.5 个纹素——
+    //   噪声原样回来，而画面上就是「近处的阴影质量随这个参数变高而变差」。
+    REQUIRE(vertexSource.find("sunShadowTexelBlocksOf(shadow.lightViewProj)") != std::string::npos,
+            "the threshold must come from the texel of the cascade being rendered");
+    REQUIRE(vertexSource.find("kThinCasterMinTexels * texelBlocks / kThinCasterFrameBlocks") !=
+                std::string::npos,
+            "and it must be 'the frame must cover at least N texels', not a magic constant");
+    REQUIRE(cutoutSource.find("kThinCasterMinFacing") == std::string::npos,
+            "the fixed 0.25 threshold is gone; it only held at the default setting");
 
-    // ---- 3. 只筛薄投射者 --------------------------------------------------
-    // ★ 对不透明地形也筛就是咬掉它们的轮廓：一个实心方块侧对光的那一面虽然只贡献
-    //   一条边，但那条边是它的剪影
-    REQUIRE(vertexSource.find("shadow.sectionOrigin.w > 0.5 ?") != std::string::npos,
+    // ---- 3. 门槛在三档上的取值 --------------------------------------------
+    // 逐档算一遍，钉住「越粗的纹素要求越正对」，以及默认档仍是原来的 0.25
+    // ★ 从**着色器里**读那两个常量，而不是在测试里再写一遍 2.0——写一遍的话，
+    //   把它改成 1.0（放噪声进来）这条 sabotage 一路绿灯。实测过：确实没红。
+    const auto shaderConstant = [&vertexSource](const char* name) {
+        const auto at = vertexSource.find(std::string{name} + " = ");
+        REQUIRE(at != std::string::npos, std::string{"shadow.vert must declare "} + name);
+        const std::string tail =
+            vertexSource.substr(at + std::string{name}.size() + 3);
+        if (tail.rfind("1.0 / 16.0", 0) == 0) {
+            return 1.0F / 16.0F;
+        }
+        return std::stof(tail);
+    };
+    const float minTexels = shaderConstant("kThinCasterMinTexels");
+    const float frameBlocks = shaderConstant("kThinCasterFrameBlocks");
+    REQUIRE(std::abs(frameBlocks - 1.0F / 16.0F) < 1e-6F,
+            "the frame width is one sixteenth of a block; that is what vanilla's glass.png draws");
+    // 奈奎斯特：一个特征只盖住一个采样点，正是它开始混叠的那一点。低于两个纹素渲进去的
+    // 是噪声——实测把它调到 1.0，默认档的发丝影原样回来
+    REQUIRE(minTexels >= 2.0F,
+            "a frame must cover at least two texels to be signal rather than noise");
+    const auto minFacing = [&](int nearBlocks) {
+        return minTexels * mc::render::sunShadowTexelSize(0, nearBlocks) / frameBlocks;
+    };
+    REQUIRE(std::abs(minFacing(8) - 0.25F) < 1e-6F,
+            "the default setting must still land on the value RN-51 measured");
+    REQUIRE(std::abs(minFacing(16) - 0.5F) < 1e-6F, "16 blocks doubles it");
+    REQUIRE(std::abs(minFacing(24) - 0.75F) < 1e-6F, "24 blocks trebles it");
+    float previous = 0.0F;
+    for (const int blocks : mc::render::kSunShadowNearDistances) {
+        REQUIRE(minFacing(blocks) > previous, "a coarser texel must demand a more face-on frame");
+        REQUIRE(minFacing(blocks) < 1.0F,
+                "and never exceed one, or the setting would drop every glass shadow");
+        previous = minFacing(blocks);
+    }
+    // 远段那一级的门槛必然超过 1 —— 也就是「远段一个纹素就是边框宽度，怎么摆都撑不住」，
+    // 这正是 RN-50 只把玻璃画进近段的算术依据
+    REQUIRE(2.0F * mc::render::kSunShadowTexelSize / (1.0F / 16.0F) > 1.0F,
+            "the far cascade cannot resolve a one-sixteenth-block frame at any facing");
+
+    // ---- 4. 只筛薄投射者 --------------------------------------------------
+    REQUIRE(vertexSource.find("if (shadow.sectionOrigin.w > 0.5) {") != std::string::npos,
             "the filter must be gated on the per-draw thin-caster flag");
-    REQUIRE(vertexSource.find(": 1.0;") != std::string::npos,
-            "and everything else must report full facing, so the filter never touches it");
+    // ★ 而且整段要在分支**里面**：这条通道是顶点瓶颈的，绝大多数绘制不是薄投射者，
+    //   算完再按旗子取舍等于让每一个阴影顶点都付这笔钱
+    const auto branchAt = vertexSource.find("if (shadow.sectionOrigin.w > 0.5) {");
+    const auto normalizeAt = vertexSource.find("normalize(vec3(shadow.lightViewProj[0][2]");
+    REQUIRE(normalizeAt != std::string::npos && normalizeAt > branchAt,
+            "the light direction and the texel derivation must sit inside the branch");
 
-    // ---- 4. 阈值的量纲 ----------------------------------------------------
-    // 玻璃边框宽 1/16 格，挡光的投影宽度是 1/16 x |N·L|。阈值太小就筛不掉噪声，
-    // 太大就把正对光的边框也筛掉了
-    const auto at = cutoutSource.find("kThinCasterMinFacing = ");
-    REQUIRE(at != std::string::npos, "the threshold must be a named constant");
-    const float threshold =
-        std::stof(cutoutSource.substr(at + std::string_view{"kThinCasterMinFacing = "}.size()));
-    const float frameWidthBlocks = 1.0F / 16.0F;
-    const float nearTexel =
-        mc::render::sunShadowTexelSize(0, mc::render::kDefaultSunShadowNearDistance);
-    REQUIRE(frameWidthBlocks * threshold >= nearTexel * 2.0F,
-            "below the threshold the frame must project to under two near texels, or the filter "
-            "is letting noise through");
-    REQUIRE(threshold <= 0.4F,
-            "and it must stay far from face-on, or real frame shadows get dropped");
+    // ---- 5. 纹素这件事只有一份实现 ----------------------------------------
+    // 采样端与投射端各存一份就是又一处会漂的常量
+    for (const char* consumer : {"include/sun_shadow.glsl", "shadow.vert"}) {
+        const std::string source = stripLineComments(readFile(shaderDir / consumer));
+        REQUIRE(source.find("#include \"") != std::string::npos &&
+                    source.find("shadow_map.glsl\"") != std::string::npos,
+                std::string{consumer} + " must take the texel derivation from the shared include");
+        REQUIRE(source.find("float sunShadowTexelBlocksOf(mat4") == std::string::npos,
+                std::string{consumer} + " must not define its own copy");
+    }
 }
 
 void checkCascadeBlend() {
