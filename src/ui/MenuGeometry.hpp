@@ -9,6 +9,7 @@
 #include "ui/OptionsList.hpp"
 #include "ui/ScrollList.hpp"
 #include "ui/MenuSystem.hpp"
+#include "ui/NoticeScreen.hpp"
 #include "ui/PageStack.hpp"
 #include "ui/Widget.hpp"
 
@@ -89,9 +90,13 @@ namespace mc::ui {
 //   个 firstRow 折算行号，两边错开一行就是"名字和控件错位"或者"滚动条动了内容不动"。
 // ★ `createWorldTab` 同理：它是**屏幕状态**，而装配与布局必须读同一个值——
 //   装配按当前页造控件、布局按同一页算矩形，两边不同步就是"点 A 触发 B"。
+// ★ `noticeMetrics` 同理：提示屏的内容列宽是 `max(标题宽, 正文格宽, 页脚宽)`，
+//    而标题宽与复选框文字宽要量字体——`ui::` 这一层没有字体，所以由调用方量好传进来
+//    （生产路径两处都从 `MenuBuildContext::noticeMetrics` 取同一个值）。
 void layoutPageInto(Page& page, PageId id, const HudLayout& layout,
                     std::size_t keyBindFirstRow = 0U, std::size_t optionsFirstRow = 0U,
-                    CreateWorldTab createWorldTab = CreateWorldTab::Game);
+                    CreateWorldTab createWorldTab = CreateWorldTab::Game,
+                    const NoticeMetrics& noticeMetrics = {});
 
 // 一页里有几个**按钮**（不含绑定列表那些行内控件）。布局用它，测试也用它断言页面形状。
 [[nodiscard]] std::size_t countPageButtons(const Page& page);

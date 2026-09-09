@@ -433,6 +433,8 @@ static_assert(optionsHeadersProduceNoWidgets(kFontSettingsGroups),
     //   逐个列出之后，加一页编译器会指名道姓（实测：加 FontSettings 时它没吭声，
     //   而别的八处 switch 全都点名了）。
     case PageId::Controls:
+    // UI-11 / A5：提示屏不是设置列表页，没有 addSmall 分组。
+    case PageId::AdvancedGraphicsNotice:
     case PageId::Title:
     case PageId::WorldList:
     case PageId::CreateWorld:

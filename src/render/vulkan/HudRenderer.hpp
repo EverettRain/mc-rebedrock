@@ -379,6 +379,26 @@ class HudRenderer final {
     // UI-6e ③：资源包两栏的行数与选中行。**与输入侧那份必须一致**——
     // 两处各算一遍是 UI-6c/6d 已经栽过两次的形状，所以两边算的都是同一件事：
     // 左栏 = 已注册但不在草稿里的，右栏 = 草稿本身，各自被视口容量夹住。
+    // UI-11 / A5：提示屏那三样要量字体的东西——正文的换行、标题宽、复选框文字宽。
+    //
+    // ★ 与 fillPackContext 同理，它是**一处**代码给两条路径（绘制的 drawContext_ 与
+    //   输入的 ctx）填同一份值。这两处各填一遍的后果这条线上已经吃过：UI-6c 的
+    //   keyBindLabelsFor 只填了一处，界面切中文后按键设置整屏还是英文。
+    void fillNoticeContext(ui::MenuBuildContext& ctx, const ui::HudLayout& layout) const {
+        if (menuSystem.pageStack.current() != ui::PageId::AdvancedGraphicsNotice) {
+            return;
+        }
+        const auto measure = [this](std::string_view text) { return hudTextWidth(text, 1.0F); };
+        ctx.noticeMessageLines = ui::wrapText(
+            widgetLabel(ui::WidgetId::NoticeMessage),
+            static_cast<float>(ui::noticeMessageWrapWidth(layout.logicalWidth())), measure);
+        ctx.noticeMetrics = {
+            static_cast<int>(measure(widgetLabel(ui::WidgetId::NoticeTitle))),
+            static_cast<int>(measure(widgetLabel(ui::WidgetId::NoticeStopShowing))),
+        };
+        ctx.noticeStopShowing = menuSystem.noticeStopShowing;
+    }
+
     void fillPackContext(ui::MenuBuildContext& ctx, const ui::HudLayout& layout) const {
         if (menuSystem.pageStack.current() != ui::PageId::ResourcePacks) {
             return;
@@ -441,6 +461,7 @@ class HudRenderer final {
         drawContext_.optionsWindow =
             ui::optionsWindowFor(layout, pageId, menuSystem.optionsListFirstIndex);
         fillPackContext(drawContext_, layout);
+        fillNoticeContext(drawContext_, layout);
         // UI-9：创建世界开在哪一页，以及三个页签上的字。
         // ★ **装配与布局必须读同一个值**——装配按当前页造控件、布局按同一页算矩形，
         //   两边不同步就是"点 A 触发 B"（护栏 21）。所以它从这一处喂给两遍。
@@ -456,7 +477,8 @@ class HudRenderer final {
         };
         ui::buildPageInto(drawPage_, pageId, drawContext_, drawCallbacks_);
         ui::layoutPageInto(drawPage_, pageId, layout, keyFirst,
-                           drawContext_.optionsWindow.firstRow, menuSystem.createWorldTab);
+                           drawContext_.optionsWindow.firstRow, menuSystem.createWorldTab,
+                           drawContext_.noticeMetrics);
         return drawPage_;
     }
 
@@ -1036,6 +1058,12 @@ class HudRenderer final {
         }
 
         switch (button) {
+        // UI-11 / A5：提示屏的标题。它就是这一屏的标题，所以取自 ui::pageTitle
+        // 那张表——在静态标签表里再抄一份就是同一个事实的两份表述。
+        case ui::WidgetId::NoticeTitle: {
+            const auto entry = ui::pageTitle(ui::PageId::AdvancedGraphicsNotice);
+            return translated(entry.key, entry.fallback);
+        }
         case ui::WidgetId::Resolution: {
             // 标签显示实时窗口尺寸，最大化或手动拖拽过的窗口因此读数正确
             // 而不是回显上一次选中的预设
@@ -1635,6 +1663,11 @@ class HudRenderer final {
                             {1.0F, 1.0F, 1.0F, 1.0F});
                 continue;
             }
+            // UI-11 / A5：复选框（26.1 `Checkbox`）。
+            if (widget.kind == ui::WidgetKind::Checkbox) {
+                drawCheckbox(commandBuffer, widget, scale, widgetFocused);
+                continue;
+            }
             // UI-9：标签页导航栏里的一个页签（26.1 `TabButton`）。
             if (widget.kind == ui::WidgetKind::Tab) {
                 drawTabButton(commandBuffer, widget, cursor, scale, widgetFocused);
@@ -1782,6 +1815,32 @@ class HudRenderer final {
             ++ordinal;
         }
         return false;
+    }
+
+    // UI-11 / A5：一个复选框。左边一个方盒（四态精灵），右边一行文字。
+    //
+    // ★ 选精灵的判据是 `selected × isFocused()`（26.1 `Checkbox.extractContents`），
+    //   **不是** hover——vanilla 的复选框悬停时盒子不变样，变的只有文字的效果。
+    //   本作的按钮把焦点与悬停并成一档（`buttonVisualState`），复选框不能跟着并：
+    //   那会让"鼠标扫过去"看起来像"选中了"。
+    // ★ blit 的边长是 `ui::kCheckboxBoxSize`（17），不是精灵美术的 20。
+    void drawCheckbox(VkCommandBuffer commandBuffer, const ui::Widget& widget, float scale,
+                      bool focused) const {
+        const auto parts = ui::checkboxParts(
+            {widget.rect.x / scale, widget.rect.y / scale, widget.rect.width / scale,
+             widget.rect.height / scale},
+            static_cast<int>(ui::kFontLineHeight));
+        const GuiWidgetSprite sprite = checkboxSprite(widget.checked, focused);
+        drawScaledGuiSprite(commandBuffer,
+                            {parts.box.x * scale, parts.box.y * scale, parts.box.width * scale,
+                             parts.box.height * scale},
+                            0.0F, guiWidgetSprite(guiWidgetSprites, sprite), scale,
+                            glm::vec4{1.0F});
+        // 26.1 `SafetyScreen.CHECK` 带 `withColor(-2039584)` = #E0E0E0。
+        // 那是**这一句话**的颜色，不是复选框控件的默认色——控件本身不给文字着色。
+        constexpr float kCheckTextChannel = 224.0F / 255.0F;
+        drawHudText(commandBuffer, widget.label, parts.textX * scale, parts.textY * scale, scale,
+                    {kCheckTextChannel, kCheckTextChannel, kCheckTextChannel, 1.0F});
     }
 
     void drawIconButton(VkCommandBuffer commandBuffer, const ui::Widget& widget, float cursorX,
@@ -2519,9 +2578,15 @@ class HudRenderer final {
             headerAndFooterPage
                 ? static_cast<float>(frame.headerTitle(0, ui::kFontLineHeight).y) * scale
                 : firstButton.y - 30.0F * titleScale;
-        drawHudText(commandBuffer, title,
-                    (static_cast<float>(swapchainExtent.width) - titleWidth) * 0.5F, titleY,
-                    titleScale, {1.0F, 1.0F, 1.0F, 1.0F});
+        // UI-11 / A5：提示屏的标题是**页面里的第一个控件**（26.1
+        // `WarningScreen.init` 把 StringWidget 加进内容列），位置由整块内容的居中
+        // 决定。这里再画一行就是两个标题——判据走 ui::drawsTitleAsWidget 那张
+        // 不带 default 的表，而不是在这里写 `page == AdvancedGraphicsNotice`。
+        if (!ui::drawsTitleAsWidget(ui::pageLayoutKind(currentPage))) {
+            drawHudText(commandBuffer, title,
+                        (static_cast<float>(swapchainExtent.width) - titleWidth) * 0.5F, titleY,
+                        titleScale, {1.0F, 1.0F, 1.0F, 1.0F});
+        }
         drawMenuWidgets(commandBuffer, buildDrawPage(), scale);
         // 按键绑定列表（中段）的滚动条，仅当动作数超出可见窗口时绘制
         if (currentPage == ui::PageId::KeyBinds) {

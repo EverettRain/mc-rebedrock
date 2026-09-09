@@ -500,6 +500,14 @@ void TextureManager::createGuiTexture() {
                200);
     blitWidget(widgets, GuiWidgetSprite::SlotHighlightFront, "container/slot_highlight_front", 32,
                200);
+    // UI-11 / A5：复选框四张 20x20。`widgets` 这一层 y=200 那一行，槽位高亮那两张
+    // （各 24 宽，落在 x=0 与 x=32）右边整条还空着——**不新增图集层**，加层要同步改三处。
+    blitWidget(widgets, GuiWidgetSprite::Checkbox, "widget/checkbox", 64, 200);
+    blitWidget(widgets, GuiWidgetSprite::CheckboxSelected, "widget/checkbox_selected", 88, 200);
+    blitWidget(widgets, GuiWidgetSprite::CheckboxHighlighted, "widget/checkbox_highlighted", 112,
+               200);
+    blitWidget(widgets, GuiWidgetSprite::CheckboxSelectedHighlighted,
+               "widget/checkbox_selected_highlighted", 136, 200);
     // UI-9：四张页签精灵各 **130x24**（不是方块），竖排四张要 96 高——`widgets` 这一层
     // y>=200 只剩 56 高，放不下。所以这一次**确实要加一层**（`tabWidgets`），
     // 并同步改三处：这个数组、`kGuiLayerCount`、`HudTypes.hpp` 的层号常量。

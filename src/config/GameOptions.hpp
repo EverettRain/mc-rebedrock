@@ -157,6 +157,10 @@ struct GameOptions final {
     // huge storm costs near-zero world lookups. Turning it off reverts to the
     // direct per-drop-per-frame probe for machines with headroom.
     bool rainCollisionCache = true;
+    // UI-11 / A5：高级图形设置那块全屏提示是不是已经被「不再显示」掉了
+    // （26.1 `Options.skipMultiplayerWarning` 的同构物）。
+    // 只有在提示屏上勾了复选框**并且**按了 Proceed 才会写 true。
+    bool skipAdvancedGraphicsWarning = false;
 
     [[nodiscard]] static GameOptions load(const std::filesystem::path& path);
     void save(const std::filesystem::path& path) const;

@@ -39,6 +39,7 @@ constexpr std::array kTargetNames{
     TargetName{{ui::PageId::SoundSettings}, "sound-settings"},
     TargetName{{ui::PageId::ResourcePacks}, "resource-packs"},
     TargetName{{ui::PageId::FontSettings}, "font-settings"},
+    TargetName{{ui::PageId::AdvancedGraphicsNotice}, "advanced-graphics-notice"},
     // A0-0：容器界面。★ 创造背包是 PlayerInventory 的**创造那一档**，不是第七块屏。
     TargetName{{ui::PageId::Game, gameplay::ContainerScreen::PlayerInventory, false},
                "inventory"},

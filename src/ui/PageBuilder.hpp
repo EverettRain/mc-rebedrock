@@ -14,6 +14,7 @@
 // ui 命名空间从不接触 Vulkan
 
 #include "ui/OptionSlider.hpp"
+#include "ui/NoticeScreen.hpp"
 #include "ui/OptionsList.hpp"
 #include "ui/PageStack.hpp"
 #include "ui/WidgetId.hpp"
@@ -27,6 +28,7 @@
 #include <functional>
 #include <string>
 #include <utility>
+#include <vector>
 
 namespace mc::ui {
 
@@ -95,6 +97,16 @@ struct MenuBuildContext final {
     //   漏填在类型上就不成立。
     CreateWorldTab createWorldTab = CreateWorldTab::Game;
     std::array<std::string, 3> createWorldTabLabels{};
+    // UI-11 / A5：提示屏的正文**已经换好行**，一行一个 Label。
+    //
+    // ★ 换行要量字宽，而 `ui::` 这一层没有字体。所以换行在渲染器里做一次
+    //   （`ui::wrapText` + `ui::noticeMessageWrapWidth`），装配只负责把行变成控件，
+    //   布局只负责数有几个——"几行"因此只有一份表述，而不是装配一份、布局再算一份。
+    std::vector<std::string> noticeMessageLines{};
+    // 同理，版面要用到的两个文字宽度（标题、复选框右边那句话）也由渲染器量好。
+    NoticeMetrics noticeMetrics{};
+    // 提示屏上那个「不再显示」当前勾上了没有（屏幕状态的快照）。
+    bool noticeStopShowing = false;
     // UI-10 / D20：世界名框那句提示框文案（"Will be saved in: <目录名>"）。
     // 它要拼进真正的 slug，所以由调用方给——与页签的文字同理。
     std::string createWorldFolderHint{};
@@ -152,6 +164,11 @@ struct MenuCallbacks final {
     // UI-11 / A2：语言屏 → 字体设置。
     std::function<void()> openFontSettings{};
     std::function<void()> openAdvancedGraphics{};
+    // UI-11 / A5：提示屏上的两个动作。
+    // `toggleNoticeStopShowing` 只翻屏幕状态里的那个布尔，**不写盘**；
+    // `proceedAdvancedGraphicsNotice` 才是"勾上了就存，然后进那一屏"。
+    std::function<void()> toggleNoticeStopShowing{};
+    std::function<void()> proceedAdvancedGraphicsNotice{};
     std::function<void()> doneOptions{};   // pop the current options sub-page
     std::function<void()> back{};          // generic page pop
 
@@ -816,6 +833,32 @@ inline void buildPageInto(Page& page, PageId id, const MenuBuildContext& ctx,
                           /*enabled=*/false);
             });
             addButton(page, ctx, WidgetId::Done, cb.doneOptions);
+            break;
+        }
+
+        // UI-11 / A5：26.1 `WarningScreen.init()` 的装配顺序，一比一：
+        //   标题 → 正文（**每行一个 Label**）→ 复选框 → Proceed → Back。
+        //
+        // ★ 次序就是布局侧读到的次序（`layoutPageInto` 的 CentredNotice 分支按同一个
+        //   次序发矩形）。两边错一位就是"点 Proceed 触发 Back"——护栏 21 那一族。
+        case PageId::AdvancedGraphicsNotice: {
+            // 标题的文字走**运行期标签**（widgetLabel → ui::pageTitle），
+            // 而不是在这里再抄一份静态串：那张表才是"这一屏叫什么"的唯一来源。
+            addLabelledButton(page, WidgetId::NoticeTitle, detail::label(ctx, WidgetId::NoticeTitle),
+                              nullptr, /*enabled=*/false, WidgetKind::Label);
+            for (const std::string& line : ctx.noticeMessageLines) {
+                addLabelledButton(page, WidgetId::NoticeMessage, line, nullptr,
+                                  /*enabled=*/false, WidgetKind::Label);
+            }
+            Widget check;
+            check.kind = WidgetKind::Checkbox;
+            check.debugId = static_cast<std::uint16_t>(WidgetId::NoticeStopShowing);
+            check.label = detail::label(ctx, WidgetId::NoticeStopShowing);
+            check.checked = ctx.noticeStopShowing;
+            check.onActivate = cb.toggleNoticeStopShowing;
+            page.push_back(std::move(check));
+            addButton(page, ctx, WidgetId::NoticeProceed, cb.proceedAdvancedGraphicsNotice);
+            addButton(page, ctx, WidgetId::Back, cb.back);
             break;
         }
 

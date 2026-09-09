@@ -43,6 +43,13 @@ enum class PageLayoutKind : std::uint8_t {
     // 与 HeaderFooterList 的分别是"两张独立的列表"而不是"一张双列的列表"：
     // 两栏条目数不同、滚动位置也各自独立。
     HeaderFooterDualColumn,
+    // UI-11 / A5：26.1 `WarningScreen` —— 一整块（标题 / 正文 / 复选框 / 两个按钮）
+    // 在**整屏**里居中的 FrameLayout。
+    //
+    // ★ 它与 CentredColumn 的分别不是"也在中间"：那一档摆的是一列等宽按钮，
+    //   而这一档里五个控件的宽度各不相同（标题是文字宽、正文是 W-100、
+    //   按钮是 150），且纵向是按内容高度堆出来的，不是按序号乘行距。
+    CentredNotice,
 };
 
 // 这一种版式是不是**三段式**（页眉标题 / 内容区 / 页脚）。
@@ -61,6 +68,31 @@ enum class PageLayoutKind : std::uint8_t {
     case PageLayoutKind::HeaderFooterForm:
     case PageLayoutKind::HeaderFooterDualColumn:
         return true;
+    case PageLayoutKind::CentredColumn:
+    case PageLayoutKind::BottomBand:
+    case PageLayoutKind::BottomBandTwoColumn:
+    case PageLayoutKind::VideoGrid:
+    case PageLayoutKind::TitleScreen:
+    case PageLayoutKind::CentredNotice:
+        break;
+    }
+    return false;
+}
+
+// 这一种版式的标题画在**页面自己的控件里**，而不是由绘制侧另外画一行。
+//
+// ★ 它存在的理由与 usesHeaderAndFooter 完全同族：`drawPauseMenu` 无条件画一行标题
+//   （三段式画在页眉里、其余画在"第一个按钮上方 30px"）。提示屏的标题在 26.1 里是
+//   内容列的**第一个孩子**（`content.addChild(new StringWidget(getTitle(), font))`），
+//   位置由整块内容的居中决定。让绘制侧再画一行，屏幕上就是两个标题。
+//   写成不带 default 的 switch：加一种版式时编译器点名，而不是等截图看出来。
+[[nodiscard]] constexpr bool drawsTitleAsWidget(PageLayoutKind kind) {
+    switch (kind) {
+    case PageLayoutKind::CentredNotice:
+        return true;
+    case PageLayoutKind::HeaderFooterList:
+    case PageLayoutKind::HeaderFooterForm:
+    case PageLayoutKind::HeaderFooterDualColumn:
     case PageLayoutKind::CentredColumn:
     case PageLayoutKind::BottomBand:
     case PageLayoutKind::BottomBandTwoColumn:
@@ -100,6 +132,8 @@ enum class PageLayoutKind : std::uint8_t {
         return PageLayoutKind::HeaderFooterForm;
     case PageId::ResourcePacks:
         return PageLayoutKind::HeaderFooterDualColumn;
+    case PageId::AdvancedGraphicsNotice:
+        return PageLayoutKind::CentredNotice;
     // 其余都走屏幕正中那一列。`Game` 与 `Loading` 没有菜单按钮，取值仍要良定义：
     // 它们的页面装配是空的，所以这一档永远不会被真的用到。
     case PageId::Accessibility:
@@ -141,6 +175,7 @@ enum class PageDrawKind : std::uint8_t {
     case PageId::AdvancedGraphics:
     case PageId::SoundSettings:
     case PageId::FontSettings:
+    case PageId::AdvancedGraphicsNotice:
     case PageId::ResourcePacks:
         return PageDrawKind::Settings;
     case PageId::Language:

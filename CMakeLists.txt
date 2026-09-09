@@ -1830,6 +1830,19 @@ if(BUILD_TESTING)
     add_test(NAME container_interaction COMMAND mc_rebedrock_container_interaction_test)
 
     # UI-9：标签页导航栏（spec §5 的 L5）的几何。纯 constexpr，无依赖。
+    # UI-11 / A5：全屏提示屏与复选框的几何（26.1 WarningScreen / SafetyScreen /
+    # Checkbox）。装配 + 布局两趟都要，所以链 MenuGeometry。
+    add_executable(mc_rebedrock_notice_screen_test
+        tests/notice_screen_test.cpp
+        src/ui/MenuGeometry.cpp
+        src/ui/TitleScreenLayout.cpp
+        src/ui/HudLayout.cpp
+        src/ui/PageStack.cpp
+    )
+    target_include_directories(mc_rebedrock_notice_screen_test PRIVATE src)
+    target_link_libraries(mc_rebedrock_notice_screen_test PRIVATE glm::glm)
+    add_test(NAME notice_screen COMMAND mc_rebedrock_notice_screen_test)
+
     add_executable(mc_rebedrock_tab_bar_test tests/tab_bar_test.cpp)
     target_include_directories(mc_rebedrock_tab_bar_test PRIVATE src)
     target_link_libraries(mc_rebedrock_tab_bar_test PRIVATE glm::glm)

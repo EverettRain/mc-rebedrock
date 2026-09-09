@@ -92,6 +92,10 @@ enum class WidgetId : std::uint16_t {
     PackMoveUp, PackMoveDown, PackUnselect,
     // UI-11 / A2：语言屏底部那个跳转，以及字体屏里本作没有后端的那一项。
     FontSettings, JapaneseGlyphVariants,
+    // UI-11 / A5：提示屏上的五种控件。标题与正文都是 Label（正文**每行一个**），
+    // 所以正文那个 id 会在一页里出现好几次——与三个页签共用一个 id 同理，
+    // 第几行由装配时的次序决定。
+    NoticeTitle, NoticeMessage, NoticeStopShowing, NoticeProceed,
     // 打开 resourcepacks/ 目录。本作没有"用默认程序打开路径"这条能力，置灰。
     PackOpenFolder,
 

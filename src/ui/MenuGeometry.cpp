@@ -198,9 +198,57 @@ std::size_t countPageButtons(const Page& page) {
     return buttons;
 }
 
+namespace {
+
+// UI-11 / A5：提示屏的一趟布局。
+//
+// ★ "正文有几行"是从**页面里数出来的**，不是另一个参数说的：装配把每一行做成一个
+//   Label，所以行数天然只有一份表述。给这里再加一个 `lineCount` 形参，就等于允许
+//   "装配了 4 行、布局按 3 行算高度"——那正是 optionsFirstRow 那一族的形状。
+void layoutNoticePageInto(Page& page, const HudLayout& layout, const NoticeMetrics& metrics) {
+    std::size_t lineCount = 0;
+    for (const Widget& widget : page) {
+        if (static_cast<WidgetId>(widget.debugId) == WidgetId::NoticeMessage) {
+            ++lineCount;
+        }
+    }
+    const auto notice = noticeLayout(layout.logicalWidth(), layout.logicalHeight(),
+                                     static_cast<int>(lineCount), metrics);
+    std::size_t line = 0;
+    for (Widget& widget : page) {
+        switch (static_cast<WidgetId>(widget.debugId)) {
+        case WidgetId::NoticeTitle:
+            widget.rect = fbRect(layout, notice.title);
+            break;
+        case WidgetId::NoticeMessage:
+            widget.rect = fbRect(
+                layout, noticeMessageLineRect(notice.message, static_cast<int>(line++)));
+            break;
+        case WidgetId::NoticeStopShowing:
+            widget.rect = fbRect(layout, notice.check);
+            break;
+        case WidgetId::NoticeProceed:
+            widget.rect = fbRect(layout, notice.proceed);
+            break;
+        default:
+            // 这一页上只剩 Back 一个控件。写成 default 而不是 `case WidgetId::Back`
+            // 是因为 WidgetId 有上百个取值，穷举它没有意义——真正的护栏是
+            // `notice_screen` 里那条"这一页恰好装配了这五种控件"的断言。
+            widget.rect = fbRect(layout, notice.back);
+            break;
+        }
+    }
+}
+
+} // namespace
+
 void layoutPageInto(Page& page, PageId id, const HudLayout& layout,
                     std::size_t keyBindFirstRow, std::size_t optionsFirstRow,
-                    CreateWorldTab createWorldTab) {
+                    CreateWorldTab createWorldTab, const NoticeMetrics& noticeMetrics) {
+    if (pageLayoutKind(id) == PageLayoutKind::CentredNotice) {
+        layoutNoticePageInto(page, layout, noticeMetrics);
+        return;
+    }
     // ★ UI-10 / D24：这里**不需要**两栏的窗口起点。装配只造窗口里的那几行，所以
     //   页面里第几个同栏的行天然就是屏幕上的第几行；绝对行号只有**回调**用得着
     //   （它要去索引真正的那个包）。给布局也塞一个 firstRow 参数是"只做有消费者的
@@ -483,6 +531,10 @@ UiRect frontendButtonRect(const HudLayout& layout, PageId page, std::size_t inde
                                      static_cast<float>(kFooterButtonHeight)});
     }
     case PageLayoutKind::CentredColumn:
+    // UI-11 / A5：提示屏不走这条路——它的五种控件宽度各不相同，矩形由
+    // `layoutNoticePageInto` 一次算全（那里才有"正文有几行"这个输入）。
+    // 列在这里只是为了不带 default，好让下一页被编译器点名。
+    case PageLayoutKind::CentredNotice:
         break;
     }
     return layout.menuButton(index, buttonCount);

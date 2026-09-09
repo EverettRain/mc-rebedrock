@@ -266,6 +266,12 @@ class MenuSystem final {
     std::size_t packAvailableFirstRow = 0;
     std::size_t packSelectedFirstRow = 0;
     std::size_t creativeScrollRow = 0;
+    // UI-11 / A5：提示屏上那个「不再显示」勾上了没有。
+    //
+    // ★ 它是**屏幕状态**，不是设置项：26.1 的 `SafetyScreen` 只在按下 Proceed 时才
+    //   `options.skipMultiplayerWarning = true; options.save()`——勾上之后按 Back
+    //   什么也不写。两者是两个字段，合成一个就等于"勾一下就已经生效了"。
+    bool noticeStopShowing = false;
 };
 
 // 创建世界表单 -> GameRuntime::createWorld 的那五个实参。

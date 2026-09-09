@@ -212,6 +212,11 @@ GameOptions GameOptions::load(const std::filesystem::path& path) {
             static_cast<void>(parseNumber(value, options.particleLevel));
         } else if (key == "experimental.rainCollisionCache") {
             options.rainCollisionCache = value == "true" || value == "1" || value == "on";
+        } else if (key == "skipAdvancedGraphicsWarning") {
+            // UI-11 / A5：26.1 的同构项 `skipMultiplayerWarning` 在 options.txt 里
+            // 也是不带前缀的顶层键，这里照它的形状。
+            options.skipAdvancedGraphicsWarning =
+                value == "true" || value == "1" || value == "on";
         }
     }
     options.sanitize();
@@ -281,7 +286,9 @@ void GameOptions::save(const std::filesystem::path& path) const {
            << "experimental.sunShadows=" << (sanitized.sunShadows ? "true" : "false") << '\n'
            << "experimental.particleLevel=" << sanitized.particleLevel << '\n'
            << "experimental.rainCollisionCache="
-           << (sanitized.rainCollisionCache ? "true" : "false") << '\n';
+           << (sanitized.rainCollisionCache ? "true" : "false") << '\n'
+           << "skipAdvancedGraphicsWarning="
+           << (sanitized.skipAdvancedGraphicsWarning ? "true" : "false") << '\n';
 }
 
 } // namespace mc::config

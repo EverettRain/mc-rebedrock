@@ -71,8 +71,30 @@ enum class GuiWidgetSprite : std::size_t {
     TransferMoveUpHighlighted,
     TransferMoveDown,
     TransferMoveDownHighlighted,
+    // UI-11 / A5：复选框四态（26.1 `Checkbox` 的四个 sprite id：
+    // 勾没勾 × 有没有键盘焦点）。★ 美术是 20x20，而 `extractContents` blit 出去的
+    // 边长是 `getBoxSize(font)` = **17**——它是拉伸，不是九宫格。
+    Checkbox,
+    CheckboxSelected,
+    CheckboxHighlighted,
+    CheckboxSelectedHighlighted,
     Count,
 };
+
+// UI-11 / A5：复选框用哪一张（26.1 `Checkbox.extractContents`）。
+//
+// ★ 它是个纯函数而不是绘制侧的一条嵌套三目，理由与 `containerPanelLayer` 完全同族：
+//   选错精灵**不改变任何别的返回值**，无头测试又进不了 Vulkan 头。把这条选择放在
+//   精灵表自己身边，"勾上/焦点两个轴接反了"才有地方断言——A1 那次把箱子的面板层
+//   写成熔炉的，全套测试照样全绿。
+// ★ 判据是 `selected × isFocused()`，**不是** hover：vanilla 的复选框悬停时盒子不变样。
+[[nodiscard]] constexpr GuiWidgetSprite checkboxSprite(bool selected, bool focused) {
+    if (selected) {
+        return focused ? GuiWidgetSprite::CheckboxSelectedHighlighted
+                       : GuiWidgetSprite::CheckboxSelected;
+    }
+    return focused ? GuiWidgetSprite::CheckboxHighlighted : GuiWidgetSprite::Checkbox;
+}
 
 using GuiWidgetSpriteTable =
     std::array<GuiAtlasSprite, static_cast<std::size_t>(GuiWidgetSprite::Count)>;

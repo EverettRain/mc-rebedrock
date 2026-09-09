@@ -66,6 +66,13 @@ enum class WidgetKind : std::uint8_t {
     // 它是一个 kind 而不是另一个控件家族，理由与 IconButton 同：同一套命中、同一套
     // 派发，区别只在绘制侧画的是一格物品。
     Slot,
+    // UI-11 / A5：一个复选框（26.1 `Checkbox`）。左边一个 17x17 的方盒（四态精灵），
+    // 右边一行文字，整块都是热区——它在 26.1 里就是个 `AbstractButton`。
+    //
+    // 它是一个 kind 而不是"标签写成 [x] 的 Button"：勾没勾上是**状态**，
+    // 而按钮的外观只由 enabled / hover / pressed 决定。把它塞进 Button 就得靠
+    // debugId 分派绘制，那条路 Tab 那里已经明令禁止过一次。
+    Checkbox,
 };
 
 // UI-4：图标钮里那张图标的边长与按钮边长（26.1 `CommonButtons`：20x20 的钮里一张 15x15 的图）。
@@ -130,6 +137,13 @@ struct Widget final {
     //   与它的定位（`ui::positionTooltip`）早就是通用的，缺的只是"控件能带一句话"
     //   这一层。
     std::string tooltip{};
+
+    // UI-11 / A5：`kind == Checkbox` 时这一格勾上了没有。其余 kind 下没有意义。
+    //
+    // ★ 它是**装配时抓的一张快照**，真相在屏幕状态里（`MenuSystem::noticeStopShowing`）
+    //   ——页面每帧重建，快照因此每帧都是新的。这与滑块把 `value()` 做成回调是同一件事
+    //   的两种写法：滑块每帧要被拖，复选框一帧只读一次。
+    bool checked = false;
 
     // A0：`kind == Slot` 时这一格是哪个槽。其余 kind 下这两个字段没有意义。
     //

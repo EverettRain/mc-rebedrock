@@ -3249,6 +3249,9 @@ struct VulkanRenderer::Impl final : public gameplay::SimulationHost {
         // UI-11 / A2：★ 漏了这个 case 的症状是「字体设置屏按 Esc 没反应」——
         //   与 UI-6e 那次现场报告的「音乐与声音、按键控制无法 Esc 返回」是同一种伤。
         case ui::PageId::FontSettings:
+        // UI-11 / A5：提示屏的 Esc 等同 Back（26.1 `SafetyScreen.onClose` 回到 previous），
+        // 什么也不写盘——勾了「不再显示」但没按 Proceed 的那一下就此作废。
+        case ui::PageId::AdvancedGraphicsNotice:
         case ui::PageId::ResourcePacks:
         case ui::PageId::CreateWorld:
         case ui::PageId::EditWorld:
@@ -3314,6 +3317,8 @@ struct VulkanRenderer::Impl final : public gameplay::SimulationHost {
         case ui::PageId::Death:
         case ui::PageId::Options:
         case ui::PageId::Accessibility:
+        // UI-11 / A5：提示屏没有可滚的列表。
+        case ui::PageId::AdvancedGraphicsNotice:
         case ui::PageId::Count:
             break;
         // UI-10 / D24：两栏各自滚。★ 滚哪一栏由**光标在哪一栏**决定——26.1 的
@@ -3428,6 +3433,8 @@ struct VulkanRenderer::Impl final : public gameplay::SimulationHost {
         case ui::PageId::Death:
         case ui::PageId::Accessibility:
         case ui::PageId::ResourcePacks:
+        // UI-11 / A5：提示屏没有可滚的列表。
+        case ui::PageId::AdvancedGraphicsNotice:
         case ui::PageId::Count:
             break;
         }
@@ -3469,6 +3476,8 @@ struct VulkanRenderer::Impl final : public gameplay::SimulationHost {
         case ui::PageId::Death:
         case ui::PageId::Accessibility:
         case ui::PageId::ResourcePacks:
+        // UI-11 / A5：提示屏没有可滚的列表。
+        case ui::PageId::AdvancedGraphicsNotice:
         case ui::PageId::Count:
             break;
         }
@@ -4259,7 +4268,31 @@ struct VulkanRenderer::Impl final : public gameplay::SimulationHost {
         };
         cb.movePackUp = [this](std::size_t row) { movePackRow(row, true); };
         cb.movePackDown = [this](std::size_t row) { movePackRow(row, false); };
+        // UI-11 / A5：首次进入高级图形设置时先挡一块全屏提示（26.1 `SafetyScreen`
+        // 挡在首次进多人游戏之前的那一块）。勾了「不再显示」并按 Proceed 之后
+        // `skipAdvancedGraphicsWarning` 为真，从此直达。
         cb.openAdvancedGraphics = [this] {
+            if (!options.skipAdvancedGraphicsWarning) {
+                menuSystem.noticeStopShowing = false;
+                menuSystem.pageStack.push(ui::PageId::AdvancedGraphicsNotice);
+                return;
+            }
+            menuSystem.pageStack.push(ui::PageId::AdvancedGraphics);
+        };
+        // 勾选只翻屏幕状态，**不写盘**——26.1 也是按下 Proceed 才存
+        // （`SafetyScreen`：`if (stopShowing.selected()) { options.… = true; options.save(); }`）。
+        // 勾上之后按 Back 什么也不会留下。
+        cb.toggleNoticeStopShowing = [this] {
+            menuSystem.noticeStopShowing = !menuSystem.noticeStopShowing;
+        };
+        cb.proceedAdvancedGraphicsNotice = [this] {
+            if (menuSystem.noticeStopShowing) {
+                options.skipAdvancedGraphicsWarning = true;
+                options.save(optionsPath);
+            }
+            // 提示屏不留在栈里：Proceed 之后返回键应当回到 Options，而不是回到提示屏
+            // （26.1 是 `setScreen(new JoinMultiplayerScreen(previous))`，同样替换而非压栈）。
+            menuSystem.pageStack.pop();
             menuSystem.pageStack.push(ui::PageId::AdvancedGraphics);
         };
         // UI-6c：26.1 的两条新入口（§7.6 枢纽 → §7.8 绑定列表，Options → §7.11 辅助功能）
@@ -4419,6 +4452,7 @@ struct VulkanRenderer::Impl final : public gameplay::SimulationHost {
         ctx.optionsWindow =
             ui::optionsWindowFor(layout, page, menuSystem.optionsListFirstIndex);
         fillPackContext(ctx, layout);
+        hud_.fillNoticeContext(ctx, layout);
         // UI-9：与绘制侧读同一个标签页。两侧不一致的后果不是"少画一页"，而是
         // **点 A 触发 B**：装配按一页造控件、布局按另一页给矩形。
         ctx.createWorldTab = menuSystem.createWorldTab;
@@ -4431,7 +4465,7 @@ struct VulkanRenderer::Impl final : public gameplay::SimulationHost {
         ui::Page built;
         ui::buildPageInto(built, page, ctx, buildMenuCallbacks());
         ui::layoutPageInto(built, page, layout, keyFirst, ctx.optionsWindow.firstRow,
-                           menuSystem.createWorldTab);
+                           menuSystem.createWorldTab, ctx.noticeMetrics);
         return built;
     }
 
