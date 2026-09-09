@@ -198,6 +198,12 @@ class MenuSystem final {
     //   一个 OptionsList、滚动位置从 0 起。共用一个字段而在换页时归零（`resetPageState`）
     //   就是这个语义；每页各存一个反而会"退出去再进来还停在半截"。
     std::size_t optionsListFirstIndex = 0U;
+    // UI-6e ③：资源包右栏当前选中的行（调序按钮作用于它）。npos = 没选中。
+    std::size_t selectedPackRow = static_cast<std::size_t>(-1);
+    // 提交过一次选择之后置位：界面据此显示"重启后生效"。
+    // ★ 换包**不做热重载**（依据见 known-debt），所以这句提示是必需的——
+    //   没有它，玩家会以为开关没生效。
+    bool packRestartRequired = false;
     bool optionsOpen = false;
     // 正在拖的那个滑块，None 表示没有在拖。
     //

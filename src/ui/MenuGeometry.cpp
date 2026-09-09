@@ -1,6 +1,7 @@
 #include "ui/MenuGeometry.hpp"
 
 #include "ui/CreateWorldLayout.hpp"
+#include "ui/DualColumnList.hpp"
 #include "ui/HeaderAndFooterLayout.hpp"
 #include "ui/KeyBindList.hpp"
 #include "ui/ListRow.hpp"
@@ -192,7 +193,7 @@ UiRect keyBindsListBox(const HudLayout& layout, float framebufferWidth) {
 std::size_t countPageButtons(const Page& page) {
     std::size_t buttons = 0;
     for (const Widget& widget : page) {
-        if (!isKeyBindRowWidget(widget)) {
+        if (!isKeyBindRowWidget(widget) && !isPackRowWidget(widget)) {
             ++buttons;
         }
     }
@@ -205,7 +206,20 @@ void layoutPageInto(Page& page, PageId id, const HudLayout& layout, float frameb
     const std::size_t buttonCount = countPageButtons(page);
     std::size_t buttonIndex = 0;
     std::size_t keyWidgetIndex = 0;
+    // ★ 包行按**栏**分别计数：两栏是两张独立的列表，行号各自从 0 数起。
+    const auto lists = dualColumnLists(
+        headerAndFooterLayout(layout.logicalWidth(), layout.logicalHeight()).contentBox(),
+        layout.logicalWidth());
+    std::size_t availableRow = 0;
+    std::size_t selectedRow = 0;
     for (Widget& widget : page) {
+        if (isPackRowWidget(widget)) {
+            const bool right = isSelectedPackRow(widget);
+            const auto& list = right ? lists.selected : lists.available;
+            widget.rect = fbRect(layout, scrollListRow(list, right ? selectedRow++
+                                                                  : availableRow++));
+            continue;
+        }
         if (isKeyBindRowWidget(widget)) {
             // ★ 控件序号与**屏幕行号**之间不是倍数关系：可见窗口里夹着分类标题行，
             //   它占一行却不产生控件。照 index/每行控件数 折行，标题行之后的每一行
@@ -377,6 +391,22 @@ UiRect frontendButtonRect(const HudLayout& layout, PageId page, std::size_t inde
             return fbRect(layout, form.footerRight);
         }
         return fbRect(layout, createWorldOptionButton(form, layout.logicalWidth(), index));
+    }
+    case PageLayoutKind::HeaderFooterDualColumn: {
+        // 26.1 PackSelectionScreen 的页脚：Open Folder 与 Done 横排。本作多两个
+        // 调序按钮（26.1 那两个在行内），四个一排。
+        const auto frame = headerAndFooterLayout(layout.logicalWidth(), layout.logicalHeight());
+        const auto footer = frame.footerBox();
+        constexpr int kGap = 4;
+        constexpr int kWidth = 100;
+        const int count = static_cast<int>(buttonCount);
+        const int total = count * kWidth + (count - 1) * kGap;
+        const int left = layout.logicalWidth() / 2 - total / 2;
+        const int y = static_cast<int>(footer.y) + frame.footerHeight / 2 - kFooterButtonHeight / 2;
+        return fbRect(layout, UiRect{static_cast<float>(left + static_cast<int>(index) *
+                                                                     (kWidth + kGap)),
+                                     static_cast<float>(y), static_cast<float>(kWidth),
+                                     static_cast<float>(kFooterButtonHeight)});
     }
     case PageLayoutKind::CentredColumn:
         break;

@@ -18,6 +18,7 @@
 #include "ui/PageBuilder.hpp"
 #include "ui/PageLayoutKind.hpp"
 #include "ui/PageTitles.hpp"
+#include "ui/TextMetrics.hpp"
 #include "ui/ListRow.hpp"
 #include "ui/CreateWorldLayout.hpp"
 #include "ui/DualColumnList.hpp"
@@ -1097,9 +1098,26 @@ void testDualColumnLists() {
         mc::ui::headerAndFooterLayout(layout.logicalWidth(), layout.logicalHeight());
     const auto lists = mc::ui::dualColumnLists(frame.contentBox(), layout.logicalWidth());
 
-    // 两栏等宽，且都是 26.1 的 200
-    CHECK(lists.available.width == mc::ui::kTransferListWidth);
-    CHECK(lists.selected.width == mc::ui::kTransferListWidth);
+    // ★ 两栏等宽，但**宽度随画布收缩**。26.1 把 200 写死，而两栏加中缝要 430 逻辑像素，
+    //   GUI 缩放只保证画布不小于 320 —— 1280x720 @ scale 3 的画布是 427，已经不够：
+    //   照 200 算左栏 x 会是 `427/2 - 15 - 200` = **-2**，右栏右缘 428 也出界。
+    //   实测就是这么画到屏幕外的。
+    CHECK(lists.available.width == lists.selected.width);
+    CHECK(lists.available.width <= mc::ui::kTransferListWidth);
+    CHECK(mc::ui::transferColumnWidth(427) < mc::ui::kTransferListWidth);   // 427 装不下 200
+    CHECK(mc::ui::transferColumnWidth(640) == mc::ui::kTransferListWidth);  // 够宽就用 200
+
+    // ★★ 任何合法画布上两栏都不许出界。这一条是上面那个缺陷的护栏。
+    for (int width : {320, 427, 480, 640, 854, 1280}) {
+        const mc::ui::UiRect box{0.0F, 33.0F, static_cast<float>(width), 174.0F};
+        const auto solved = mc::ui::dualColumnLists(box, width);
+        check(solved.available.x >= 0, "the left column escaped the canvas", __LINE__);
+        check(solved.selected.right() <= width, "the right column escaped the canvas", __LINE__);
+        check(solved.available.right() < solved.selected.x,
+              "the two columns must not overlap", __LINE__);
+        check(solved.available.width == solved.selected.width,
+              "the two columns stay equal width", __LINE__);
+    }
     // ★ 相对画布中线对称：左栏右缘与右栏左缘到中线的距离相等，都是 15
     const int centre = layout.logicalWidth() / 2;
     CHECK(centre - lists.available.right() == mc::ui::kTransferCentreGap);
@@ -1113,7 +1131,7 @@ void testDualColumnLists() {
     CHECK(lists.available.rowHeight == 36);
     CHECK(lists.available.rowHeight != mc::ui::kOptionsRowHeight);
     // 行宽 = 列宽 - 4
-    CHECK(lists.available.rowWidth == mc::ui::kTransferListWidth - mc::ui::kTransferRowInset);
+    CHECK(lists.available.rowWidth == lists.available.width - mc::ui::kTransferRowInset);
 
     // 两栏共用内容区的 y 与高度
     CHECK(lists.available.y == lists.selected.y);
@@ -1499,6 +1517,57 @@ void testPageDispatchHasNoDefault() {
     check(found >= 2U, "expected at least two PageId dispatch switches", __LINE__);
 }
 
+// --- 25. 文字截断（UI-6e ③，D17 的下界）------------------------------------
+//
+// 26.1 对超宽标签是 scissor 剪裁 + 来回滚动；在那之前，截断至少保证文字不画出格子。
+// 资源包描述曾经一路画到画布右边缘之外。
+void testTruncateToWidth() {
+    // 每个 ASCII 字符宽 6，省略号 "..." 宽 18
+    const auto measure = [](std::string_view text) {
+        return static_cast<float>(text.size()) * 6.0F;
+    };
+    using mc::ui::truncateToWidth;
+
+    // 放得下就原样返回，一个字符都不动
+    CHECK(truncateToWidth("abc", 100.0F, measure) == "abc");
+    CHECK(truncateToWidth("", 100.0F, measure).empty());
+    // 放不下就截断加省略号，且**结果必须真的放得下**
+    const std::string cut = truncateToWidth("abcdefghij", 48.0F, measure);
+    CHECK(cut != "abcdefghij");
+    CHECK(cut.size() >= 3U);
+    CHECK(cut.substr(cut.size() - 3U) == "...");
+    check(measure(cut) <= 48.0F, "the truncated text must actually fit", __LINE__);
+    // 宽度为 0 / 负：给空串，不能返回一个比格子宽的 "..."
+    CHECK(truncateToWidth("abc", 0.0F, measure).empty());
+    CHECK(truncateToWidth("abc", -5.0F, measure).empty());
+    // 连省略号都放不下
+    CHECK(truncateToWidth("abcdef", 10.0F, measure).empty());
+
+    // ★ 按**字节**退是不对的：UTF-8 多字节码点会被切成半个字符，画出来是乱码方块。
+    //   "中文测试" 每字 3 字节；截断结果的字节数必须落在码点边界上。
+    const std::string cjk = truncateToWidth("中文测试内容", 30.0F, measure);
+    if (cjk.size() > 3U) {
+        const std::string body = cjk.substr(0, cjk.size() - 3U);   // 去掉 "..."
+        // 每个 UTF-8 首字节不能是续字节（10xxxxxx）
+        check((static_cast<unsigned char>(body.back()) & 0xC0U) != 0x80U ||
+                  body.empty(),
+              "truncation must land on a UTF-8 boundary", __LINE__);
+        // 更强：整段必须是合法 UTF-8（每个多字节序列完整）
+        std::size_t i = 0;
+        bool valid = true;
+        while (i < body.size()) {
+            const auto lead = static_cast<unsigned char>(body[i]);
+            const std::size_t len = lead < 0x80U ? 1U : (lead < 0xE0U ? 2U : (lead < 0xF0U ? 3U : 4U));
+            if (i + len > body.size()) {
+                valid = false;
+                break;
+            }
+            i += len;
+        }
+        check(valid, "truncation must not cut a code point in half", __LINE__);
+    }
+}
+
 } // namespace
 
 int main() {
@@ -1527,6 +1596,7 @@ int main() {
     testSoundSettingsPage();
     testRuntimeLabelsAreActuallyComputed();
     testPageDispatchHasNoDefault();
+    testTruncateToWidth();
     if (failures != 0) {
         std::printf("options_layout_test: %d checks failed\n", failures);
         return 1;

@@ -35,6 +35,9 @@ enum class PageId {
     // 滑块，加字幕与方向性音频两个开关。它是 ui/OptionSlider.hpp 那张 float 滑块表的
     // 第一个真正的消费者。
     SoundSettings,
+    // UI-6e ③：26.1 的 §7.12 `PackSelectionScreen`（资源包选择）。
+    // 双栏可转移列表（spec §5 的 L4），后端是 assets::ResourcePackLibrary。
+    ResourcePacks,
 
     // 哨兵，值等于 PageId 的个数。
     //

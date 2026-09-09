@@ -39,7 +39,37 @@ enum class PageLayoutKind : std::uint8_t {
     //   输入框顶出画布顶部的（逻辑高 240 时表单落在 y = -20）。三段式从页眉往下排，
     //   加内容只会往下溢，而往下溢是可以被断言抓住的。
     HeaderFooterForm,
+    // 三段式版面里**两张并排的列表**，页脚一排按钮（26.1 的 PackSelectionScreen）。
+    // 与 HeaderFooterList 的分别是"两张独立的列表"而不是"一张双列的列表"：
+    // 两栏条目数不同、滚动位置也各自独立。
+    HeaderFooterDualColumn,
 };
+
+// 这一种版式是不是**三段式**（页眉标题 / 内容区 / 页脚）。
+//
+// ★ 它存在的理由：绘制侧要据此决定标题画在页眉里还是"第一个按钮上方 30px"，
+//   而那份判断已经说过**两次**假话——
+//   第一次手写着 `page == KeyBinds || page == Controls`，UI-6d 把视频设置改成三段式
+//   后标题掉回按钮上方、压在列表第一行上；
+//   第二次收口成 `pageLayoutKind(page) == HeaderFooterList`，UI-6e ③ 加了第三种
+//   三段式版式（双栏），标题又掉到了画面正中。
+//   **两次都是"枚举了当时的取值"**。这里用不带 default 的 switch：加一种版式时
+//   编译器会点名，而不是等截图看出来。
+[[nodiscard]] constexpr bool usesHeaderAndFooter(PageLayoutKind kind) {
+    switch (kind) {
+    case PageLayoutKind::HeaderFooterList:
+    case PageLayoutKind::HeaderFooterForm:
+    case PageLayoutKind::HeaderFooterDualColumn:
+        return true;
+    case PageLayoutKind::CentredColumn:
+    case PageLayoutKind::BottomBand:
+    case PageLayoutKind::BottomBandTwoColumn:
+    case PageLayoutKind::VideoGrid:
+    case PageLayoutKind::TitleScreen:
+        break;
+    }
+    return false;
+}
 
 // ★ 不带 `default:`。加一个 PageId 而不在这里给它一种版式，编译期就会被点名。
 [[nodiscard]] constexpr PageLayoutKind pageLayoutKind(PageId page) {
@@ -66,6 +96,8 @@ enum class PageLayoutKind : std::uint8_t {
         return PageLayoutKind::HeaderFooterList;
     case PageId::CreateWorld:
         return PageLayoutKind::HeaderFooterForm;
+    case PageId::ResourcePacks:
+        return PageLayoutKind::HeaderFooterDualColumn;
     // 其余都走屏幕正中那一列。`Game` 与 `Loading` 没有菜单按钮，取值仍要良定义：
     // 它们的页面装配是空的，所以这一档永远不会被真的用到。
     case PageId::Accessibility:
@@ -106,6 +138,7 @@ enum class PageDrawKind : std::uint8_t {
     case PageId::Accessibility:
     case PageId::AdvancedGraphics:
     case PageId::SoundSettings:
+    case PageId::ResourcePacks:
         return PageDrawKind::Settings;
     case PageId::Language:
         return PageDrawKind::Language;

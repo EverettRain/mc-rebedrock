@@ -47,6 +47,9 @@ struct PageTitle final {
     //   对 `options.sounds`（"音乐与声音…"）。与 keybinds / accessibility 同一个陷阱。
     case PageId::SoundSettings:
         return {"options.sounds.title", "Music & Sounds"};
+    // UI-6e ③：26.1 `OptionsScreen` 打开它时传的标题就是 `resourcePack.title`。
+    case PageId::ResourcePacks:
+        return {"resourcePack.title", "Select Resource Packs"};
     // 本项目自有页，26.1 没有——键走 lang/rebedrock/。
     case PageId::AdvancedGraphics:
         return {"options.rebedrock.advancedGraphics.title", "Advanced Graphics"};

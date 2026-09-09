@@ -48,6 +48,12 @@ struct MenuBuildContext final {
     // 渲染器在装配之前已经把滚动偏移与可见窗口折算进这两个值
     std::size_t worldRowCount = 0;
     std::size_t languageRowCount = 0;
+    // UI-6e ③：资源包两栏各有几行**可见**（窗口内），以及右栏当前选中的是第几行。
+    // 与绑定列表同构：装配只造窗口里的行，页面因此不会超出布局容量。
+    std::size_t availablePackRowCount = 0;
+    std::size_t selectedPackRowCount = 0;
+    // 右栏没有选中行时是 npos —— 调序按钮据此置灰。
+    std::size_t selectedPackRow = static_cast<std::size_t>(-1);
     // 某个动作那一行的**两段**文字：左边的动作名与右边按钮上的键名。
     //
     // ★ 一个回调返回两个字段，而不是两个回调各返回一段。
@@ -159,6 +165,12 @@ struct MenuCallbacks final {
     std::function<SliderBind(WidgetId)> floatSliderFor{};
     // 跳进"音乐与声音"那一屏。
     std::function<void()> openSoundSettings{};
+    // UI-6e ③：资源包。row 是**栏内**行号；两栏各自从 0 数起。
+    std::function<void()> openResourcePacks{};
+    std::function<void(std::size_t)> togglePackAvailable{};
+    std::function<void(std::size_t)> togglePackSelected{};
+    std::function<void()> movePackUp{};
+    std::function<void()> movePackDown{};
 };
 
 namespace detail {
@@ -463,9 +475,7 @@ inline void buildPageInto(Page& page, PageId id, const MenuBuildContext& ctx,
             });
             // 资源包：后端（PackManager 生命周期 / 真实元数据 / 启用集合持久化与重载）
             // 还在补，补齐前置灰。
-            add([&] {
-                addButton(page, ctx, WidgetId::ResourcePacks, nullptr, /*enabled=*/false);
-            });
+            add([&] { addButton(page, ctx, WidgetId::ResourcePacks, cb.openResourcePacks); });
             // UI-6c：字幕开关搬去了 Accessibility——它在 26.1 里本来就属于那一屏。
             add([&] { addButton(page, ctx, WidgetId::Accessibility, cb.openAccessibility); });
             add([&] { addButton(page, ctx, WidgetId::Telemetry, nullptr, /*enabled=*/false); });
@@ -502,6 +512,39 @@ inline void buildPageInto(Page& page, PageId id, const MenuBuildContext& ctx,
                 addButton(page, ctx, WidgetId::MusicFrequency, nullptr, /*enabled=*/false);
             });
             add([&] { addButton(page, ctx, WidgetId::MusicToast, nullptr, /*enabled=*/false); });
+            addButton(page, ctx, WidgetId::Done, cb.doneOptions);
+            break;
+        }
+
+        // UI-6e ③：26.1 §7.12 `PackSelectionScreen`——左栏"可用"、右栏"已启用"，
+        // 一行一个包，点一下转移到对面。
+        //
+        // ★ 两栏是**两张互相独立的列表**（各自的条目数与滚动位置），不是一张双列表。
+        //   装配顺序是"先左栏所有行、再右栏所有行"，而布局靠 **debugId** 分辨
+        //   一行属于哪一栏——不是靠"第几个之后算右栏"那种旁路。
+        case PageId::ResourcePacks: {
+            for (std::size_t row = 0; row < ctx.availablePackRowCount; ++row) {
+                addListRow(page, WidgetId::PackRowAvailable, row, [cb, row]() {
+                    if (cb.togglePackAvailable) {
+                        cb.togglePackAvailable(row);
+                    }
+                });
+            }
+            for (std::size_t row = 0; row < ctx.selectedPackRowCount; ++row) {
+                addListRow(page, WidgetId::PackRowSelected, row, [cb, row]() {
+                    if (cb.togglePackSelected) {
+                        cb.togglePackSelected(row);
+                    }
+                });
+            }
+            // 页脚。★ 26.1 把上下箭头画在**行内**；本作放页脚、作用于右栏选中的那一行
+            //   （已登记偏差）。没选中时置灰——否则"按了没反应"又是一个静默。
+            const bool hasSelection =
+                ctx.selectedPackRow != static_cast<std::size_t>(-1);
+            addButton(page, ctx, WidgetId::PackMoveUp, cb.movePackUp, hasSelection);
+            addButton(page, ctx, WidgetId::PackMoveDown, cb.movePackDown, hasSelection);
+            // 本作没有"用默认程序打开路径"这条能力，置灰。
+            addButton(page, ctx, WidgetId::PackOpenFolder, nullptr, /*enabled=*/false);
             addButton(page, ctx, WidgetId::Done, cb.doneOptions);
             break;
         }

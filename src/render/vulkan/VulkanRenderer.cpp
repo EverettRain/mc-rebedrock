@@ -70,6 +70,7 @@
 #include "render/RainSystem.hpp"
 #include "render/SkyLight.hpp"
 #include "render/StreamingBudget.hpp"
+#include "ui/DualColumnList.hpp"
 #include "ui/SliderGeometry.hpp"
 #include "ui/BitmapFontMetrics.hpp"
 #include "ui/ButtonControl.hpp"
@@ -2256,6 +2257,56 @@ struct VulkanRenderer::Impl final : public gameplay::SimulationHost {
             std::clamp<long long>(requested, 0LL, static_cast<long long>(maximumFirst)));
     }
 
+    // 左栏"可用"= 已注册但**不在草稿里**的包。★ 它是从两份数据算出来的，
+    // 不另存一份——存一份就要在每次 setEnabled 之后同步，而漏同步的症状是
+    // "包在两栏里同时出现"。
+    // 资源包两栏的行数与选中行。**绘制侧与输入侧都调它**——两处各填一遍是
+    // UI-6c/6d 已经栽过两次的形状。
+    void fillPackContext(ui::MenuBuildContext& ctx, const ui::HudLayout& layout) const {
+        if (menuSystem.pageStack.current() != ui::PageId::ResourcePacks) {
+            return;
+        }
+        const auto lists = ui::dualColumnLists(
+            ui::headerAndFooterLayout(layout.logicalWidth(), layout.logicalHeight()).contentBox(),
+            layout.logicalWidth());
+        const std::size_t capacity = lists.available.visibleRows();
+        ctx.availablePackRowCount = std::min(availablePackIds().size(), capacity);
+        ctx.selectedPackRowCount = std::min(packLibrary->draftOrder().size(), capacity);
+        ctx.selectedPackRow = menuSystem.selectedPackRow;
+    }
+
+    [[nodiscard]] std::vector<std::string> availablePackIds() const {
+        std::vector<std::string> ids;
+        for (const auto& pack : packLibrary->packs()) {
+            if (!packLibrary->isEnabled(pack.id)) {
+                ids.push_back(pack.id);
+            }
+        }
+        return ids;
+    }
+
+    void movePackSelection(bool up) {
+        const auto& order = packLibrary->draftOrder();
+        const std::size_t row = menuSystem.selectedPackRow;
+        if (row >= order.size()) {
+            return;
+        }
+        const std::string id = order[row];
+        const bool moved = up ? packLibrary->movePriorityUp(id)
+                              : packLibrary->movePriorityDown(id);
+        if (!moved) {
+            return;
+        }
+        // 选中跟着那个包走，而不是留在原来的行号上——否则连按两下会移动到别的包。
+        const auto& after = packLibrary->draftOrder();
+        for (std::size_t index = 0; index < after.size(); ++index) {
+            if (after[index] == id) {
+                menuSystem.selectedPackRow = index;
+                break;
+            }
+        }
+    }
+
     // UI-6d：滚三段式设置页的那张 OptionsList。钳制上界与其余三张列表同一约定。
     void scrollOptionsList(int rows) {
         const std::size_t maximumFirst = ui::optionsMaximumFirstRow(
@@ -3048,6 +3099,7 @@ struct VulkanRenderer::Impl final : public gameplay::SimulationHost {
         //   两个页面无法 Esc 返回"，而实际漏的比报的多（创建世界、编辑世界也在里面）。
         case ui::PageId::Controls:
         case ui::PageId::SoundSettings:
+        case ui::PageId::ResourcePacks:
         case ui::PageId::CreateWorld:
         case ui::PageId::EditWorld:
             menuSystem.pageStack.pop();
@@ -3101,6 +3153,9 @@ struct VulkanRenderer::Impl final : public gameplay::SimulationHost {
         case ui::PageId::Death:
         case ui::PageId::Options:
         case ui::PageId::Accessibility:
+        // 资源包那两栏今天不滚：容器里包很少，而两栏各自的滚动位置是两份状态。
+        // 已登记为偏差——包多过一屏时下面的看不到。
+        case ui::PageId::ResourcePacks:
         case ui::PageId::Count:
             break;
         }
@@ -3919,6 +3974,30 @@ struct VulkanRenderer::Impl final : public gameplay::SimulationHost {
             return bind;
         };
         cb.openSoundSettings = [this] { menuSystem.pageStack.push(ui::PageId::SoundSettings); };
+        // UI-6e ③：资源包选择。后端是 assets::ResourcePackLibrary（子 agent 那一轮），
+        // 这里只做"栏内行号 → 包 id"的换算，不碰 provider，更不碰 Vulkan。
+        cb.openResourcePacks = [this] {
+            menuSystem.selectedPackRow = static_cast<std::size_t>(-1);
+            menuSystem.packRestartRequired = false;
+            menuSystem.pageStack.push(ui::PageId::ResourcePacks);
+        };
+        cb.togglePackAvailable = [this](std::size_t row) {
+            const auto ids = availablePackIds();
+            if (row < ids.size()) {
+                static_cast<void>(packLibrary->setEnabled(ids[row], true));
+            }
+        };
+        cb.togglePackSelected = [this](std::size_t row) {
+            const auto& order = packLibrary->draftOrder();
+            if (row < order.size()) {
+                // ★ 先记下 id 再改：disable 之后 order 就变了，拿 row 再去索引会错位。
+                const std::string id = order[row];
+                static_cast<void>(packLibrary->setEnabled(id, false));
+                menuSystem.selectedPackRow = static_cast<std::size_t>(-1);
+            }
+        };
+        cb.movePackUp = [this] { movePackSelection(true); };
+        cb.movePackDown = [this] { movePackSelection(false); };
         cb.openAdvancedGraphics = [this] {
             menuSystem.pageStack.push(ui::PageId::AdvancedGraphics);
         };
@@ -3927,6 +4006,14 @@ struct VulkanRenderer::Impl final : public gameplay::SimulationHost {
         cb.openKeyBinds = [this] { menuSystem.pageStack.push(ui::PageId::KeyBinds); };
         cb.openAccessibility = [this] { menuSystem.pageStack.push(ui::PageId::Accessibility); };
         cb.doneOptions = [this] {
+            // UI-6e ③：资源包那一屏的 Done 才提交草稿（26.1 同样是 onClose 时 apply）。
+            if (menuSystem.pageStack.current() == ui::PageId::ResourcePacks) {
+                const auto outcome = packLibrary->commit();
+                menuSystem.packRestartRequired = outcome.restartRequired;
+                if (!outcome.error.empty()) {
+                    std::cerr << outcome.error << '\n';
+                }
+            }
             if (menuSystem.pageStack.current() == ui::PageId::Language) {
                 beginLanguageLoad(menuSystem.pendingLanguageCode);
             }
@@ -4068,6 +4155,7 @@ struct VulkanRenderer::Impl final : public gameplay::SimulationHost {
         // 而是命中测试整体错行——与 UI-6b 那次闪退同族。
         ctx.optionsWindow =
             ui::optionsWindowFor(layout, page, menuSystem.optionsListFirstIndex);
+        fillPackContext(ctx, layout);
         ui::Page built;
         ui::buildPageInto(built, page, ctx, buildMenuCallbacks());
         ui::layoutPageInto(built, page, layout, static_cast<float>(swapchainExtent.width),
@@ -8837,6 +8925,7 @@ struct VulkanRenderer::Impl final : public gameplay::SimulationHost {
     [[nodiscard]] HudRenderer::Bindings makeHudBindings() {
         return HudRenderer::Bindings{
             .menuSystem = menuSystem,
+            .packLibrary = *packLibrary,
             .uiFrameData_ = uiFrameData_,
             .gameSession = gameSession,
             .clientMirror = clientMirror_,

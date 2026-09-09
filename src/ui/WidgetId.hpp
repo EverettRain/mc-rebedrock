@@ -79,6 +79,17 @@ enum class WidgetId : std::uint16_t {
     // 视场角滑块。26.1 把它放在 Options 的**副页眉**里（与 Difficulty/Online 并排）。
     FieldOfView,
 
+    // UI-6e ③：资源包选择屏（26.1 §7.12）。左栏"可用"、右栏"已启用"，
+    // 一行一个包，点一下转移到对面。
+    // ★ 两栏各有自己的 id：**一行属于哪一栏**是布局要知道的事，而 debugId 是
+    //   布局唯一能读到的东西。共用一个 id 就得另开一条"第几个之后算右栏"的旁路，
+    //   那正是"同一事实两份表述"。
+    PackRowAvailable, PackRowSelected,
+    // 调序。26.1 把上下箭头画在行内，本作放页脚、作用于右栏选中的那一行（已登记偏差）。
+    PackMoveUp, PackMoveDown,
+    // 打开 resourcepacks/ 目录。本作没有"用默认程序打开路径"这条能力，置灰。
+    PackOpenFolder,
+
     // 哨兵，值等于 id 的个数，表因此能断言自己覆盖了每一个 id，ui/WidgetLabels.hpp 就是这么做的
     // 它永远不是一个控件，也永远排在最后
     Count,
