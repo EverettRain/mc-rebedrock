@@ -1568,6 +1568,62 @@ void testTruncateToWidth() {
     }
 }
 
+// --- 26. 三段式的判定只有一处（UI-6e ③）--------------------------------------
+//
+// ★ 绘制侧要据此决定标题画在页眉里还是"第一个按钮上方 30px"，而这份判断
+//   **已经说过两次假话**：先是手写 `page == KeyBinds || page == Controls`
+//   （UI-6d 加三段式视频设置后标题压在列表第一行上），收口成
+//   `pageLayoutKind(page) == HeaderFooterList` 之后，UI-6e ③ 加了第三种三段式版式
+//   （双栏），标题又掉到画面正中。两次都是"枚举了当时的取值"。
+//
+//   ★ 第一轮 sabotage（把 DualColumn 从 usesHeaderAndFooter 里挪走）**没被抓住**：
+//     标题位置住在渲染器里，无头测试够不着。补的就是下面这些。
+void testHeaderAndFooterClassification() {
+    using K = mc::ui::PageLayoutKind;
+    // 三种三段式全都要认
+    CHECK(mc::ui::usesHeaderAndFooter(K::HeaderFooterList));
+    CHECK(mc::ui::usesHeaderAndFooter(K::HeaderFooterForm));
+    CHECK(mc::ui::usesHeaderAndFooter(K::HeaderFooterDualColumn));
+    // 其余都不是
+    CHECK(!mc::ui::usesHeaderAndFooter(K::CentredColumn));
+    CHECK(!mc::ui::usesHeaderAndFooter(K::BottomBand));
+    CHECK(!mc::ui::usesHeaderAndFooter(K::BottomBandTwoColumn));
+    CHECK(!mc::ui::usesHeaderAndFooter(K::VideoGrid));
+    CHECK(!mc::ui::usesHeaderAndFooter(K::TitleScreen));
+
+    // ★ 逐页核对：凡是走三段式版式的页面，它的**页脚按钮**必须落在页脚带里。
+    //   这一条把"版式分类"与"实际几何"绑在一起——分类说是三段式而几何不是，
+    //   或者反过来，都会红。
+    const mc::ui::HudLayout layout{1280.0F, 720.0F, 3};
+    const auto frame =
+        mc::ui::headerAndFooterLayout(layout.logicalWidth(), layout.logicalHeight());
+    const float footerTop = static_cast<float>(frame.footerBox().y) * 3.0F;
+    std::size_t threeBandPages = 0;
+    for (std::size_t raw = 0; raw < static_cast<std::size_t>(mc::ui::PageId::Count); ++raw) {
+        const auto page = static_cast<mc::ui::PageId>(raw);
+        if (!mc::ui::usesHeaderAndFooter(mc::ui::pageLayoutKind(page))) {
+            continue;
+        }
+        ++threeBandPages;
+        mc::ui::MenuBuildContext ctx;
+        ctx.optionsWindow = mc::ui::optionsWindowFor(layout, page, 0U);
+        const mc::ui::MenuCallbacks cb;
+        mc::ui::Page built;
+        mc::ui::buildPageInto(built, page, ctx, cb);
+        mc::ui::layoutPageInto(built, page, layout, 1280.0F, 0U, ctx.optionsWindow.firstRow);
+        const std::size_t count = mc::ui::countPageButtons(built);
+        if (count == 0U) {
+            continue;
+        }
+        // 最后一个按钮（Done）必须在页脚带里
+        const auto done = built.back().rect;
+        check(done.y >= footerTop - 0.5F,
+              "a three-band page must put its last button in the footer", __LINE__);
+    }
+    // 至少覆盖到几页，否则上面那个循环是空转的
+    check(threeBandPages >= 5U, "expected several three-band pages", __LINE__);
+}
+
 } // namespace
 
 int main() {
@@ -1597,6 +1653,7 @@ int main() {
     testRuntimeLabelsAreActuallyComputed();
     testPageDispatchHasNoDefault();
     testTruncateToWidth();
+    testHeaderAndFooterClassification();
     if (failures != 0) {
         std::printf("options_layout_test: %d checks failed\n", failures);
         return 1;
