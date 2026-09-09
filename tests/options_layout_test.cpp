@@ -1111,6 +1111,26 @@ void testOptionsHeaderRows() {
         }
     }
 
+    // ★ **最多滚到第几行**同样不能用等高公式，但要区分两者需要**分节行落进最后一屏**：
+    //   VideoSettings 的两个分节行都在前面，最后一屏全是 25 高的行，于是等高与变高
+    //   恰好给出同一个数——拿它做夹具，把 `optionsMaxFirstRow` 换成等高公式也不会红。
+    //   （实测：sabotage 没抓住，不是断言漏了，是夹具分不开。）
+    //   这里造一个末尾带分节行的形状来分开它们。
+    {
+        constexpr std::array<mc::ui::OptionsGroup, 3> kHeaderNearEnd{{
+            {5U, K::Small},                                  // 行 0..2
+            {0U, K::Header, "x", "X"},                       // 行 3，高 31
+            {1U, K::Small},                                  // 行 4
+        }};
+        CHECK(mc::ui::optionsGroupedRowCount(kHeaderNearEnd) == 5U);
+        // 视口 100：从末尾往回 25 + 31 + 25 = 81 ≤ 100，再加一行 106 > 100 → 3 行，
+        // 起点 5 - 3 = 2。等高公式会算成 5 - 100/25 = 1 —— 差一行，症状是"滚过头"。
+        CHECK(mc::ui::optionsMaxFirstRow(kHeaderNearEnd, 100, 5U) == 2U);
+        const mc::ui::ScrollList equalHeight{0, 0, 320, 100, mc::ui::kOptionsRowWidth,
+                                             mc::ui::kOptionsRowHeight};
+        CHECK(equalHeight.maximumFirstRow(5U) == 1U);   // 等高公式给的是别的数
+    }
+
     // 变高时"一屏装几行"取决于从哪一行开始看——这正是不能用除法的原因。
     const std::size_t fromTop = mc::ui::optionsVisibleRows(kVanillaShape, 0U, 100, 17U);
     const std::size_t fromSecond = mc::ui::optionsVisibleRows(kVanillaShape, 1U, 100, 17U);
