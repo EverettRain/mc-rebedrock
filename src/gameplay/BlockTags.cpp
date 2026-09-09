@@ -69,12 +69,15 @@ constexpr std::array<std::string_view, 49> kBuiltinPickaxe{
     // and so is the block of iron the anvil is crafted from.
     "anvil", "chipped_anvil", "damaged_anvil", "iron_block",
 };
-constexpr std::array<std::string_view, 17> kBuiltinAxe{
+constexpr std::array<std::string_view, 18> kBuiltinAxe{
     "oak_planks",    "oak_log",    "spruce_planks", "birch_planks",
     "spruce_log",    "birch_log",  "bookshelf",     "crafting_table",
     "pumpkin",       "melon",      "chest",         "jungle_log",
     "jungle_planks", "acacia_log", "acacia_planks", "dark_oak_log",
     "dark_oak_planks",
+    // AR-M4: 26.1 lists composter in mineable/axe and in no needs_*_tool tag —
+    // any axe is faster, a bare hand still gets it.
+    "composter",
 };
 constexpr std::array<std::string_view, 10> kBuiltinShovel{
     "grass_block", "dirt",        "sand",   "gravel",   "clay",

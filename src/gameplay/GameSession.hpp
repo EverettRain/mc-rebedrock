@@ -362,6 +362,9 @@ class GameSession final {
         toolDamageRandom_.setSeed(seed ^ 0x165667B19E3779F9ULL);
         // ENCH-2: the enchantment-seed reroll stream, salted independently again.
         enchantmentSeedRandom_.setSeed(seed ^ 0x7F4A7C15D1B54A32ULL);
+        // AR-M4: the composter's accept/reject draw, salted independently again
+        // — filling a composter must not shift the Thorns or orb sequences.
+        composterRandom_.setSeed(seed ^ 0x3C6EF372A54FF53AULL);
     }
     // EQ-4: the deterministic stream Thorns' random_chance draw and reflected-
     // damage roll take, so a test can seed it and replay an exact trigger
@@ -371,6 +374,9 @@ class GameSession final {
     // draws take, so a test can seed it and replay an exact spend sequence (the
     // "same seed ⇒ same durability sequence" acceptance assertion).
     [[nodiscard]] world::gen::JavaRandom& toolDamageRandom() { return toolDamageRandom_; }
+    // AR-M4: the composter's own stream. Exposed for the same reason as the two
+    // above — a test seeds it and replays an exact accept/reject sequence.
+    [[nodiscard]] world::gen::JavaRandom& composterRandom() { return composterRandom_; }
     // XP-1's spawnExperienceOrbs(pos, amount): denomination-splits `amount` into
     // vanilla's fixed orb values and places each one, drawing every scatter
     // velocity from this session's own JavaRandom stream — never the wall
@@ -942,6 +948,8 @@ class GameSession final {
     // never perturbs the orb scatter or the Thorns sequence, and the same save
     // replayed with the same purchases always lands on the same offers.
     world::gen::JavaRandom enchantmentSeedRandom_;
+    // AR-M4: ComposterBlock#addItem's `random.nextDouble() < chance`.
+    world::gen::JavaRandom composterRandom_;
     // ENCH-3: which damaged Mending item a collected experience orb repairs
     // (vanilla's getRandomItemWith pick), on its own stream so a repair never
     // perturbs the orb scatter or any other system's draws.

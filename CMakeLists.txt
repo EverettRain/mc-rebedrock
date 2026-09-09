@@ -2249,6 +2249,18 @@ if(BUILD_TESTING)
     )
     add_test(NAME creeper COMMAND mc_rebedrock_creeper_test)
 
+    # AR-M4: the composter — the bowl that rises with the fill, vanilla's
+    # first-item-is-free rule, the twenty-tick ripen and the bone meal.
+    add_executable(mc_rebedrock_composter_test
+        tests/composter_test.cpp
+    )
+    target_link_libraries(mc_rebedrock_composter_test PRIVATE mc_rebedrock_runtime)
+    target_include_directories(mc_rebedrock_composter_test PRIVATE
+        src
+        "${glm_SOURCE_DIR}"
+    )
+    add_test(NAME composter COMMAND mc_rebedrock_composter_test)
+
     add_executable(mc_rebedrock_face_occlusion_test
         tests/face_occlusion_test.cpp
     )

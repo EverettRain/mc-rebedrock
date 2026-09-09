@@ -700,7 +700,7 @@ static_assert(diodeYaw(BlockOrientation::West) == 270.0F);
     // is 4-way symmetric so a yaw is invisible today, but "invisible today"
     // is exactly how a model bug survives until someone gives a face its own
     // sprite.
-    if (block == Block::EnchantingTable) {
+    if (block == Block::EnchantingTable || block == Block::Composter) {
         return {axisMatrix('y', 0.0F)};
     }
     // RN-10a: the three model families whose identity variant is not the diode's
@@ -827,6 +827,101 @@ inline std::vector<ModelElement> anvilElements() {
     return elements;
 }
 
+// AR-M4: composter.json declares no `uv` on any face, so every one of its rects
+// is JE's *default* — `BlockElement#uvsByFace`, the element's own extent
+// projected onto that face's plane. Transcribing those by hand would be twenty
+// literals that all have to stay in step with the boxes above them, so the rule
+// is written out once instead. This is the same fidelity as the anvil's literal
+// rects; it is the rects' *source* that differs (vanilla wrote them there, and
+// omitted them here).
+[[nodiscard]] inline FaceUv defaultUv(glm::vec3 from16, glm::vec3 to16, Facing facing) {
+    switch (facing) {
+    case Facing::Down:  return detail::rect(from16.x, 16.0F - to16.z, to16.x, 16.0F - from16.z);
+    case Facing::Up:    return detail::rect(from16.x, from16.z, to16.x, to16.z);
+    case Facing::North: return detail::rect(16.0F - to16.x, 16.0F - to16.y, 16.0F - from16.x,
+                                    16.0F - from16.y);
+    case Facing::South: return detail::rect(from16.x, 16.0F - to16.y, to16.x, 16.0F - from16.y);
+    case Facing::West:  return detail::rect(from16.z, 16.0F - to16.y, to16.z, 16.0F - from16.y);
+    case Facing::East:  return detail::rect(16.0F - to16.z, 16.0F - to16.y, 16.0F - from16.z,
+                                    16.0F - from16.y);
+    }
+    return detail::rect(0.0F, 0.0F, 16.0F, 16.0F);
+}
+
+// AR-M4: the composter, transcribed from models/block/composter.json — a 2-thick
+// floor plus four 2-thick walls — with the compost surface from
+// composter_contents<N>.json stacked on top of the floor when the block holds
+// anything. Slots follow the block's .elementModel() order: 0 top, 1 side,
+// 2 bottom (json's `#inside` is `block/composter_bottom` too, so the empty
+// bowl's floor and its underside share slot 2), 3 compost, 4 ready.
+//
+// Only the *cull* declarations differ between the four walls, and they are
+// vanilla's own: a wall culls toward the cell face it sits against and not
+// toward the cavity, which is what keeps the inside visible while a composter
+// placed against another block still hides its outer faces.
+[[nodiscard]] inline std::vector<ModelElement> composterElements(BlockState state) {
+    std::vector<ModelElement> elements;
+    const auto box = [&elements](glm::vec3 from16, glm::vec3 to16) -> ModelElement& {
+        ModelElement element;
+        element.from16 = from16;
+        element.to16 = to16;
+        elements.push_back(element);
+        return elements.back();
+    };
+    const auto face = [](ModelElement& element, Facing facing, std::uint8_t slot, bool cull) {
+        detail::putFace(element, facing, slot,
+                        defaultUv(element.from16, element.to16, facing),
+                        cull ? detail::cullToward(facing) : kNoCull);
+    };
+
+    {   // the floor: `#inside` above, `#bottom` below (both slot 2).
+        ModelElement& floor = box({0.0F, 0.0F, 0.0F}, {16.0F, 2.0F, 16.0F});
+        face(floor, Facing::Up, 2, false);
+        face(floor, Facing::Down, 2, true);
+    }
+    {   // west wall
+        ModelElement& wall = box({0.0F, 0.0F, 0.0F}, {2.0F, 16.0F, 16.0F});
+        face(wall, Facing::Up, 0, true);
+        face(wall, Facing::North, 1, true);
+        face(wall, Facing::South, 1, true);
+        face(wall, Facing::West, 1, true);
+        face(wall, Facing::East, 1, false);   // faces the cavity: never culled
+    }
+    {   // east wall
+        ModelElement& wall = box({14.0F, 0.0F, 0.0F}, {16.0F, 16.0F, 16.0F});
+        face(wall, Facing::Up, 0, true);
+        face(wall, Facing::North, 1, true);
+        face(wall, Facing::South, 1, true);
+        face(wall, Facing::West, 1, false);   // faces the cavity
+        face(wall, Facing::East, 1, true);
+    }
+    {   // north wall (the short one, between the two side walls)
+        ModelElement& wall = box({2.0F, 0.0F, 0.0F}, {14.0F, 16.0F, 2.0F});
+        face(wall, Facing::Up, 0, true);
+        face(wall, Facing::North, 1, true);
+        face(wall, Facing::South, 1, false);  // faces the cavity
+    }
+    {   // south wall
+        ModelElement& wall = box({2.0F, 0.0F, 14.0F}, {14.0F, 16.0F, 16.0F});
+        face(wall, Facing::Up, 0, true);
+        face(wall, Facing::North, 1, false);  // faces the cavity
+        face(wall, Facing::South, 1, true);
+    }
+
+    // composter_contents<N>.json: one top-facing quad at `1 + level * 2` units,
+    // and only ever the up face — the compost is a surface, not a solid. Level 8
+    // (READY) reuses level 7's height and swaps the sprite, exactly as
+    // composter_contents_ready.json does.
+    const int level = state.composterLevel();
+    if (level > 0) {
+        const int height = 1 + (level >= kComposterReadyLevel ? 7 : level) * 2;
+        ModelElement& compost = box({2.0F, 0.0F, 2.0F},
+                                    {14.0F, static_cast<float>(height), 14.0F});
+        face(compost, Facing::Up, level >= kComposterReadyLevel ? 4 : 3, false);
+    }
+    return elements;
+}
+
 [[nodiscard]] constexpr bool isAnvil(Block block) {
     return block == Block::Anvil || block == Block::ChippedAnvil ||
            block == Block::DamagedAnvil;
@@ -840,6 +935,7 @@ inline std::vector<ModelElement> anvilElements() {
     case Block::Comparator: return comparatorElements(state);
     case Block::Lever: return leverElements(state);
     case Block::EnchantingTable: return {enchantingTableElement()};
+    case Block::Composter: return composterElements(state);
     case Block::Anvil:
     case Block::ChippedAnvil:
     case Block::DamagedAnvil: return anvilElements();
@@ -909,6 +1005,11 @@ enum class ElementModelKind : std::uint8_t {
     Lever,
     EnchantingTable,
     Anvil,
+    // AR-M4: the composter's nine fill levels. A kind of its own rather than a
+    // per-block entry because its variant axis is a LEVEL, not a facing — it is
+    // the first ElementModel whose geometry changes with something other than
+    // which way the block is turned.
+    Composter,
     // RN-10a: keyed by model family, not by block — the eight door species and
     // six trapdoors share one geometry table and differ only in the atlas layer
     // the mesher resolves, which is the same "geometry per model, texture per
@@ -925,6 +1026,7 @@ enum class ElementModelKind : std::uint8_t {
     case Block::Comparator: return ElementModelKind::Comparator;
     case Block::Lever: return ElementModelKind::Lever;
     case Block::EnchantingTable: return ElementModelKind::EnchantingTable;
+    case Block::Composter: return ElementModelKind::Composter;
     case Block::Anvil:
     case Block::ChippedAnvil:
     case Block::DamagedAnvil: return ElementModelKind::Anvil;
@@ -971,6 +1073,7 @@ namespace detail {
     case ElementModelKind::Comparator: return 4U * 2U * 2U; // facing x mode x powered
     case ElementModelKind::Lever: return 6U * 2U;           // facing (all six) x powered
     case ElementModelKind::EnchantingTable: return 1U;
+    case ElementModelKind::Composter: return 9U; // level 0..8
     case ElementModelKind::Anvil: return 4U; // facing
     case ElementModelKind::Door: return 4U * 2U * 2U * 2U;  // facing x half x hinge x open
     case ElementModelKind::TrapDoor: return 4U * 2U * 2U;   // facing x half x open
@@ -998,6 +1101,8 @@ namespace detail {
         return static_cast<std::size_t>(state.orientation()) * 2U + (state.powered() ? 1U : 0U);
     case ElementModelKind::EnchantingTable:
         return 0U;
+    case ElementModelKind::Composter:
+        return static_cast<std::size_t>(state.composterLevel());
     case ElementModelKind::Anvil:
         return detail::horizontalIndex(state.orientation());
     case ElementModelKind::Door:
@@ -1043,6 +1148,8 @@ namespace detail {
             (variant & 1U) != 0U);
     case ElementModelKind::EnchantingTable:
         return BlockState{block};
+    case ElementModelKind::Composter:
+        return BlockState{block}.withComposterLevel(static_cast<int>(variant));
     case ElementModelKind::Anvil:
         return BlockState{block, horizontalOf(variant)};
     case ElementModelKind::Door:
@@ -1071,6 +1178,7 @@ namespace detail {
     case ElementModelKind::Comparator: return Block::Comparator;
     case ElementModelKind::Lever: return Block::Lever;
     case ElementModelKind::EnchantingTable: return Block::EnchantingTable;
+    case ElementModelKind::Composter: return Block::Composter;
     case ElementModelKind::Anvil: return Block::Anvil;
     case ElementModelKind::Door: return Block::OakDoor;
     case ElementModelKind::TrapDoor: return Block::OakTrapdoor;

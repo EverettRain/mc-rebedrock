@@ -888,7 +888,49 @@ inline constexpr std::array<ShapeBox, 4> kAnvilBoxesX{{
     {0.0F, 10.0F / 16.0F, 3.0F / 16.0F, 1.0F, 1.0F, 13.0F / 16.0F},
 }};
 
+// AR-M4: the composter's bowl. 26.1 builds it as
+// `Shapes.join(Shapes.block(), Block.column(12, clamp(1 + level * 2, 2, 16), 16),
+// ONLY_FIRST)` — the full cell MINUS the open cavity — which is a floor slab plus
+// four walls. Written out as those five boxes because this project's BlockShape
+// carries a box list, not a CSG tree.
+//
+// The cavity floor rises with the fill (`1 + level * 2`, clamped to at least 2),
+// so a player standing in a full composter really does stand higher than in an
+// empty one; level 8 reuses level 7's boxes exactly as vanilla's
+// `shapes[8] = shapes[7]` does.
+struct ComposterBoxes final {
+    std::array<ShapeBox, 5> boxes{};
+};
+[[nodiscard]] constexpr ComposterBoxes composterBoxesFor(int level) {
+    const int raw = 1 + level * 2;
+    const int floorTop = raw < 2 ? 2 : (raw > 16 ? 16 : raw);
+    const float top = static_cast<float>(floorTop) / 16.0F;
+    constexpr float lo = 2.0F / 16.0F;
+    constexpr float hi = 14.0F / 16.0F;
+    ComposterBoxes result{};
+    // The floor, as tall as the compost inside it.
+    result.boxes[0] = {0.0F, 0.0F, 0.0F, 1.0F, top, 1.0F};
+    // The four walls, full height.
+    result.boxes[1] = {0.0F, 0.0F, 0.0F, lo, 1.0F, 1.0F};
+    result.boxes[2] = {hi, 0.0F, 0.0F, 1.0F, 1.0F, 1.0F};
+    result.boxes[3] = {lo, 0.0F, 0.0F, hi, 1.0F, lo};
+    result.boxes[4] = {lo, 0.0F, hi, hi, 1.0F, 1.0F};
+    return result;
+}
+inline constexpr std::array<ComposterBoxes, 9> kComposterShapes{{
+    composterBoxesFor(0), composterBoxesFor(1), composterBoxesFor(2),
+    composterBoxesFor(3), composterBoxesFor(4), composterBoxesFor(5),
+    composterBoxesFor(6), composterBoxesFor(7), composterBoxesFor(7),
+}};
+
 [[nodiscard]] constexpr BlockShape shapeElementModel(BlockState state) {
+    // AR-M4: the composter, before the diode/lever fallbacks — its shape is the
+    // only one here that reads a non-orientation property.
+    if (state.block() == Block::Composter) {
+        const auto level = static_cast<std::size_t>(state.composterLevel());
+        return {ShapeKind::Boxes, 0.0F, 0.0F,
+                std::span<const ShapeBox>{kComposterShapes[level].boxes}};
+    }
     if (state.block() == Block::Lever) {
         return {ShapeKind::Boxes, 0.0F, 0.0F, {&kFloorTorchBox, 1}};
     }

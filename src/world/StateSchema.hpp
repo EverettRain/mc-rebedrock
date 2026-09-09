@@ -111,6 +111,17 @@ enum class StateProperty : std::uint8_t {
     // carry it and updateShape keeps them agreeing, which is how the far half
     // knows without asking the near one.
     Occupied,
+    // AR-M4: ComposterBlock.LEVEL, 0..8 — nine values, where 8 is vanilla's
+    // READY (the compost has finished and a right-click takes the bone meal
+    // out). Vanilla spells it `level`, the same name LiquidBlock already claims
+    // on the FluidLevel axis above; two axes cannot share a serialised name
+    // here because the save reader resolves a name to exactly one property and
+    // `BlockState::with` silently drops one the block never declared — a
+    // composter's fill would have vanished on every reload. So this build
+    // serialises it as `composter_level` and the JE bridge maps
+    // `composter[level]` onto it (compat/VanillaMapping.hpp), exactly the way
+    // `waterlogged` -> `submerged_in` is handled.
+    ComposterLevel,
     Count,
 };
 
@@ -180,6 +191,9 @@ inline constexpr std::size_t kStatePropertyCount = static_cast<std::size_t>(Stat
         // one less (0..7 vs 1..8) — the JC bridge's business, registered in
         // compat/VanillaMapping.hpp, not the parser's.
         return "layers";
+    case StateProperty::ComposterLevel:
+        // Deliberately NOT "level" — see the enumerator's comment.
+        return "composter_level";
     case StateProperty::Count:
         break;
     }

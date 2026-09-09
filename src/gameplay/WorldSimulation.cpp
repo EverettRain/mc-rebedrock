@@ -1,5 +1,6 @@
 #include "gameplay/WorldSimulation.hpp"
 
+#include "gameplay/Composter.hpp"  // AR-M4: kComposterMaxFillLevel / the ready delay
 #include "gameplay/BlockBehavior.hpp" // AR-B4-4: dispatchUpdateShape for the shape pass
 
 #include "gameplay/RedstoneDiode.hpp"
@@ -1055,6 +1056,35 @@ void WorldSimulation::queueTreeGrowth(SimulationPosition position) {
     static_cast<void>(ticks_.schedule(TickTask::TreeGrowth, position, tickCount_ + 1U));
 }
 
+void WorldSimulation::queueComposterReady(SimulationPosition position) {
+    if (!world::isWorldYInRange(position.y)) {
+        return;
+    }
+    static_cast<void>(ticks_.schedule(TickTask::ComposterReady, position,
+                                      tickCount_ + static_cast<std::uint64_t>(
+                                          kComposterReadyDelayTicks)));
+}
+
+// ComposterBlock#tick: `if (level == 7) setBlock(state.cycle(LEVEL))`. The
+// re-check matters — twenty ticks is long enough for the composter to have been
+// mined, emptied by someone else, or replaced — and it is why the level is read
+// from the world here rather than carried on the scheduled entry.
+void WorldSimulation::ripenComposters(world::World& world, std::vector<BlockChange>& changes) {
+    // No budget worth tuning: one composter produces at most one of these every
+    // twenty ticks, so the cap only bounds a pathological村庄-sized batch.
+    constexpr std::size_t kMaximumComposterRipenings = 64U;
+    ticks_.drainDue(TickTask::ComposterReady, tickCount_, kMaximumComposterRipenings,
+                    [&](SimulationPosition position) {
+        const auto state = world.state(position.x, position.y, position.z);
+        if (state.block() != world::Block::Composter ||
+            state.composterLevel() != kComposterMaxFillLevel) {
+            return;
+        }
+        setSimulatedState(world, position, state.withComposterLevel(world::kComposterReadyLevel),
+                          changes);
+    });
+}
+
 void WorldSimulation::growTrees(world::World& world, std::vector<BlockChange>& changes) {
     // The per-tick cap is the drain budget now; the rest waits for a later tick
     // instead of growing a whole forest in one frame.
@@ -1971,6 +2001,7 @@ std::vector<BlockChange> WorldSimulation::tick(
     decayLeaves(world, changes);
     randomTicks(world, changes);
     growTrees(world, changes);
+    ripenComposters(world, changes);
     constexpr std::size_t kMaximumSandUpdates = 64;
     ticks_.drainDue(TickTask::FallingBlock, tickCount_, kMaximumSandUpdates,
                     [&](SimulationPosition position) {

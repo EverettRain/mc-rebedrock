@@ -468,6 +468,15 @@ class WorldSimulation final {
     [[nodiscard]] std::size_t lastTreeGrowthsProcessed() const {
         return lastTreeGrowthsProcessed_;
     }
+    // AR-M4: ComposterBlock#addItem's `scheduleTick(pos, block, 20)`. Called by
+    // whoever put the seventh item in — the player's right-click today, the
+    // farmer villager's WorkAtComposter later — because only the caller knows
+    // the fill actually succeeded.
+    void queueComposterReady(SimulationPosition position);
+    [[nodiscard]] std::size_t pendingComposterReadyCount() const {
+        return ticks_.pending(TickTask::ComposterReady);
+    }
+
     [[nodiscard]] std::size_t pendingTreeGrowthCount() const {
         return ticks_.pending(TickTask::TreeGrowth);
     }
@@ -562,6 +571,8 @@ class WorldSimulation final {
     }
     void queueTreeGrowth(SimulationPosition position);
     void growTrees(world::World& world, std::vector<BlockChange>& changes);
+    // AR-M4: turn every composter whose twenty-tick wait is up into READY.
+    void ripenComposters(world::World& world, std::vector<BlockChange>& changes);
     void growTreeAt(world::World& world, SimulationPosition position,
                     world::Block sapling, std::vector<BlockChange>& changes);
     // getRawBrightness(pos, 0) and getMaxLocalRawBrightness(pos): the two

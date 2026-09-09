@@ -1,5 +1,6 @@
 #include "gameplay/PlayerInteraction.hpp"
 
+#include "gameplay/Composter.hpp"
 #include "gameplay/EnchantmentCombat.hpp"
 #include "gameplay/EntitySystem.hpp"
 #include "gameplay/GameSession.hpp"
@@ -311,6 +312,80 @@ bool tryAutoEquipArmor(GameSession& session) {
     session.events().publish(SoundEvent{SoundEventKind::BlockClick,
                                         glm::vec3{clicked} + glm::vec3{0.5F}, clickedState.block(),
                                         nullptr, 1.0F, /*heavy(on)=*/on});
+    return true;
+}
+
+// AR-M4: ComposterBlock's right-click, both halves of it.
+//
+// 26.1 splits this across useItemOn and useWithoutItem, but the two are one
+// decision on the block's LEVEL:
+//
+//   level 8 (READY) -> the bone meal pops out and the composter empties,
+//                      whatever is in the player's hand (even nothing);
+//   level 0..6      -> a compostable in hand goes in, on vanilla's roll
+//                      (the first item into an EMPTY composter is free);
+//   level 7         -> the fill is full and waiting out its twenty ticks;
+//                      vanilla returns SUCCESS and does nothing, so this
+//                      consumes the click without consuming the item.
+//
+// Returns whether the composter answered the click, matching toggleLever and
+// the rest of this ladder.
+[[nodiscard]] bool useComposter(GameSession& session, world::World& world, glm::ivec3 clicked) {
+    const auto state = world.state(clicked.x, clicked.y, clicked.z);
+    if (state.block() != world::Block::Composter) {
+        return false;
+    }
+    const glm::vec3 centre = glm::vec3{clicked} + glm::vec3{0.5F};
+    const int level = state.composterLevel();
+    GameplayMutationSink sink{world, session};
+
+    if (level >= world::kComposterReadyLevel) {
+        // ComposterBlock#extractProduce: one bone meal, then empty. The item is
+        // spawned just above the rim (vanilla's `1.01` offset) so it does not
+        // land back inside the bowl's own collision boxes.
+        session.spawnItemEntity(centre + glm::vec3{0.0F, 0.51F, 0.0F},
+                                ItemStack{world::Block::Air, 1U, &items::BoneMeal},
+                                glm::vec3{0.0F});
+        session.worldMutations().setBlock(world, {clicked.x, clicked.y, clicked.z},
+                                          state.withComposterLevel(0),
+                                          world::MutationFlags::All,
+                                          world::MutationCause::PlayerPlace, sink);
+        session.events().publish(
+            SoundEvent{SoundEventKind::BlockPlace, centre, world::Block::Composter});
+        return true;
+    }
+
+    const auto& held = session.inventory().selectedStack();
+    const float chance = compostChance(held);
+    if (chance <= 0.0F) {
+        return false;  // nothing compostable in hand: fall through to placement
+    }
+    if (level >= kComposterMaxFillLevel) {
+        return true;   // full and ripening: the click is consumed, the item is not
+    }
+    const int newLevel = composterAddItem(level, chance, session.composterRandom().nextFloat());
+    // The item is spent whether or not the roll landed — vanilla shrinks the
+    // stack on SUCCESS, and a failed roll is still a SUCCESS there.
+    if (session.gameMode() == GameMode::Survival) {
+        static_cast<void>(session.inventory().consumeSelected());
+    }
+    if (newLevel == level) {
+        session.events().publish(
+            SoundEvent{SoundEventKind::BlockHit, centre, world::Block::Composter});
+        return true;
+    }
+    session.worldMutations().setBlock(world, {clicked.x, clicked.y, clicked.z},
+                                      state.withComposterLevel(newLevel),
+                                      world::MutationFlags::All,
+                                      world::MutationCause::PlayerPlace, sink);
+    session.events().publish(
+        SoundEvent{SoundEventKind::BlockPlace, centre, world::Block::Composter});
+    // ComposterBlock#addItem: reaching MAX_LEVEL starts the twenty-tick wait
+    // that turns it READY. Scheduled here, by the code that knows the fill
+    // actually succeeded.
+    if (newLevel == kComposterMaxFillLevel) {
+        session.worldSimulation().queueComposterReady({clicked.x, clicked.y, clicked.z});
+    }
     return true;
 }
 
@@ -882,7 +957,7 @@ void PlayerInteraction::performUse(GameSession& session, world::World& world,
                                     !session.inventory().selectedStack().empty()) &&
         (toggleDoorOrGate(session, world, use.block, world::horizontalFacing(use.lookDirection)) ||
          pressButton(session, world, use.block) || toggleLever(session, world, use.block) ||
-         cycleDiode(session, world, use.block))) {
+         cycleDiode(session, world, use.block) || useComposter(session, world, use.block))) {
         session.playerActions().swingHand(InteractionHand::Main, SwingAnimation::Use, 6U);
         return;
     }

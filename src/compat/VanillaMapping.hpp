@@ -248,6 +248,22 @@ namespace detail {
     return static_cast<std::uint8_t>(value[0] - '1');
 }
 
+// AR-M4: ComposterBlock.LEVEL, 0..8. The values are IDENTICAL on both sides —
+// what differs is the property NAME. Vanilla calls it `level`, and this build
+// cannot: `level` is already LiquidBlock's FluidLevel here, and the save
+// reader resolves a name to exactly one property, so a composter's `level`
+// would have been read as a fluid level and dropped (BlockState::with silently
+// ignores a property the block never declared). Hence `composter_level`, and
+// hence this row — registered as a JC deviation the way `waterlogged` ->
+// `submerged_in` is, and scoped to the composter block so no OTHER block's
+// `level` is diverted here.
+[[nodiscard]] constexpr std::optional<std::uint8_t> composterLevelValue(std::string_view value) {
+    if (value.size() != 1U || value[0] < '0' || value[0] > '8') {
+        return std::nullopt;
+    }
+    return static_cast<std::uint8_t>(value[0] - '0');
+}
+
 // ComparatorBlock.MODE -> BlockState::comparatorSubtract's bit: compare is 0.
 [[nodiscard]] constexpr std::optional<std::uint8_t> comparatorModeWord(std::string_view value) {
     if (value == "compare") return std::uint8_t{0U};
@@ -261,7 +277,7 @@ namespace detail {
 // heap, no runtime construction order to reason about. Grows by appending a
 // row, not by restructuring (REGULAR.md rule 5, "override 表 constexpr/静态；
 // 导入是查表+下标，量增再迁 D 数据化").
-inline constexpr std::array<StateOverride, 10> kOverrides{{
+inline constexpr std::array<StateOverride, 11> kOverrides{{
     StateOverride{
         /*vanillaBlock=*/{},
         /*vanillaProperty=*/"waterlogged",
@@ -282,6 +298,10 @@ inline constexpr std::array<StateOverride, 10> kOverrides{{
     // meaning — the bed's PART word and the snow layer's one-based LAYERS.
     StateOverride{{}, "part", world::StateProperty::BedPart, &detail::bedPartWord},
     StateOverride{{}, "layers", world::StateProperty::Layers, &detail::snowLayersValue},
+    // AR-M4: the first override that is NOT block-agnostic — `level` means a
+    // fluid level everywhere else, and only the composter's is redirected.
+    StateOverride{"composter", "level", world::StateProperty::ComposterLevel,
+                  &detail::composterLevelValue},
 }};
 
 // Finds the override for a vanilla property name (optionally scoped to a

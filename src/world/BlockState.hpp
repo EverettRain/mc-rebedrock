@@ -8,6 +8,12 @@
 
 namespace mc::world {
 
+// AR-M4: ComposterBlock's READY level. Vanilla's LEVEL runs 0..8 where 0..7 is
+// "filling" and 8 means the compost is done — `ComposterBlock.READY = 8`,
+// `MAX_LEVEL = 7`. Named here because the block, the shape, the mesher and the
+// interaction all compare against it.
+inline constexpr int kComposterReadyLevel = 8;
+
 // One cell's whole block state as a single opaque value.
 //
 // Why an opaque id rather than the fields it packs: every signature that takes
@@ -112,6 +118,18 @@ class BlockState final {
     [[nodiscard]] constexpr BlockState withLayers(int count) const {
         const int clamped = count < 1 ? 1 : (count > 8 ? 8 : count);
         return with(StateProperty::Layers, static_cast<std::uint8_t>(clamped - 1));
+    }
+
+    // AR-M4: ComposterBlock.LEVEL, 0..8. Stored as-is (an empty composter really
+    // is level 0, so the default state needs no offset the way LAYERS does).
+    // 8 is READY: the compost is finished and the next right-click empties it.
+    [[nodiscard]] constexpr int composterLevel() const {
+        return static_cast<int>(value(StateProperty::ComposterLevel));
+    }
+    [[nodiscard]] constexpr BlockState withComposterLevel(int level) const {
+        const int clamped = level < 0 ? 0 : (level > kComposterReadyLevel ? kComposterReadyLevel
+                                                                          : level);
+        return with(StateProperty::ComposterLevel, static_cast<std::uint8_t>(clamped));
     }
 
     [[nodiscard]] constexpr std::uint8_t emittedLight() const {
