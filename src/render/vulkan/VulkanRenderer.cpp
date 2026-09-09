@@ -1445,6 +1445,13 @@ struct VulkanRenderer::Impl final : public gameplay::SimulationHost {
         //    （与 runPreviewExport 同理：那条主循环里的 uiTimeSeconds += dt 不在这条路径上），
         //    这里把起点也钉死，于是"第几次运行"不会改变全景的角度。
         uiTimeSeconds = kUiCaptureClockSeconds;
+        // 1b. 时区。UI-11 / A6 起世界列表每一行画一个**本地时间**的日期串
+        //     （26.1 `Util.localizedDateFormatter` 用的是 `ZoneId.systemDefault()`）。
+        //     不钉它，同一份夹具在两台机器上会渲染成两串不同的字——这与
+        //     `options.properties` 那次是同一族：出图的结论取决于跑它的环境。
+        //     只在截图通道里钉，正常运行仍然跟随玩家的时区。
+        static_cast<void>(::setenv("TZ", "UTC", 1));
+        ::tzset();
         // 2. 鼠标。按钮的悬停高亮读光标位置，而隐藏窗口下指针停在哪儿不由我们决定。
         //    钉到画布外的一个点，于是没有任何控件处于悬停态（ui_capture_test 断言这条性质）。
         // 光标：按钮的悬停高亮与槽位提示框都读它。默认钉在画布外（没有任何东西悬停），
@@ -1592,6 +1599,12 @@ struct VulkanRenderer::Impl final : public gameplay::SimulationHost {
             uiCapture->tabIndex < static_cast<std::size_t>(ui::CreateWorldTab::Count)
                 ? static_cast<ui::CreateWorldTab>(uiCapture->tabIndex)
                 : ui::CreateWorldTab::Game;
+        // UI-11 / A6：世界列表那三屏的存档清单同样由夹具决定。★ 从前它们拍出来
+        // 永远是「No worlds yet」——而"一行长什么样"正是 A6 要改的东西。
+        // 滚动位置一并钉住，理由与创造背包那一行完全相同。
+        menuSystem.saveSummaries = uiCaptureSaveSummaries(target);
+        menuSystem.selectedWorldIndex = uiCaptureSelectedWorldRow(target);
+        menuSystem.worldListFirstIndex = 0U;
         // 背包屏那口黑井里画的是玩家模型，而它的骨骼姿态要动画器**求值过一次**才绑定
         // （`drawPlayerPreview`：未绑定就一根骨骼也不画）。求值发生在 run() 的帧循环里，
         // 而截图通道根本不走那条循环——不喂这一下，每一张背包截图都只有 vanilla

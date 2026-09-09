@@ -22,6 +22,7 @@
 #include "gameplay/command/CommandDispatcher.hpp"
 #include "gameplay/entities/SpeciesRenderData.hpp"
 #include "persistence/SaveRepository.hpp"
+#include "ui/WorldListRow.hpp"
 #include "render/SkyLight.hpp"
 #include "render/PerspectiveCamera.hpp"
 #include "render/TestScene.hpp"
@@ -88,6 +89,7 @@
 #include <cmath>
 #include <cstddef>
 #include <cstdint>
+#include <ctime>
 #include <filesystem>
 #include <functional>
 #include <iomanip>
@@ -1872,6 +1874,107 @@ class HudRenderer final {
                             guiWidgetSprite(guiWidgetSprites, icon), scale, tint);
     }
 
+    // UI-11 / A6：世界列表的一行，一比一照 26.1
+    // `WorldSelectionList.WorldListEntry.extractContent():497-507` 与
+    // `AbstractSelectionList.extractSelection():357-364`。
+    //
+    // 本作从前画的是自造的两层深灰底 + 名字 + 0.75 倍缩放的 "Seed 12345"。
+    // 26.1 是：**只有选中的那一行**有底（一圈 1px 的边框色，里面纯黑），
+    // 左边一张 32x32 的缩略图，右边三行字。
+    void drawWorldListRow(VkCommandBuffer commandBuffer, const ui::HudLayout& layout,
+                          std::size_t visibleIndex, std::size_t index) const {
+        const float scale = layout.scale();
+        const auto row = worldListRow(visibleIndex, layout);
+        const auto parts = ui::worldRowParts(ui::logicalWorldListRow(visibleIndex, layout));
+        const auto& summary = menuSystem.saveSummaries[index];
+        const auto cursor = currentFramebufferCursor();
+        const bool hovered = row.contains(cursor.x, cursor.y);
+        // ★ 未选中的行**没有任何底衬**（`extractItem:348-354` 只在 selected 时画）。
+        if (index == menuSystem.selectedWorldIndex) {
+            // 边框色：有键盘焦点是白，否则 0xFF808080（`extractItem:350`）。
+            // 本作的列表还没有"列表整体是否聚焦"这个状态，按无焦点那一档画。
+            drawHudQuad(commandBuffer, row,
+                        {ui::kWorldRowSecondaryChannel, ui::kWorldRowSecondaryChannel,
+                         ui::kWorldRowSecondaryChannel, 1.0F});
+            drawHudQuad(commandBuffer,
+                        {row.x + scale, row.y + scale, row.width - 2.0F * scale,
+                         row.height - 2.0F * scale},
+                        {0.0F, 0.0F, 0.0F, 1.0F});
+        }
+        const ui::UiRect icon{parts.icon.x * scale, parts.icon.y * scale,
+                              parts.icon.width * scale, parts.icon.height * scale};
+        // 缩略图。本作还没有"退出世界时写 icon.png"那条路，所以每个存档都走
+        // 26.1 的**回落**分支（`FaviconTexture.MISSING_LOCATION`）。
+        drawGuiSprite(commandBuffer, icon, kTabWidgetLayer,
+                      {static_cast<float>(kWorldIconFallbackSpriteX),
+                       static_cast<float>(kWorldIconFallbackSpriteY),
+                       static_cast<float>(kWorldIconFallbackSize),
+                       static_cast<float>(kWorldIconFallbackSize)});
+        if (hovered) {
+            // `graphics.fill(contentX, contentY, +32, +32, -1601138544)` = 0xA0909090。
+            drawHudQuad(commandBuffer, icon,
+                        {ui::kWorldIconHoverChannel, ui::kWorldIconHoverChannel,
+                         ui::kWorldIconHoverChannel, ui::kWorldIconHoverAlpha});
+        }
+        const glm::vec4 secondary{ui::kWorldRowSecondaryChannel, ui::kWorldRowSecondaryChannel,
+                                  ui::kWorldRowSecondaryChannel, 1.0F};
+        const float textX = parts.textX * scale;
+        drawHudText(commandBuffer, clipToWorldRow(summary.displayName, scale), textX,
+                    parts.nameY * scale, scale, {1.0F, 1.0F, 1.0F, 1.0F});
+        drawHudText(commandBuffer,
+                    clipToWorldRow(ui::worldRowMetaLine(
+                                       summary.identifier,
+                                       formatWorldLastPlayed(summary.lastPlayedUnixSeconds)),
+                                   scale),
+                    textX, parts.metaY * scale, scale, secondary);
+        drawHudText(commandBuffer, clipToWorldRow(worldRowInfoLine(summary), scale), textX,
+                    parts.infoY * scale, scale, secondary);
+    }
+
+    // 三行字都受同一个宽度上限（`WorldSelectionList:421`，见 ui::kWorldRowMaxTextWidth）。
+    // 26.1 用 `StringWidget.setMaxWidth` 把超长的一行**裁**掉（CLAMPED），不是换行。
+    [[nodiscard]] std::string clipToWorldRow(std::string text, float scale) const {
+        const float limit = static_cast<float>(ui::kWorldRowMaxTextWidth) * scale;
+        while (!text.empty() && hudTextWidth(text, scale) > limit) {
+            // 按 UTF-8 码点边界退，绝不切在字节中间。
+            do {
+                text.pop_back();
+            } while (!text.empty() &&
+                     (static_cast<unsigned char>(text.back()) & 0xC0U) == 0x80U);
+        }
+        return text;
+    }
+
+    // 第 3 行：26.1 `LevelSummary.getInfo()` 是"游戏模式 + 版本名"。
+    //
+    // ★ 本作的 `SaveSummary` 今天两样都没有（存档里没有持久化游戏模式，版本名在
+    //   另一个块里）。**不编造**：暂时只显示种子，并把这条差异登记进偏差表。
+    [[nodiscard]] std::string worldRowInfoLine(const persistence::SaveSummary& summary) const {
+        // ★ 键用本项目自己的命名空间：26.1 **没有** `selectWorld.seed` 这个键
+        //   （只有 `selectWorld.enterSeed` / `selectWorld.seedInfo`，两句都是别的意思）。
+        //   借一个不存在的 vanilla 键，等哪天原版真加了它，这一行会静默变成
+        //   "Seed for the world generator" 之类。
+        return formatTemplate(
+            translated("selectWorld.rebedrock.seedInfo", "Seed: %s"),
+            std::to_string(summary.seed));
+    }
+
+    // 第 2 行括号里的日期。26.1 用 `Util.localizedDateFormatter(FormatStyle.SHORT)`，
+    // 也就是**跟随系统语言环境**的短日期；本作没有本地化的日期格式化，
+    // 固定用 ISO 的 `YYYY-MM-DD HH:MM`。已登记为偏差。
+    [[nodiscard]] static std::string formatWorldLastPlayed(std::int64_t unixSeconds) {
+        if (unixSeconds <= 0) {
+            return {};   // 26.1 的 `lastPlayed != -1L` 分支：没有记录就不加括号那一段
+        }
+        const auto time = static_cast<std::time_t>(unixSeconds);
+        std::tm broken{};
+        localtime_r(&time, &broken);
+        std::array<char, 32> buffer{};
+        const std::size_t written =
+            std::strftime(buffer.data(), buffer.size(), "%Y-%m-%d %H:%M", &broken);
+        return std::string{buffer.data(), written};
+    }
+
     // 选择列表的一行（语言 / 世界）：一层淡背景加一行文本，悬停时提亮。
     // UI-6b 之前按键绑定行也走这里，所以它从前叫 drawKeyBindRow；那一行现在是
     // Label + Button 两个控件，不再经过这条路径。
@@ -2255,25 +2358,7 @@ class HudRenderer final {
                     34.0F * scale, scale, {0.85F, 0.85F, 0.85F, 1.0F});
             }
             for (std::size_t visibleIndex = 0; visibleIndex < visible; ++visibleIndex) {
-                const std::size_t index = first + visibleIndex;
-                const auto rectangle = worldListRow(visibleIndex, layout);
-                const bool selected = index == menuSystem.selectedWorldIndex;
-                drawHudQuad(commandBuffer, rectangle,
-                            selected ? glm::vec4{0.95F, 0.95F, 0.95F, 0.95F}
-                                     : glm::vec4{0.10F, 0.10F, 0.10F, 0.90F});
-                drawHudQuad(commandBuffer,
-                            {rectangle.x + scale, rectangle.y + scale,
-                             rectangle.width - 2.0F * scale, rectangle.height - 2.0F * scale},
-                            selected ? glm::vec4{0.28F, 0.28F, 0.28F, 0.96F}
-                                     : glm::vec4{0.18F, 0.18F, 0.18F, 0.96F});
-                drawHudText(commandBuffer, menuSystem.saveSummaries[index].displayName,
-                            rectangle.x + 4.0F * scale, rectangle.y + 2.0F * scale, scale,
-                            {1.0F, 1.0F, 1.0F, 1.0F});
-                const std::string details =
-                    "Seed " + std::to_string(menuSystem.saveSummaries[index].seed);
-                drawHudText(commandBuffer, details, rectangle.x + 4.0F * scale,
-                            rectangle.y + 11.0F * scale, scale * 0.75F,
-                            {0.70F, 0.70F, 0.70F, 1.0F});
+                drawWorldListRow(commandBuffer, layout, visibleIndex, first + visibleIndex);
             }
         } else if (page == ui::PageId::CreateWorld) {
             drawCreateWorldForm(commandBuffer, layout);

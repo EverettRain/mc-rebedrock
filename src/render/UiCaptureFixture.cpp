@@ -210,4 +210,39 @@ gameplay::PlayerTickSnapshot uiCapturePlayerSnapshot(const UiCaptureTarget& targ
     return snapshot;
 }
 
+namespace {
+
+// 这三屏都读 `menuSystem.saveSummaries`：列表画行，编辑与删除确认画选中存档的名字。
+[[nodiscard]] bool targetShowsSaveList(const UiCaptureTarget& target) {
+    return target.page == ui::PageId::WorldList || target.page == ui::PageId::EditWorld ||
+           target.page == ui::PageId::ConfirmDelete;
+}
+
+} // namespace
+
+std::vector<persistence::SaveSummary> uiCaptureSaveSummaries(const UiCaptureTarget& target) {
+    if (!targetShowsSaveList(target)) {
+        return {};
+    }
+    std::vector<persistence::SaveSummary> saves;
+    // 2024-01-02 03:04:05 UTC。截图通道把 TZ 钉成 UTC（applyUiCaptureDeterminism），
+    // 所以这个数在任何机器上都渲染成同一串字。
+    saves.push_back({"new-world", "New World", 1234567890123ULL, 1704164645, false});
+    // 没有"最后游玩"记录的那一支：第二行只有目录名，没有括号里的日期。
+    saves.push_back({"flat-testbed", "Flat Testbed", 0ULL, 0, false});
+    // 长到要被裁的那一支（231 逻辑像素放不下）。
+    saves.push_back({"very-long-directory-name-for-clipping",
+                     "A World Whose Name Is Far Too Long To Fit In One Row", 42ULL, 1704164645,
+                     false});
+    return saves;
+}
+
+std::size_t uiCaptureSelectedWorldRow(const UiCaptureTarget& target) {
+    if (!targetShowsSaveList(target)) {
+        return static_cast<std::size_t>(-1);
+    }
+    // 第 1 行。选中的行有底、没选中的没有——一张图里两种都要有。
+    return 1U;
+}
+
 } // namespace mc::render

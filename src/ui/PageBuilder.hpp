@@ -389,6 +389,17 @@ inline void addListRow(Page& page, WidgetId id, std::size_t rowIndex,
     page.push_back(std::move(w));
 }
 
+// UI-11 / A6：一张不可交互的图。`imageIndex` 的语义由 `id` 决定
+// （`WorldIcon` 时是窗口内的行号）。
+inline void addImage(Page& page, WidgetId id, std::size_t imageIndex) {
+    Widget w;
+    w.kind = WidgetKind::Image;
+    w.debugId = static_cast<std::uint16_t>(id);
+    w.enabled = false;
+    w.imageIndex = static_cast<std::uint16_t>(imageIndex);
+    page.push_back(std::move(w));
+}
+
 // UI-6b：一个按键绑定行 = **两个**控件，不是一个。
 //
 // 26.1 的 `KeyBindsList.KeyEntry` 是一段动作名加两个按钮（改键 / 重置），
@@ -452,6 +463,7 @@ inline void buildPageInto(Page& page, PageId id, const MenuBuildContext& ctx,
     using detail::addIconButton;
     using detail::addOptionButton;
     using detail::addListRow;
+    using detail::addImage;
     using detail::addFloatSlider;
     using detail::addIntSlider;
     using detail::addSlider;
@@ -494,6 +506,9 @@ inline void buildPageInto(Page& page, PageId id, const MenuBuildContext& ctx,
             for (std::size_t row = 0; row < ctx.worldRowCount; ++row) {
                 addListRow(page, WidgetId::WorldRow, row,
                            [cb, row]() { if (cb.selectWorldRow) cb.selectWorldRow(row); });
+                // UI-11 / A6：缩略图**紧跟在自己那一行之后**。布局侧按同一个次序
+                // 认它（与资源包行内那三块热区同构，护栏 21）。
+                addImage(page, WidgetId::WorldIcon, row);
             }
             addButton(page, ctx, WidgetId::PlaySelected, cb.playSelectedWorld,
                       ctx.worldSelectable);

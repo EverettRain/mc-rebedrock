@@ -175,7 +175,9 @@ inline constexpr std::array<WidgetId, 20> kRuntimeWidgetLabels{{
 // 不经 widgetLabel 取标签的 id
 // 三种列表行的文本各自在页面装配时给出，分别是世界名、语言名与按键行
 // None 则根本不是一个按钮
-inline constexpr std::array<WidgetId, 18> kUnlabelledWidgets{{
+inline constexpr std::array<WidgetId, 19> kUnlabelledWidgets{{
+    // UI-11 / A6：世界行的缩略图不是文字控件。
+    WidgetId::WorldIcon,
     WidgetId::None,
     WidgetId::WorldRow,
     WidgetId::LanguageRow,

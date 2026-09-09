@@ -29,7 +29,11 @@
 
 #include "gameplay/PlayerTickSnapshot.hpp"
 #include "gameplay/WorldSnapshot.hpp"
+#include "persistence/SaveRepository.hpp"
 #include "render/UiCapture.hpp"
+
+#include <cstddef>
+#include <vector>
 
 namespace mc::render {
 
@@ -45,5 +49,24 @@ namespace mc::render {
 // ★ 游戏模式在这里，不在世界快照里——创造背包这一档是 `PlayerInventory + Creative`
 //   两个事实的合取，而它们分别住在两份快照里，这是生产路径本来的形状。
 [[nodiscard]] gameplay::PlayerTickSnapshot uiCapturePlayerSnapshot(const UiCaptureTarget& target);
+
+// UI-11 / A6：世界列表那三屏（列表 / 编辑 / 删除确认）的确定性存档清单。
+//
+// ★ 立它的理由与容器夹具完全同族：**世界列表此前拍出来永远是"No worlds yet"**，
+//   而"一行长什么样"正是 A6 要改的东西——一张空列表对它什么都没说。
+//
+// 内容同样是按**绘制路径**挑的，不是随手填的：
+//   - 第 0 行有 `lastPlayedUnixSeconds` → 第二行走 `<目录名> (<日期>)` 那一支
+//   - 第 1 行 `lastPlayedUnixSeconds == 0` → 走 26.1 `lastPlayed != -1L` 的**否定**支
+//     （只有目录名，没有括号）
+//   - 第 2 行名字长到超过 231 逻辑像素 → 走裁剪那一支（`StringWidget` 的 CLAMPED）
+//   - 选中行钉在第 1 行 → 一张图里同时有"选中的行"与"没选中的行"两种底
+//
+// 非世界列表的目标返回空清单，既有基线因此逐字节不变。
+[[nodiscard]] std::vector<persistence::SaveSummary> uiCaptureSaveSummaries(
+    const UiCaptureTarget& target);
+
+// 上面那份清单里，哪一行是选中的。空清单时是 npos。
+[[nodiscard]] std::size_t uiCaptureSelectedWorldRow(const UiCaptureTarget& target);
 
 } // namespace mc::render

@@ -533,6 +533,14 @@ void TextureManager::createGuiTexture() {
                96);
     blitWidget(tabWidgets, GuiWidgetSprite::TransferMoveDownHighlighted,
                "transferable_list/move_down_highlighted", 224, 96);
+    // UI-11 / A6：世界列表那一行左边的**缺省**缩略图（26.1 `FaviconTexture` 在
+    // `<world>/icon.png` 不存在时回落到 `textures/misc/unknown_server.png`）。
+    // 原图 128x128，这里先缩到 64x64——它永远只画成 32x32，多存的像素没有消费者。
+    // 落在 `tabWidgets` 这一层 y>=128 的空白里（页签占 0..96，转移箭头占 96..128），
+    // **不新增图集层**。
+    blit(tabWidgets, stretchToAtlas(tex("misc/unknown_server.png"), kWorldIconFallbackSize,
+                                    kWorldIconFallbackSize),
+         kWorldIconFallbackSpriteX, kWorldIconFallbackSpriteY);
 
     auto hud = emptyRgbaAtlas();
     blit(hud, sprite("hud/crosshair"), 0, 0);

@@ -1847,6 +1847,18 @@ if(BUILD_TESTING)
         MC_REBEDROCK_HUD_RENDERER_SRC="${CMAKE_CURRENT_SOURCE_DIR}/src/render/vulkan/HudRenderer.hpp")
     add_test(NAME notice_screen COMMAND mc_rebedrock_notice_screen_test)
 
+    # UI-11 / A6：世界列表一行的几何与内容（26.1 WorldSelectionList.WorldListEntry）。
+    add_executable(mc_rebedrock_world_list_row_test
+        tests/world_list_row_test.cpp
+        src/ui/MenuGeometry.cpp
+        src/ui/TitleScreenLayout.cpp
+        src/ui/HudLayout.cpp
+        src/ui/PageStack.cpp
+    )
+    target_include_directories(mc_rebedrock_world_list_row_test PRIVATE src)
+    target_link_libraries(mc_rebedrock_world_list_row_test PRIVATE glm::glm)
+    add_test(NAME world_list_row COMMAND mc_rebedrock_world_list_row_test)
+
     add_executable(mc_rebedrock_tab_bar_test tests/tab_bar_test.cpp)
     target_include_directories(mc_rebedrock_tab_bar_test PRIVATE src)
     target_link_libraries(mc_rebedrock_tab_bar_test PRIVATE glm::glm)

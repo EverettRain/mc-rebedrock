@@ -55,6 +55,12 @@ inline constexpr float kAnvilGuiLayer = 15.0F;
 // ★ 它们各 130x24，竖排要 96 高，`widgets` 那一层放不下——这是本作少数几次
 //   真的加一层。加层要同步改三处：数组、kGuiLayerCount、这个常量。
 inline constexpr float kTabWidgetLayer = 20.0F;
+// UI-11 / A6：世界列表那一行的缺省缩略图（26.1 `FaviconTexture` 的
+// `MISSING_LOCATION` = `textures/misc/unknown_server.png`）在同一层里的落位。
+// 原图 128x128，按 64x64 存——它永远只画成 32x32。
+inline constexpr int kWorldIconFallbackSize = 64;
+inline constexpr int kWorldIconFallbackSpriteX = 0;
+inline constexpr int kWorldIconFallbackSpriteY = 128;
 
 // A1：容器界面那张面板底图在 GUI 图集里的层号。
 //

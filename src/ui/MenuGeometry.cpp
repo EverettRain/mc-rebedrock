@@ -1,5 +1,8 @@
 #include "ui/MenuGeometry.hpp"
 
+#include "ui/ListRow.hpp"
+#include "ui/WorldListRow.hpp"
+
 #include "ui/CreateWorldLayout.hpp"
 #include "ui/DualColumnList.hpp"
 #include "ui/HeaderAndFooterLayout.hpp"
@@ -32,7 +35,9 @@ namespace {
 
 // 世界列表那条带：首行顶边与行距，逻辑像素。
 constexpr int kWorldListTop = 34;
-constexpr int kWorldListRowStep = 22;
+// UI-11 / A6：26.1 `WorldSelectionList` 的 `itemHeight` 是 **36**（:116），
+// 不是本作从前自造的 22——那一行放不下 32x32 的缩略图，也放不下三行字。
+constexpr int kWorldListRowStep = kWorldRowHeight;
 
 // UI-4：三张滚动列表都从这里取几何。行宽是从 26.1 源码查来的覆写值，不是估的：
 // 语言 270（`LanguageSelectScreen:141` 的 `220 + 50`）、按键 340（`KeyBindsList:59`）、
@@ -77,13 +82,19 @@ ScrollList worldScrollList(const HudLayout& layout) {
 }
 
 
+// UI-11 / A6：世界行在**逻辑像素**下的矩形。行内那几块（缩略图、三行字）都从它派生，
+// 所以它只有这一处；`worldListRow` 是它换算到帧缓冲像素的那一层。
+UiRect logicalWorldListRow(std::size_t index, const HudLayout& layout) {
+    return scrollListRow(worldScrollList(layout), index);
+}
+
 UiRect worldListRow(std::size_t index, const HudLayout& layout) {
     // UI-4：走统一的 ScrollList。行宽从自造的 300 改成 26.1 的 **270**
     // （`WorldSelectionList:251`）；行高仍比行距矮 2，那 2 像素是行与行之间的缝。
-    const auto list = worldScrollList(layout);
-    auto row = fbRect(layout, scrollListRow(list, index));
-    row.height = toFb(layout, kWorldListRowStep - 2);
-    return row;
+    // UI-11 / A6：行**就是** itemHeight 那么高。26.1 的行与行之间没有缝：
+    // 视觉上的间隔来自 `Entry.getContentY/Height` 上下各让出的 2 像素
+    // （:475-481），那份内缩在 ui::worldRowParts 里。从前这里减 2 是自造的缝。
+    return fbRect(layout, logicalWorldListRow(index, layout));
 }
 
 std::size_t worldListVisibleRows(const HudLayout& layout) {
@@ -191,7 +202,7 @@ std::size_t countPageButtons(const Page& page) {
     std::size_t buttons = 0;
     for (const Widget& widget : page) {
         if (!isKeyBindRowWidget(widget) && !isPackRowWidget(widget) &&
-            !isPackZoneWidget(widget)) {
+            !isPackZoneWidget(widget) && !isScrollListRowWidget(widget)) {
             ++buttons;
         }
     }
@@ -267,6 +278,8 @@ void layoutPageInto(Page& page, PageId id, const HudLayout& layout,
     // 是**那一行**图标位的三块分区。记住上一行的图标位即可——装配保证它们紧跟在
     // 自己那一行之后（两处次序必须一致，这是护栏 21 那一族）。
     TransferIconZones rowZones{};
+    std::size_t worldRowIndex = 0;
+    std::size_t languageRowIndex = 0;
     for (Widget& widget : page) {
         if (isPackRowWidget(widget)) {
             const bool right = isSelectedPackRow(widget);
@@ -283,6 +296,29 @@ void layoutPageInto(Page& page, PageId id, const HudLayout& layout,
             widget.rect = fbRect(layout, id == WidgetId::PackUnselect  ? rowZones.unselect
                                          : id == WidgetId::PackMoveUp ? rowZones.moveUp
                                                                       : rowZones.moveDown);
+            continue;
+        }
+        // UI-11 / A6：滚动列表的行（世界 / 语言）与世界行的缩略图。
+        //
+        // ★ 它们此前落在按钮网格那条路上，拿到的是**底部按钮**的矩形（见
+        //   ui::isScrollListRowWidget 上面那段）。绘制与命中两侧都各自去调
+        //   worldListRow()/languageRow()，所以画面上看不出来——直到可见行数把
+        //   buttonCount 顶过 20，`bottomMenuButton` 抛出来为止。
+        if (isScrollListRowWidget(widget)) {
+            const auto id = static_cast<WidgetId>(widget.debugId);
+            if (id == WidgetId::LanguageRow) {
+                widget.rect = languageRow(languageRowIndex++, layout);
+                continue;
+            }
+            if (id == WidgetId::WorldIcon) {
+                // 缩略图坐在**它那一行**里。行号取自控件自己（imageIndex），
+                // 不是"上一行是第几行"——那样会依赖遍历顺序两次。
+                widget.rect =
+                    fbRect(layout, worldRowParts(logicalWorldListRow(widget.imageIndex, layout))
+                                       .icon);
+                continue;
+            }
+            widget.rect = worldListRow(worldRowIndex++, layout);
             continue;
         }
         if (isKeyBindRowWidget(widget)) {

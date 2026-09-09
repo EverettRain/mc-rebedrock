@@ -23,6 +23,9 @@ namespace mc::ui {
 
 // 标题与底部按钮之间那条带里的一个存档列表行
 [[nodiscard]] UiRect worldListRow(std::size_t index, const HudLayout& layout);
+// UI-11 / A6：同一行的**逻辑像素**版本。行内那几块（32x32 缩略图与三行字）由
+// `ui::worldRowParts` 从它派生，绘制侧据此画，布局侧据此发缩略图的矩形。
+[[nodiscard]] UiRect logicalWorldListRow(std::size_t index, const HudLayout& layout);
 
 // 当前画布尺寸下，列表带里放得下多少个存档行
 // UI-3：`forceUnicode` 参与缩放求解（26.1 `Window.calculateScale`），因此凡是自己构造

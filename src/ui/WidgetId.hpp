@@ -96,6 +96,9 @@ enum class WidgetId : std::uint16_t {
     // 所以正文那个 id 会在一页里出现好几次——与三个页签共用一个 id 同理，
     // 第几行由装配时的次序决定。
     NoticeTitle, NoticeMessage, NoticeStopShowing, NoticeProceed,
+    // UI-11 / A6：世界列表每一行左边那张 32x32 的存档缩略图。与三个页签共用一个 id
+    // 同理——一页里有好几个，第几行由 `Widget::imageIndex` 说了算。
+    WorldIcon,
     // 打开 resourcepacks/ 目录。本作没有"用默认程序打开路径"这条能力，置灰。
     PackOpenFolder,
 
