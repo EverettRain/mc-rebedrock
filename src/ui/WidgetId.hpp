@@ -97,6 +97,17 @@ enum class WidgetId : std::uint16_t {
     //   绑定行、资源包行同一个做法，不给每一条各开一个 id。
     EnchantOption, CreativeTab, CreativeDeleteSlot, CreativeScrollbar,
 
+    // UI-9：创建世界的三个标签页（26.1 `CreateWorldScreen` 的 GameTab/WorldTab/MoreTab）。
+    // ★ 三个页签**共用一个 id**，第几个由页面里的次序决定——与创造背包页签、
+    //   按键绑定行、资源包行同一个做法。页签上的字在装配时给（三个各不相同），
+    //   所以它归"不经 widgetLabel 取标签"那一类。
+    CreateWorldTabButton,
+    // World 页：世界类型 / 奖励箱 / 生成结构。**三个都没有后端**（偏差 D22 已登记），
+    // 按既定裁定"只补有后端的，其余置灰在位"——版面与 26.1 对上，且"没做"看得出来。
+    CreateWorldType, CreateBonusChest, CreateGenerateStructures,
+    // More 页：三个跳转，目标屏本作都没有，同样置灰在位。
+    CreateGameRules, CreateExperiments, CreateDataPacks,
+
     // 哨兵，值等于 id 的个数，表因此能断言自己覆盖了每一个 id，ui/WidgetLabels.hpp 就是这么做的
     // 它永远不是一个控件，也永远排在最后
     Count,

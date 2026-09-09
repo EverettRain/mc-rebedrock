@@ -54,6 +54,12 @@ enum class GuiWidgetSprite : std::size_t {
     // ★ 本作此前是一层白色 0.34 的方块，正好盖住格子、且在物品**下面**。
     SlotHighlightBack,
     SlotHighlightFront,
+    // UI-9：标签页导航栏里的一个页签，四态（26.1 `TabButton.SPRITES`：
+    // 选中 / 未选中 × 悬停与否）。九宫格，尺寸由排布算出来（页签宽随画布变）。
+    Tab,
+    TabSelected,
+    TabHighlighted,
+    TabSelectedHighlighted,
     Count,
 };
 

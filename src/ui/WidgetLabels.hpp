@@ -47,7 +47,7 @@ struct StaticWidgetLabel final {
 //   "Resource Packs..."），再加一个 suffix 会显示成 "Online......" —— 实测如此。
 //   本项目自有的 `options.rebedrock.advancedGraphics` 才需要它：那个键的按钮与标题
 //   是同一个词，省略号是唯一的区别。下面有一条断言钉住这条规则。
-inline constexpr std::array<StaticWidgetLabel, 42> kStaticWidgetLabels{{
+inline constexpr std::array<StaticWidgetLabel, 48> kStaticWidgetLabels{{
     // 标题界面与世界列表
     {WidgetId::Singleplayer, "menu.singleplayer", "Singleplayer"},
     {WidgetId::Multiplayer, "menu.multiplayer", "Multiplayer"},
@@ -114,6 +114,14 @@ inline constexpr std::array<StaticWidgetLabel, 42> kStaticWidgetLabels{{
     // UI-6e ③：资源包选择屏。26.1 的键：`pack.openFolder` 是页脚那个"打开文件夹"。
     // 上下移在 26.1 是行内的箭头精灵、没有文字；本作放页脚，用本项目自有的键。
     {WidgetId::PackOpenFolder, "pack.openFolder", "Open Pack Folder"},
+    // UI-9：创建世界 World / More 两页的六个按钮。键全部取自 26.1
+    // `CreateWorldScreen.WorldTab` / `.MoreTab` 里用它们的那几行。
+    {WidgetId::CreateWorldType, "selectWorld.mapType", "World Type"},
+    {WidgetId::CreateBonusChest, "selectWorld.bonusItems", "Bonus Chest"},
+    {WidgetId::CreateGenerateStructures, "selectWorld.mapFeatures", "Generate Structures"},
+    {WidgetId::CreateGameRules, "selectWorld.gameRules", "Game Rules"},
+    {WidgetId::CreateExperiments, "selectWorld.experiments", "Experiments"},
+    {WidgetId::CreateDataPacks, "selectWorld.dataPacks", "Data Packs"},
     {WidgetId::PackMoveUp, "options.rebedrock.pack.moveUp", "Move Up"},
     {WidgetId::PackMoveDown, "options.rebedrock.pack.moveDown", "Move Down"},
 }};
@@ -152,7 +160,7 @@ inline constexpr std::array<WidgetId, 19> kRuntimeWidgetLabels{{
 // 不经 widgetLabel 取标签的 id
 // 三种列表行的文本各自在页面装配时给出，分别是世界名、语言名与按键行
 // None 则根本不是一个按钮
-inline constexpr std::array<WidgetId, 12> kUnlabelledWidgets{{
+inline constexpr std::array<WidgetId, 13> kUnlabelledWidgets{{
     WidgetId::None,
     WidgetId::WorldRow,
     WidgetId::LanguageRow,
@@ -164,6 +172,9 @@ inline constexpr std::array<WidgetId, 12> kUnlabelledWidgets{{
     // 按钮上只有 15x15 的图标，没有文字（图标本身归 UI-4 的 IconButton）
     WidgetId::TitleLanguage,
     WidgetId::TitleAccessibility,
+    // UI-9：创建世界的三个标签页共用一个 id，页签上的字（Game / World / More）在装配
+    // 时给——与世界行、语言行、包行同类。
+    WidgetId::CreateWorldTabButton,
     // A0：容器界面的四个非槽位控件。三条附魔选项条上的字是**乱码名 + 等级数字**，
     // 由绘制侧按附魔种子现算（`EnchantmentNames`）；页签、删除框与滚动条上根本
     // 没有文字，画的是精灵。都不经 widgetLabel。

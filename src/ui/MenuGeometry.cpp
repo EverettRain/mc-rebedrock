@@ -198,7 +198,8 @@ std::size_t countPageButtons(const Page& page) {
 }
 
 void layoutPageInto(Page& page, PageId id, const HudLayout& layout,
-                    std::size_t keyBindFirstRow, std::size_t optionsFirstRow) {
+                    std::size_t keyBindFirstRow, std::size_t optionsFirstRow,
+                    CreateWorldTab createWorldTab) {
     // 按钮数从装配结果**数出来**，不是另一张表说的。这就是这两趟拆分的全部意义。
     const std::size_t buttonCount = countPageButtons(page);
     std::size_t buttonIndex = 0;
@@ -237,7 +238,8 @@ void layoutPageInto(Page& page, PageId id, const HudLayout& layout,
             ++keyWidgetIndex;
             continue;
         }
-        widget.rect = frontendButtonRect(layout, id, buttonIndex, buttonCount, optionsFirstRow);
+        widget.rect = frontendButtonRect(layout, id, buttonIndex, buttonCount, optionsFirstRow,
+                                         createWorldTab);
         ++buttonIndex;
     }
 }
@@ -347,7 +349,8 @@ UiRect optionsScrollbarThumb(const HudLayout& layout, PageId page, std::size_t f
 }
 
 UiRect frontendButtonRect(const HudLayout& layout, PageId page, std::size_t index,
-                          std::size_t buttonCount, std::size_t optionsFirstRow) {
+                          std::size_t buttonCount, std::size_t optionsFirstRow,
+                          CreateWorldTab createWorldTab) {
     // 版式的**选择**在 ui/PageLayoutKind.hpp 那张表里（不带 default 的 switch，
     // 加一页会被 -Wswitch 点名）；这里只剩每种版式的参数。
     //
@@ -410,17 +413,27 @@ UiRect frontendButtonRect(const HudLayout& layout, PageId page, std::size_t inde
                                        : optionsSmallCellAt(list, rowTop, slot.column));
     }
     case PageLayoutKind::HeaderFooterForm: {
-        // 26.1 CreateWorldScreen：页眉标题、内容区表单、页脚 Create/Cancel 两个按钮。
-        // 装配顺序是「游戏模式 / 难度 / 允许作弊 / 创建 / 返回」，前三个在内容区里
-        // 从表单下方往下排，后两个在页脚横排。
-        const auto form = createWorldLayout(layout.logicalWidth(), layout.logicalHeight());
+        // 26.1 CreateWorldScreen：**标签栏（它同时是页眉）**、内容区表单、页脚
+        // Create/Cancel 两个按钮。
+        //
+        // 装配顺序（PageBuilder 的 CreateWorld 分支）：
+        //   [0..2] 三个页签 → [3..] 当前页的内容按钮 → [末尾两个] 页脚。
+        // ★ 这里必须与那一遍**同一个顺序**：错开一位就是"点 A 触发 B"，而两边
+        //   各自都自洽、都编译得过（README 护栏 21）。
+        const auto bar = tabBarLayout(layout.logicalWidth(), kCreateWorldTabCount);
+        if (index < kCreateWorldTabCount) {
+            return fbRect(layout, bar.tab(index));
+        }
+        const auto form =
+            createWorldLayout(layout.logicalWidth(), layout.logicalHeight(), createWorldTab);
         if (buttonCount >= 2U && index + 2U == buttonCount) {
             return fbRect(layout, form.footerLeft);
         }
         if (buttonCount >= 1U && index + 1U == buttonCount) {
             return fbRect(layout, form.footerRight);
         }
-        return fbRect(layout, createWorldOptionButton(form, layout.logicalWidth(), index));
+        return fbRect(layout, createWorldOptionButton(form, layout.logicalWidth(),
+                                                      index - kCreateWorldTabCount));
     }
     case PageLayoutKind::HeaderFooterDualColumn: {
         // 26.1 PackSelectionScreen 的页脚：Open Folder 与 Done 横排。本作多两个

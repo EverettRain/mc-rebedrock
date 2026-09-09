@@ -44,6 +44,13 @@ enum class WidgetKind : std::uint8_t {
     Panel,      // 不可交互的底板（容器界面那张 176x166 / 195x136 的面板就是它）
     Toggle,     // a button whose label reflects an on/off (cycled) option
     TextField,  // an editable text line (create/edit world name)
+    // UI-9：标签页导航栏里的一个页签（26.1 `TabButton`）。
+    //
+    // 它是一个 kind 而不是"用 debugId 特判的 Button"，理由与 IconButton 同：同一套
+    // 命中、同一套派发，区别只在绘制侧画的是四态页签精灵 + 选中下划线。
+    // ★ **绝不能靠 debugId 分派绘制**——那个字段的约定是"只给测试与日志，绝不用来
+    //   分派行为"（WidgetId.hpp 的开篇），破一次这条，下一个人就会再破一次。
+    Tab,
     // A0：容器界面的一个槽位。身份是 `slotKind + slotIndex` 两个字段，**不是**
     // 指针——跨帧身份一直就是纯值 `gameplay::SlotRef`（`buildSlotLayout` 刻意把每个
     // storage 置空，好让渲染线程够不着模拟线程拥有的背包内存）。

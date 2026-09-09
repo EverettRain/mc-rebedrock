@@ -182,20 +182,50 @@ void testCreateWorldPageWiring() {
         return ui::UiRect{0.0F, static_cast<float>(index) * 20.0F, 200.0F, 20.0F};
     });
 
-    // 顺序照 26.1 的 GameTab：游戏模式、难度、允许作弊、创建、返回
-    assert(page.size() == 5U);
-    assert(page[0].debugId == static_cast<std::uint16_t>(ui::WidgetId::CreateGameMode));
-    assert(page[1].debugId == static_cast<std::uint16_t>(ui::WidgetId::Difficulty));
-    assert(page[2].debugId == static_cast<std::uint16_t>(ui::WidgetId::CreateAllowCommands));
-    assert(page[3].debugId == static_cast<std::uint16_t>(ui::WidgetId::CreateConfirm));
-    assert(page[4].debugId == static_cast<std::uint16_t>(ui::WidgetId::Back));
+    // UI-9：装配顺序 = 三个页签 → 当前页的内容 → 页脚两个。
+    // 默认停在 Game 页，内容照 26.1 `GameTab`：游戏模式、难度、允许作弊。
+    assert(page.size() == 8U);
+    for (std::size_t tab = 0; tab < 3U; ++tab) {
+        assert(page[tab].debugId ==
+               static_cast<std::uint16_t>(ui::WidgetId::CreateWorldTabButton));
+        // ★ 页签上的字**各不相同**：三个共用一个 id，文字由装配时给（ctx 里那一组）。
+        assert(!page[tab].label.empty());
+    }
+    assert(page[3].debugId == static_cast<std::uint16_t>(ui::WidgetId::CreateGameMode));
+    assert(page[4].debugId == static_cast<std::uint16_t>(ui::WidgetId::Difficulty));
+    assert(page[5].debugId == static_cast<std::uint16_t>(ui::WidgetId::CreateAllowCommands));
+    assert(page[6].debugId == static_cast<std::uint16_t>(ui::WidgetId::CreateConfirm));
+    assert(page[7].debugId == static_cast<std::uint16_t>(ui::WidgetId::Back));
 
-    assert(page[1].onActivate);
-    page[1].onActivate();
+    assert(page[4].onActivate);
+    page[4].onActivate();
     assert(menu.createWorldDifficulty == gameplay::Difficulty::Hard);  // Normal -> Hard
-    page[1].onActivate();
+    page[4].onActivate();
     assert(menu.createWorldDifficulty == gameplay::Difficulty::Peaceful);  // 循环回头
     assert(!inWorldDifficultyCycled);
+
+    // ★ 另两页装的是**另一批**控件，而页脚两个按钮三页都在——它们属于屏幕，不属于页。
+    for (const auto tab : {ui::CreateWorldTab::World, ui::CreateWorldTab::More}) {
+        ui::MenuBuildContext tabCtx = ctx;
+        tabCtx.createWorldTab = tab;
+        const auto tabPage = ui::buildPage(ui::PageId::CreateWorld, tabCtx, cb,
+                                           [](std::size_t index) {
+                                               return ui::UiRect{0.0F,
+                                                                 static_cast<float>(index) * 20.0F,
+                                                                 200.0F, 20.0F};
+                                           });
+        assert(tabPage.size() == 8U);
+        assert(tabPage[6].debugId == static_cast<std::uint16_t>(ui::WidgetId::CreateConfirm));
+        assert(tabPage[7].debugId == static_cast<std::uint16_t>(ui::WidgetId::Back));
+        // ★ 这两页的三个控件**全部置灰**：后端确实不存在（D22 已查证），按既定裁定
+        //   "只补有后端的，其余置灰在位"——版面对上，而"没做"看得出来。
+        for (std::size_t i = 3; i < 6U; ++i) {
+            assert(!tabPage[i].enabled);
+            assert(!tabPage[i].onActivate);
+        }
+        // 而 Game 页那三个是能点的。
+        assert(page[3].enabled && page[4].enabled && page[5].enabled);
+    }
 }
 
 // 难度真的落到磁盘上：createWorld 写完就存盘，再从仓库读回来

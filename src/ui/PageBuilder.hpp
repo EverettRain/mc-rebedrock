@@ -20,6 +20,7 @@
 #include "input/InputAction.hpp"
 #include "input/InputNaming.hpp"
 #include "ui/KeyBindList.hpp"
+#include "ui/MenuSystem.hpp"
 #include "ui/Widget.hpp"
 
 #include <cstddef>
@@ -80,6 +81,14 @@ struct MenuBuildContext final {
     // 按键设置页的绑定列表是滚动的，只装配可见窗口，与世界列表和语言列表一样
     // 无论有多少个动作，控件数量因此都有界
     // keyBindFirstIndex 是在 input::keyBindRows() 中的滚动偏移，keyBindRowCount 是可见窗口的大小
+    // UI-9：创建世界开在哪个标签页，以及三个页签上的字。
+    //
+    // ★ 文字放在 ctx 里而不是走 `labelFor(debugId)`：三个页签**共用一个 id**
+    //   （第几个由次序决定），一个 id 取不出三段不同的文字。这与按键绑定行的
+    //   `KeyBindRowLabels` 是同一个做法——让一组相关的字段成为**一个**值，
+    //   漏填在类型上就不成立。
+    CreateWorldTab createWorldTab = CreateWorldTab::Game;
+    std::array<std::string, 3> createWorldTabLabels{};
     std::size_t keyBindFirstIndex = 0;
     std::size_t keyBindRowCount = 0;
     // UI-4：这一次点击是否按着 Shift。循环选项按钮据此反向步进（spec §2.3）。
@@ -99,6 +108,8 @@ struct MenuCallbacks final {
     std::function<void()> createWorld{};
     std::function<void()> editWorld{};
     std::function<void()> confirmCreate{};
+    // UI-9：切到第 n 个标签页（Game / World / More）。
+    std::function<void(std::size_t)> selectCreateWorldTab{};
     std::function<void()> toggleCreateGameMode{};
     // 创建页那个难度循环按钮。与世界内选项页的 cycleDifficulty 是**两个**回调：
     // 它们步进的是两个不同的东西（创建表单的暂存值 / 已打开存档的字段），
@@ -172,6 +183,23 @@ struct MenuCallbacks final {
     std::function<void()> movePackUp{};
     std::function<void()> movePackDown{};
 };
+
+// UI-9：文字**由调用方给**的按钮。
+//
+// ★ 它给的是"同一个 id、不同文字"那一族：三个标签页共用 `CreateWorldTabButton`
+//   （第几个由次序决定），但页签上的字各不相同，所以标签不能来自 id 表。
+//   与世界行、语言行、包行同类——那三种也是文字在装配时给。
+inline void addLabelledButton(Page& page, WidgetId id, std::string text,
+                              std::function<void()> onActivate, bool enabled = true,
+                              WidgetKind kind = WidgetKind::Button) {
+    Widget w;
+    w.kind = kind;
+    w.debugId = static_cast<std::uint16_t>(id);
+    w.label = std::move(text);
+    w.enabled = enabled;
+    w.onActivate = std::move(onActivate);
+    page.push_back(std::move(w));
+}
 
 namespace detail {
 
@@ -429,17 +457,61 @@ inline void buildPageInto(Page& page, PageId id, const MenuBuildContext& ctx,
             addButton(page, ctx, WidgetId::Back, cb.back);
             break;
 
-        case PageId::CreateWorld:
-            // 顺序照 26.1 的 CreateWorldScreen.GameTab：名称框、游戏模式、难度、允许作弊
-            addButton(page, ctx, WidgetId::CreateGameMode, cb.toggleCreateGameMode);
-            // ★ 复用 WidgetId::Difficulty，不新开一个 id：标签"难度: 普通"那段算法
-            //   世界内选项页已经有了，另起一个 id 就得再抄一份，两份迟早分岔
-            addButton(page, ctx, WidgetId::Difficulty, cb.cycleCreateDifficulty);
-            addButton(page, ctx, WidgetId::CreateAllowCommands,
-                      cb.toggleCreateAllowCommands);
+        case PageId::CreateWorld: {
+            // UI-9：26.1 `CreateWorldScreen:254-255` 的三个标签页。
+            //
+            // ★ 装配顺序 = 页签三个 → 当前页的内容 → 页脚两个。布局按同一个顺序
+            //   给矩形，两边错开一位就是"点 A 触发 B"（README 护栏 21 那一族）。
+            constexpr std::array<std::pair<std::string_view, std::string_view>, 3> kTabs{{
+                {"createWorld.tab.game.title", "Game"},
+                {"createWorld.tab.world.title", "World"},
+                {"createWorld.tab.more.title", "More"},
+            }};
+            for (std::size_t tab = 0; tab < kTabs.size(); ++tab) {
+                addLabelledButton(page, WidgetId::CreateWorldTabButton,
+                                  ctx.createWorldTabLabels[tab].empty()
+                                      ? std::string{kTabs[tab].second}
+                                      : ctx.createWorldTabLabels[tab],
+                                  [cb, tab] {
+                                      if (cb.selectCreateWorldTab) {
+                                          cb.selectCreateWorldTab(tab);
+                                      }
+                                  },
+                                  /*enabled=*/true, WidgetKind::Tab);
+            }
+            switch (ctx.createWorldTab) {
+            case CreateWorldTab::Game:
+                // 26.1 `GameTab`：名称框（版面里）、游戏模式、难度、允许作弊。
+                addButton(page, ctx, WidgetId::CreateGameMode, cb.toggleCreateGameMode);
+                // ★ 复用 WidgetId::Difficulty，不新开一个 id：标签"难度: 普通"那段算法
+                //   世界内选项页已经有了，另起一个 id 就得再抄一份，两份迟早分岔
+                addButton(page, ctx, WidgetId::Difficulty, cb.cycleCreateDifficulty);
+                addButton(page, ctx, WidgetId::CreateAllowCommands,
+                          cb.toggleCreateAllowCommands);
+                break;
+            case CreateWorldTab::World:
+                // 26.1 `WorldTab`：种子框（版面里）、世界类型、生成结构、奖励箱。
+                // ★ 三个按钮**都置灰**：后端确实不存在（偏差 D22 已查证：世界类型与
+                //   极限模式是机制真缺失、生成结构缺存档字段、奖励箱机制缺）。
+                //   按既定裁定"只补有后端的，其余置灰在位"——版面与 26.1 对上，
+                //   而"这个功能还没有"看得出来，与主菜单 Multiplayer/Realms 同做法。
+                addButton(page, ctx, WidgetId::CreateWorldType, nullptr, /*enabled=*/false);
+                addButton(page, ctx, WidgetId::CreateGenerateStructures, nullptr, false);
+                addButton(page, ctx, WidgetId::CreateBonusChest, nullptr, false);
+                break;
+            case CreateWorldTab::More:
+                // 26.1 `MoreTab`：三个跳转。三张目标屏本作都没有，同样置灰在位。
+                addButton(page, ctx, WidgetId::CreateGameRules, nullptr, false);
+                addButton(page, ctx, WidgetId::CreateExperiments, nullptr, false);
+                addButton(page, ctx, WidgetId::CreateDataPacks, nullptr, false);
+                break;
+            case CreateWorldTab::Count:
+                break;   // 哨兵，不是一页
+            }
             addButton(page, ctx, WidgetId::CreateConfirm, cb.confirmCreate);
             addButton(page, ctx, WidgetId::Back, cb.back);
             break;
+        }
 
         case PageId::EditWorld:
             addButton(page, ctx, WidgetId::SaveRename, cb.renameWorld);

@@ -500,6 +500,15 @@ void TextureManager::createGuiTexture() {
                200);
     blitWidget(widgets, GuiWidgetSprite::SlotHighlightFront, "container/slot_highlight_front", 32,
                200);
+    // UI-9：四张页签精灵各 **130x24**（不是方块），竖排四张要 96 高——`widgets` 这一层
+    // y>=200 只剩 56 高，放不下。所以这一次**确实要加一层**（`tabWidgets`），
+    // 并同步改三处：这个数组、`kGuiLayerCount`、`HudTypes.hpp` 的层号常量。
+    auto tabWidgets = emptyRgbaAtlas();
+    blitWidget(tabWidgets, GuiWidgetSprite::Tab, "widget/tab", 0, 0);
+    blitWidget(tabWidgets, GuiWidgetSprite::TabSelected, "widget/tab_selected", 0, 24);
+    blitWidget(tabWidgets, GuiWidgetSprite::TabHighlighted, "widget/tab_highlighted", 0, 48);
+    blitWidget(tabWidgets, GuiWidgetSprite::TabSelectedHighlighted,
+               "widget/tab_selected_highlighted", 0, 72);
 
     auto hud = emptyRgbaAtlas();
     blit(hud, sprite("hud/crosshair"), 0, 0);
@@ -663,8 +672,10 @@ void TextureManager::createGuiTexture() {
         panoramaOverlay,
         inworldMenuListBackground,
         listSeparators,
+        // UI-9：四张 130x24 的页签精灵。层号是 HudTypes.hpp 的 kTabWidgetLayer。
+        tabWidgets,
     };
-    constexpr std::uint32_t kGuiLayerCount = 20U;
+    constexpr std::uint32_t kGuiLayerCount = 21U;
     // 层号是写死在 HudTypes.hpp 里的常量（kTooltipGuiLayer 等），而层内容是上面
     // 这个数组的顺序。加一层却漏改这个数，上传就会按错误的层数切分整块像素，
     // 于是每一层都错位——编译期钉住它。
