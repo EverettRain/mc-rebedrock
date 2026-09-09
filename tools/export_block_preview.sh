@@ -98,16 +98,36 @@ host_can_run() {
 if [[ -z "$BINARY" ]]; then
     newest=""
     skipped=""
+    runnable=()
     while IFS= read -r candidate; do
         [[ -x "$candidate" ]] || continue
         if ! host_can_run "$candidate"; then
             skipped="${skipped}  ${candidate}（不是本机架构）"$'\n'
             continue
         fi
+        runnable+=("$candidate")
         if [[ -z "$newest" || "$candidate" -nt "$newest" ]]; then
             newest="$candidate"
         fi
     done < <(find build -maxdepth 4 -type f -name 'mc_rebedrock' 2>/dev/null)
+    # RN-49：**有多个能跑的二进制时不许自己挑**。
+    #
+    # 从前这里取 mtime 最新的那一个。代价是：debug 与 release 两个构建目录并存是常态，
+    # 而它们各自带一份**着色器暂存**；只重建了 debug 却让脚本挑中 release，出的图来自
+    # 一份陈旧的着色器——而它照样是一张漂亮的、退出码为 0 的图。本轮实测：改了
+    # kSkyAmbientFraction 这么大的一个量，两次导出**逐字节相同**，连着骗过三次 A/B。
+    #
+    # 「一张不可复现的漂亮图片毫无价值」是这个工具的立身之本，那么「一张不知道来自
+    # 哪个构建的图片」同样毫无价值。所以这里改成报错，让人点名。
+    if [[ ${#runnable[@]} -gt 1 ]]; then
+        echo "build/ 下有多个能在本机运行的 mc_rebedrock，拒绝替你挑：" >&2
+        for candidate in "${runnable[@]}"; do
+            echo "  ${candidate}" >&2
+        done
+        echo "用 MC_REBEDROCK_BINARY=<路径> 点名一个再跑。" >&2
+        echo "（它们各自带一份着色器暂存：挑错了，出的图来自另一次构建的着色器。）" >&2
+        exit 2
+    fi
     BINARY="$newest"
     if [[ -z "$BINARY" && -n "$skipped" ]]; then
         echo "build/ 下只找到别的平台的二进制：" >&2

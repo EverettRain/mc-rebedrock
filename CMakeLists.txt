@@ -841,7 +841,9 @@ if(BUILD_TESTING)
     target_link_libraries(mc_rebedrock_preview_export_determinism_test PRIVATE mc_rebedrock_runtime)
     target_include_directories(mc_rebedrock_preview_export_determinism_test PRIVATE src)
     target_compile_definitions(mc_rebedrock_preview_export_determinism_test PRIVATE
-        "MC_REBEDROCK_RENDERER_SRC=\"${CMAKE_CURRENT_SOURCE_DIR}/src/render/vulkan/VulkanRenderer.cpp\"")
+        "MC_REBEDROCK_RENDERER_SRC=\"${CMAKE_CURRENT_SOURCE_DIR}/src/render/vulkan/VulkanRenderer.cpp\""
+        # RN-49：出图脚本自己也是仪器的一部分——它挑哪个二进制决定了图来自哪一份着色器
+        "MC_REBEDROCK_EXPORT_SCRIPT=\"${CMAKE_CURRENT_SOURCE_DIR}/tools/export_block_preview.sh\"")
     add_test(NAME preview_export_determinism COMMAND mc_rebedrock_preview_export_determinism_test)
 
     # TAA-1 的判据。一趟全屏 resolve 只要跑起来画面就"看着像抗锯齿"，所以抖动序列、

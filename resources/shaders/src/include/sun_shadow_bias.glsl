@@ -219,26 +219,9 @@ float sunShadowThinPlaneBiasBlocks(float thinPlane, float incidenceCosine) {
     return thinPlane * kThinPlaneHeightBlocks * clamp(incidenceCosine, 0.0F, 1.0F);
 }
 
-// RN-43：级联接缝的过渡带。
-//
-// 现场（用户实机）：离视点 8 格处半影宽度有 8 倍的跳变，非常明显。成因是 RN-35 §5
-// 自己登记过的：半影上限是「0.5 个纹素」，而两级的纹素差 8 倍，于是近段最宽 0.0039 格、
-// 远段 0.031 格，在近段框的边界上突变。**纹素不同带来的不只是半影宽度**：两级的吸附
-// 网格不同，影子边的位置也会跳。所以要混的是**可见度**，不是半影宽度。
-//
-// 带取近段框最外的两成（NDC 的 |xy| 从 0.8 到 1.0）。近段框半边长 8 格，所以带宽约
-// 1.6 格——足够让 8 倍的半影差在一步一步走过去时化开，又不至于让大半个近段都付两级
-// 的采样钱。带外一级都不多采。
-const float kSunShadowCascadeBlendStart = 0.8F;
-
-// 返回 0 = 纯用近段，1 = 纯用远段，中间线性过渡。收 NDC 的两个横向分量（不是 uv），
-// 因为「离框边多远」在 NDC 里是对称的。
-float sunShadowCascadeBlend(float ndcX, float ndcY) {
-    float edge = max(abs(ndcX), abs(ndcY));
-    return clamp((edge - kSunShadowCascadeBlendStart) / (1.0F - kSunShadowCascadeBlendStart),
-                 0.0F, 1.0F);
-}
-
+// RN-43 在这里有过一个 `sunShadowCascadeBlend`（近段框最外两成的过渡带）。
+// RN-49 把它删了：两级的分歧不只是半影宽度，还有「看没看见这个投射者」，
+// 混合会把远段的漏采混进近段的实影（实机现象是阴影线上的光斑）。见 docs 的 RN-49。
 float sunShadowPenumbraTexels(float blockerDistanceBlocks, float texelSizeBlocks) {
     float penumbraBlocks = max(blockerDistanceBlocks, 0.0F) * kSunPenumbraTangent;
     return min(penumbraBlocks / texelSizeBlocks, kSunMaxPenumbraTexels);

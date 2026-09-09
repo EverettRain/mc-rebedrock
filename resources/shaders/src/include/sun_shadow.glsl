@@ -185,29 +185,18 @@ float sunShadowFactor(sampler2DArrayShadow shadowMap, sampler2DArray shadowDepth
         }
     }
     float layer = float(cascade);
-    // RN-43：近段命中时，看它离框边有多近。带内两级各采一次再按距离混——混的是**可见度**
-    // 而不是半影宽度：两级的吸附网格不同，影子边的位置也会跳
-    float blend = cascade == 0 ? sunShadowCascadeBlend(projected.x, projected.y) : 0.0;
-    float nearVisibility = sunShadowVisibilityInCascade(shadowMap, shadowDepth, lightViewProjFar,
-                                                        shadowUv, layer, texelBlocks, normal,
-                                                        incidence, thinPlane);
-    if (blend <= 0.0) {
-        return nearVisibility;
-    }
-    // 带内：把同一个接收点再投一次远段。抬升要用远段自己的纹素（RN-35 那条），
-    // 所以这里是完整的第二次投影，不是把 uv 换算过去
-    texelBlocks = sunShadowTexelBlocksOf(lightViewProjFar);
-    offsetPosition = worldPosition + normal * sunShadowNormalOffsetBlocks(incidence, texelBlocks);
-    lightPosition = lightViewProjFar * vec4(offsetPosition, 1.0);
-    projected = lightPosition.xyz / lightPosition.w;
-    shadowUv = vec3(projected.xy * 0.5 + 0.5, projected.z);
-    if (!sunShadowInsideCascade(shadowUv)) {
-        // 远段框之外没有阴影图可查。近段的框整个落在远段里，所以这一支只会在极端的
-        // 深度出框时走到——按近段处理，而不是按全亮
-        return nearVisibility;
-    }
-    float farVisibility = sunShadowVisibilityInCascade(shadowMap, shadowDepth, lightViewProjFar,
-                                                       shadowUv, 1.0, texelBlocks, normal,
-                                                       incidence, thinPlane);
-    return mix(nearVisibility, farVisibility, blend);
+    // RN-49：**不做两级混合**。RN-43 在这里加过一条过渡带（近段框最外两成，两级各采
+    // 一次再 mix），本节点把它整个删了——理由见 docs 的 RN-49，一句话是：
+    //
+    //   两级的分歧不只是「半影多宽」，还有「看没看见这个投射者」。玻璃边框宽 1/16 格，
+    //   正好是远段一个纹素，远段常常整条漏掉它；mix 于是把远段的漏采混进近段的实影，
+    //   实机上就是「阴影线条上出现光斑」。实测被抬亮 31%。
+    //
+    // 而按「影子是两级的并集」（谁看见算谁）改成 min 之后，带在实心投射者上**一个像素
+    // 都不动**——RN-43 当初量到的「边从 2 像素展成 6~10 像素」全部来自那次变亮。
+    // 于是这条带买不到任何东西，却要在一圈里付第二遍遮挡搜索加 PCF。删掉。
+    //
+    // 接缝本身改由 RN-47 的「近段距离」那一档处理：把它推到 16 或 24 格。
+    return sunShadowVisibilityInCascade(shadowMap, shadowDepth, lightViewProjFar, shadowUv, layer,
+                                        texelBlocks, normal, incidence, thinPlane);
 }

@@ -1776,119 +1776,51 @@ void checkNearDistanceOption() {
             "is rebuilt every frame anyway");
 }
 
+// RN-49：级联**不混合**。RN-43 加过一条过渡带，本节点删了它——理由见 docs。
+// 这条测试因此从「带内两级各采一次」整个反过来：**任何时候都只采一级**。
 void checkCascadeBlend() {
-    // ---- 1. 混合系数本身 ---------------------------------------------------
-    REQUIRE(shaderBias::sunShadowCascadeBlend(0.0F, 0.0F) == 0.0F,
-            "the middle of the near box must be pure near cascade");
-    REQUIRE(std::abs(shaderBias::sunShadowCascadeBlend(1.0F, 0.0F) - 1.0F) < 1e-6F &&
-                std::abs(shaderBias::sunShadowCascadeBlend(0.0F, -1.0F) - 1.0F) < 1e-6F,
-            "the near box's own edge must be pure far cascade");
-    REQUIRE(std::abs(shaderBias::sunShadowCascadeBlend(0.9F, 0.0F) - 0.5F) < 1e-6F,
-            "the band must be linear across its width");
-    // 对称、单调、有界
-    float previous = -1.0F;
-    for (const float edge : {0.0F, 0.5F, 0.8F, 0.85F, 0.9F, 0.95F, 1.0F, 2.0F}) {
-        const float blend = shaderBias::sunShadowCascadeBlend(edge, 0.0F);
-        REQUIRE(blend >= previous && blend >= 0.0F && blend <= 1.0F,
-                "the blend must rise monotonically and stay inside [0,1]");
-        REQUIRE(shaderBias::sunShadowCascadeBlend(-edge, 0.0F) == blend &&
-                    shaderBias::sunShadowCascadeBlend(0.0F, edge) == blend,
-                "the blend must be symmetric in both axes");
-        previous = blend;
-    }
-    // 带宽：近段框半边长 8 格，两成就是 1.6 格。带太窄就化不开 8 倍的半影差，
-    // 太宽就是让大半个近段白付两级的采样钱
-    REQUIRE(shaderBias::kSunShadowCascadeBlendStart >= 0.6F &&
-                shaderBias::kSunShadowCascadeBlendStart <= 0.9F,
-            "the blend band must stay a rim of the near box");
-
-    // ---- 2. 带内两级各采一次，结果落在两者之间 -----------------------------
-    // RN-47：纹素从矩阵推，所以远段必须给一张**尺度像远段**的矩阵（横向 1/64）。
-    // 两张都用恒等阵的话两级推出同一个纹素，下面那条「远段的足迹按自己的纹素算」
-    // 就无从谈起
-    const auto run = [](float x) {
+    // 一次调用最多四个 tap。八个 = 有人又把两级混起来了，而那条路会把远段的漏采
+    // 混进近段的实影：实机现象是「阴影线条上出现光斑」（玻璃边框宽 1/16 格，
+    // 正好是远段一个纹素，远段常常整条漏掉它）
+    // ★ 只有一级会被采，所以四个 tap 一定是**下标 0..3**——夹具因此不能靠「前四个给
+    //   近段、后四个给远段」去分辨谁答的，得整组换一个值
+    const auto run = [](float x, float nearCascade, float visibility = 1.0F) {
         shaderReceiver::Samples samples{};
-        // 前四个 tap 是近段（全亮），后四个是远段（全暗）
-        samples.visibility = {1, 1, 1, 1, 0, 0, 0, 0, 0};
+        samples.visibility = {visibility, visibility, visibility, visibility,
+                              visibility, visibility, visibility, visibility, visibility};
         samples.blockerDepth = {0.499F, 0.499F, 0.499F, 0.499F,
                                 0.499F, 0.499F, 0.499F, 0.499F};
         const float factor = shaderReceiver::sunShadowFactor(
             &samples, &samples, glm::mat4{1.0F}, kFarScaleMatrix, glm::vec3{x, 0, 0.5F},
-            glm::vec3{0, 1, 0}, glm::vec3{0, 1, 0}, kNearCascadeOn, kClearWeather, kSolidFace);
+            glm::vec3{0, 1, 0}, glm::vec3{0, 1, 0}, nearCascade, kClearWeather, kSolidFace);
         return std::pair{factor, samples.count};
     };
-    // 带外：只采近段
-    const auto [insideFactor, insideTaps] = run(0.5F);
-    REQUIRE(insideTaps == 4 && insideFactor == 1.0F,
-            "a receiver well inside the near box must still cost four taps");
-    // 带内（NDC 0.9 ⇒ 混合系数 0.5）：八个 tap，一半在层 0 一半在层 1
-    const auto [bandFactor, bandTaps] = run(0.9F);
-    REQUIRE(bandTaps == 8, "inside the band both cascades must be sampled");
-    REQUIRE(std::abs(bandFactor - 0.5F) < 1e-6F,
-            "the band must return the blend of the two cascades, not one of them");
-    // ★ 0.5 那个点对「混反了」是瞎的（mix(1,0,0.5) 与 mix(0,1,0.5) 一样）。再取一个
-    //   不对称的：NDC 0.85 ⇒ 系数 0.25 ⇒ 近段占四分之三
-    const auto [quarterFactor, quarterTaps] = run(0.85F);
-    REQUIRE(quarterTaps == 8 && std::abs(quarterFactor - 0.75F) < 1e-6F,
-            "at a quarter of the way across the band the near cascade must still weigh three "
-            "quarters; swapping the two ends of the mix reads identically at the midpoint");
-
-    // 层号：前四个 tap 在层 0，后四个在层 1。混错层的症状是「接缝处影子整片错位」
-    shaderReceiver::Samples samples{};
-    samples.visibility = {1, 1, 1, 1, 0, 0, 0, 0, 0};
-    samples.blockerDepth = {0.499F, 0.499F, 0.499F, 0.499F, 0.499F, 0.499F, 0.499F, 0.499F};
-    shaderReceiver::sunShadowFactor(&samples, &samples, glm::mat4{1.0F}, kFarScaleMatrix,
-                                    glm::vec3{0.9F, 0, 0.5F}, glm::vec3{0, 1, 0},
-                                    glm::vec3{0, 1, 0}, kNearCascadeOn, kClearWeather, kSolidFace);
-    for (std::size_t tap = 0; tap < 4; ++tap) {
-        REQUIRE(samples.coordinates.at(tap).z == 0.0F, "the first four taps must read layer 0");
-        REQUIRE(samples.coordinates.at(tap + 4U).z == 1.0F,
-                "the band's second four taps must read layer 1");
+    // 框中央、框边缘、框外——每一处都只许采一级
+    for (const float x : {0.0F, 0.5F, 0.85F, 0.9F, 0.99F}) {
+        const auto [factor, taps] = run(x, kNearCascadeOn);
+        REQUIRE(taps == 4,
+                "only one cascade may be sampled: mixing two imports the far cascade's misses "
+                "into the near cascade's real shadows (x=" + std::to_string(x) + ", taps=" +
+                    std::to_string(taps) + ")");
+        // 而且返回的是**近段**那一级的答案（夹具让近段全亮、远段全暗）
+        REQUIRE(factor == 1.0F,
+                "inside the near box the answer must be the near cascade's, undiluted");
     }
-    // 要混掉的那道跳变有多大：遮挡物远到两级都吃满上限（0.5 纹素）时，**世界尺度**的
-    // 半影一个是 0.0039 格、一个是 0.031 格——正好 8 倍。uv 里两者反而一样宽，因为
-    // 两级共用一张 2048 的图；差别全在一个纹素有多大
-    const float saturatedNear = shaderBias::sunShadowPenumbraTexels(
-                                    160.0F, kNearTexelBlocks) *
-                                kNearTexelBlocks;
-    const float saturatedFar = shaderBias::sunShadowPenumbraTexels(
-                                   160.0F, kFarTexelBlocks) *
-                               kFarTexelBlocks;
-    REQUIRE(std::abs(saturatedFar / saturatedNear - 8.0F) < 1e-3F,
-            "the seam this node blends away is an eightfold jump in penumbra width");
-    // 而两级各按各的纹素算半影：把 texelBlocks 传错的症状是「带内的影子比带外更糊」
-    shaderReceiver::Samples saturated{};
-    saturated.visibility = {1, 1, 1, 1, 0, 0, 0, 0, 0};
-    saturated.blockerDepth = {0.0F, 0.0F, 0.0F, 0.0F, 0.0F, 0.0F, 0.0F, 0.0F};
-    shaderReceiver::sunShadowFactor(&saturated, &saturated, glm::mat4{1.0F}, kFarScaleMatrix,
-                                    glm::vec3{0.9F, 0, 0.5F}, glm::vec3{0, 1, 0},
-                                    glm::vec3{0, 1, 0}, kNearCascadeOn, kClearWeather,
-                                    kSolidFace);
-    REQUIRE(saturated.count == 8, "the saturated fixture must still take both cascades");
-    const float nearSpan =
-        std::abs(saturated.coordinates.at(1).x - saturated.coordinates.at(0).x);
-    const float farSpan = std::abs(saturated.coordinates.at(5).x - saturated.coordinates.at(4).x);
-    // 遮挡物**近**的时候两级都没吃满上限，半影是物理宽度，于是 uv 里远段反而窄
-    // 八倍——这一条钉的是「远段那一次用的是远段自己的纹素」。忘了换 texelBlocks
-    // 的症状是带内的影子比带外更糊，而源码读起来毫无异样
-    const float closeNearSpan =
-        std::abs(samples.coordinates.at(1).x - samples.coordinates.at(0).x);
-    const float closeFarSpan = std::abs(samples.coordinates.at(5).x - samples.coordinates.at(4).x);
-    REQUIRE(closeFarSpan < closeNearSpan * 0.25F && closeFarSpan > 0.0F,
-            "the far cascade must size its penumbra with its own texel");
-    REQUIRE(std::abs(nearSpan - farSpan) < 1e-9F && nearSpan > 0.0F,
-            "both cascades saturate at half a texel of the same 2048 map, so their uv footprints "
-            "match; the eightfold difference lives in the texel's world size");
+    // 近段关掉时走远段，同样只采一级
+    const auto [farFactor, farTaps] = run(0.9F, kNearCascadeOff, 0.0F);
+    REQUIRE(farTaps == 4 && farFactor == 0.0F,
+            "with the near cascade off the far one answers alone");
 
-    // ---- 3. 近段关掉时不混 -------------------------------------------------
-    shaderReceiver::Samples off{};
-    off.visibility = {0, 0, 0, 0, 0, 0, 0, 0, 0};
-    off.blockerDepth = {0.499F, 0.499F, 0.499F, 0.499F, 0.499F, 0.499F, 0.499F, 0.499F};
-    shaderReceiver::sunShadowFactor(&off, &off, glm::mat4{1.0F}, kFarScaleMatrix,
-                                    glm::vec3{0.9F, 0, 0.5F}, glm::vec3{0, 1, 0},
-                                    glm::vec3{0, 1, 0}, kNearCascadeOff, kClearWeather,
-                                    kSolidFace);
-    REQUIRE(off.count == 4, "with the near cascade off there is nothing to blend with");
+    // ★ 接缝那道跳变**还在**，只是不再靠混合去糊：遮挡物够远时两级的世界半影差 8 倍。
+    //   它现在由 RN-47 的「近段距离」那一档处理——把接缝推到 16 或 24 格
+    const auto saturated = [](int nearBlocks, std::size_t cascade) {
+        const float texel = mc::render::sunShadowTexelSize(cascade, nearBlocks);
+        return shaderBias::sunShadowPenumbraTexels(160.0F, texel) * texel;
+    };
+    REQUIRE(std::abs(saturated(8, 1) / saturated(8, 0) - 8.0F) < 1e-3F,
+            "the seam is an eightfold jump in penumbra width at the default setting");
+    REQUIRE(saturated(24, 1) / saturated(24, 0) < 3.0F,
+            "and the 24-block setting must shrink it to under threefold — that is the fix");
 }
 
 void checkContactHardening() {
@@ -2099,9 +2031,10 @@ void checkEntityWiring() {
     REQUIRE(sampling.find("sunShadowTexelBlocksOf(tryNear ? lightViewProjNear : lightViewProjFar)")
                 != std::string::npos,
             "the first attempt must derive its texel from the matrix it is about to project with");
-    REQUIRE(occurrencesIn(sampling, "sunShadowTexelBlocksOf(lightViewProjFar)") == 2U,
-            "both far-cascade paths (the fallback and the blend band) must re-derive the far "
-            "texel; reusing the near one lifts the bias by the ratio between them");
+    REQUIRE(occurrencesIn(sampling, "sunShadowTexelBlocksOf(lightViewProjFar)") == 1U,
+            "the far-cascade fallback must re-derive the far texel; reusing the near one lifts "
+            "the bias by the ratio between them. RN-49 removed the second occurrence together "
+            "with the blend band");
     REQUIRE(sampling.find("sunShadowTexelBlocks(cascade)") == std::string::npos,
             "the per-cascade constant table is gone; a lookup by cascade cannot follow a "
             "player-adjustable near box");

@@ -228,6 +228,28 @@ int main() {
         }
     }
 
+    // ================= RN-49：脚本挑哪个二进制，也是确定性的一部分 ==========
+    //
+    // 现场：debug 与 release 两个构建目录并存是常态，而**各自带一份着色器暂存**。
+    // 脚本从前取 mtime 最新的那一个，于是「只重建了 debug」时它可能挑中 release——
+    // 出的图来自另一次构建的着色器，而它照样是一张漂亮的、退出码为 0 的图。
+    // 实测：把 kSkyAmbientFraction 从 0.15 改到 0.60（一个巨大的量），两次导出
+    // **逐字节相同**，连着骗过三次 A/B 对比。
+    {
+        const std::string script = readFile(MC_REBEDROCK_EXPORT_SCRIPT);
+        require(script.find("${#runnable[@]} -gt 1") != std::string::npos,
+                "出图脚本必须在「有多个能跑的二进制」时停下来，而不是替人挑一个");
+        require(script.find("MC_REBEDROCK_BINARY=<路径>") != std::string::npos,
+                "而且要告诉人怎么点名");
+        // 报错之后必须**真的退出**：只打一行警告等于没管，人照样看不见
+        const auto guard = script.find("${#runnable[@]} -gt 1");
+        const auto guardEnd = script.find("fi", guard);
+        require(guardEnd != std::string::npos &&
+                    script.substr(guard, guardEnd - guard).find("exit 2") != std::string::npos,
+                "多个候选时必须非零退出，警告一行是拦不住的");
+        std::cout << "  出图脚本在多个候选二进制时会停下来\n";
+    }
+
     if (failures != 0) {
         std::cerr << failures << " check(s) failed\n";
         return 1;
