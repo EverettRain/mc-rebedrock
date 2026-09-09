@@ -2160,6 +2160,18 @@ if(BUILD_TESTING)
     )
     add_test(NAME snow_layer COMMAND mc_rebedrock_snow_layer_test)
 
+    # SLP-1: the bed — two side-by-side cells, the FACING+PART shape, the
+    # partner support rule and the no-drop orphan removal.
+    add_executable(mc_rebedrock_bed_test
+        tests/bed_test.cpp
+    )
+    target_link_libraries(mc_rebedrock_bed_test PRIVATE mc_rebedrock_runtime)
+    target_include_directories(mc_rebedrock_bed_test PRIVATE
+        src
+        "${glm_SOURCE_DIR}"
+    )
+    add_test(NAME bed COMMAND mc_rebedrock_bed_test)
+
     add_executable(mc_rebedrock_face_occlusion_test
         tests/face_occlusion_test.cpp
     )

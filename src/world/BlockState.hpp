@@ -88,6 +88,21 @@ class BlockState final {
         return value(StateProperty::ComparatorMode) != 0U;
     }
     // The light this state emits: a furnace's 13 only while it burns.
+    // SLP-1: BedBlock.PART / OCCUPIED. The head is the far cell from the
+    // player when the bed was placed; FACING points at it.
+    [[nodiscard]] constexpr bool isBedHead() const {
+        return value(StateProperty::BedPart) != 0U;
+    }
+    [[nodiscard]] constexpr BlockState withBedHead(bool head) const {
+        return with(StateProperty::BedPart, head ? 1U : 0U);
+    }
+    [[nodiscard]] constexpr bool occupied() const {
+        return value(StateProperty::Occupied) != 0U;
+    }
+    [[nodiscard]] constexpr BlockState withOccupied(bool value) const {
+        return with(StateProperty::Occupied, value ? 1U : 0U);
+    }
+
     // MDL-3: SnowLayerBlock.LAYERS, 1..8. Stored as 0..7 (see StateSchema), so
     // the default state is one layer and a block that never declared the axis
     // still answers 1 rather than 0 — which is what the shape table wants.

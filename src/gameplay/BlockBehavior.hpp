@@ -141,6 +141,7 @@ struct BlockBehaviorPrefilter final {
                       definition.model == world::BlockModel::Door ||
                       definition.model == world::BlockModel::Wall ||
                       definition.model == world::BlockModel::CrossCollision ||
+                      definition.model == world::BlockModel::Bed ||
                       definition.model == world::BlockModel::FenceGate ||
                       definition.states.has(world::StateProperty::Locked));
     prefilter.set(BlockBehaviorBit::HasRandomTick, WorldSimulation::isRandomlyTicking(block));
@@ -309,6 +310,11 @@ wallUpdateShapeSlot(const NeighborUpdateContext& context) {
 crossCollisionUpdateShapeSlot(const NeighborUpdateContext& context) {
     return world::crossUpdateShape(context.world, context.pos, context.state, context.fromOffset);
 }
+// SLP-1's updateShape slot: the two halves of a bed keep OCCUPIED in step.
+[[nodiscard]] inline std::optional<world::BlockState>
+bedUpdateShapeSlot(const NeighborUpdateContext& context) {
+    return world::bedUpdateShape(context.state, context.fromOffset, context.neighborState);
+}
 // AR-B4-4's slots. The gate's derivation is world-layer (it only asks whether a
 // neighbour is a wall); the repeater's is not, because "locked" is a redstone
 // question, so it lives here and calls the one existing predicate rather than
@@ -433,6 +439,8 @@ repeaterLockedUpdateShapeSlot(const NeighborUpdateContext& context) {
                 entry.updateShape = &wallUpdateShapeSlot;
             } else if (model == world::BlockModel::CrossCollision) {
                 entry.updateShape = &crossCollisionUpdateShapeSlot;
+            } else if (model == world::BlockModel::Bed) {
+                entry.updateShape = &bedUpdateShapeSlot;
             } else if (model == world::BlockModel::FenceGate) {
                 entry.updateShape = &fenceGateUpdateShapeSlot;
             } else if (world::blockDefinition(static_cast<world::Block>(i))

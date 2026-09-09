@@ -208,6 +208,23 @@ namespace {
     return {ItemUseAction::PlaceDoor, lower};
 }
 
+// SLP-1: BedBlock#getStateForPlacement — the foot lands on the clicked cell and
+// the head one step along the player's own facing (vanilla takes
+// `context.getHorizontalDirection()` with no getOpposite, which this build
+// spells as HorizontalPlacement::AwayFromPlayer on the block). Nothing is placed
+// unless that second cell is free, exactly as vanilla returns null.
+[[nodiscard]] ItemUseResult bedPlaceResult(world::Block block, world::World& world,
+                                           const world::PlacementContext& context) {
+    const auto foot = context.placePosition;
+    const auto facing = world::placementOrientation(block, context);
+    const auto offset = world::orientationOffset(facing);
+    const glm::ivec3 head{foot.x + offset.x, foot.y + offset.y, foot.z + offset.z};
+    if (!world::isReplaceable(world.block(head.x, head.y, head.z))) {
+        return {};
+    }
+    return {ItemUseAction::PlaceBed, world::BlockState{block, facing}.withBedHead(false)};
+}
+
 [[nodiscard]] ItemUseResult blockItemUseOn(
     const Item* item, world::World& world, const world::PlacementContext& context) {
     // AR-B2: a door places two cells atomically, so its own kind routes to
@@ -218,6 +235,11 @@ namespace {
     const auto* blockItem = asBlockItem(item);
     if (blockItem == nullptr) {
         return {};
+    }
+    // SLP-1: a bed is likewise two cells, decided by its model rather than by a
+    // BlockItem subclass (there is no BedBlockItem in this roster).
+    if (world::blockDefinition(blockItem->block()).model == world::BlockModel::Bed) {
+        return bedPlaceResult(blockItem->block(), world, context);
     }
     return placeBlockResult(blockItem, blockItem->block(), world, context);
 }

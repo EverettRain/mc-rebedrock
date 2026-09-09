@@ -136,6 +136,9 @@ StructurePaletteEntry readPaletteEntry(NbtReader& reader) {
     std::array<bool, 4> connections{};
     bool anyConnection = false;
     bool waterlogged = false;
+    bool bedHead = false;
+    bool hasBedPart = false;
+    bool occupied = false;
     for (;;) {
         const auto member = reader.readNamed();
         if (reader.failed() || member.tag == NbtTag::End) break;
@@ -151,6 +154,15 @@ StructurePaletteEntry readPaletteEntry(NbtReader& reader) {
                     orientation = reader.readString();
                 } else if (property.tag == NbtTag::String && property.name == "waterlogged") {
                     waterlogged = reader.readString() == "true";
+                } else if (property.tag == NbtTag::String && property.name == "part") {
+                    // SLP-1: a bed's two cells are two palette entries, and
+                    // which one this is decides where its legs are drawn and
+                    // which neighbour keeps it standing. Without it a template's
+                    // bed comes out as two feet.
+                    bedHead = reader.readString() == "head";
+                    hasBedPart = true;
+                } else if (property.tag == NbtTag::String && property.name == "occupied") {
+                    occupied = reader.readString() == "true";
                 } else if (property.tag == NbtTag::String &&
                            paletteConnectionIndex(property.name).has_value()) {
                     const auto side = *paletteConnectionIndex(property.name);
@@ -187,6 +199,12 @@ StructurePaletteEntry readPaletteEntry(NbtReader& reader) {
         }
         if (waterlogged && state.has(StateProperty::SubmergedFluid)) {
             state = state.withSubmergedFluid(SubmergedFluid::Water);
+        }
+        if (hasBedPart && state.has(StateProperty::BedPart)) {
+            state = state.withBedHead(bedHead);
+        }
+        if (occupied && state.has(StateProperty::Occupied)) {
+            state = state.withOccupied(true);
         }
         entry.block = *block;
         entry.stateIndex = state.rawId();

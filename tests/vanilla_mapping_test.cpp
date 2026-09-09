@@ -310,14 +310,28 @@ void testEnumWordOverrides() {
 
 void testOverrideTableOnlyListsDeviations() {
     // waterlogged (shape deviation: a vanilla bool, an enum here) plus the six
-    // enum-word properties (same meaning, values spelled as words).
-    assert(compat::kOverrides.size() == 8);
+    // enum-word properties (same meaning, values spelled as words), plus the
+    // repeater's one-based delay — and, since SLP-1/MDL-3, the bed's PART word
+    // and the snow layer's one-based LAYERS.
+    assert(compat::kOverrides.size() == 10);
     assert(compat::kOverrides[0].vanillaProperty == "waterlogged");
     // A property with no deviation is simply absent from the table — the
     // table is not an exhaustive property list, only exceptions to identity.
     assert(compat::findOverride("lit") == nullptr);
     assert(compat::findOverride("age") == nullptr);
     assert(compat::findOverride("moisture") == nullptr);
+    // SLP-1 / MDL-3: both new entries map a real deviation, not a same-named
+    // identity — `part` is a word here and a word there but a bit in storage,
+    // and `layers` is one-based in vanilla and zero-based here.
+    assert(compat::findOverride("part") != nullptr);
+    assert(compat::findOverride("layers") != nullptr);
+    assert(compat::mapVanillaState("part", "head").value == 1U);
+    assert(compat::mapVanillaState("part", "foot").value == 0U);
+    assert(!compat::mapVanillaState("part", "middle").valid());
+    assert(compat::mapVanillaState("layers", "1").value == 0U);
+    assert(compat::mapVanillaState("layers", "8").value == 7U);
+    assert(!compat::mapVanillaState("layers", "9").valid());
+    assert(!compat::mapVanillaState("layers", "0").valid());
 
     // AR-B4-2's three new axes, registered on this axis as required: all three
     // are *identity* mappings, so registration means proving they need no
@@ -337,8 +351,10 @@ void testOverrideTableOnlyListsDeviations() {
     }
     assert(world::statePropertyFromName("in_wall") == world::StateProperty::InWall);
     assert(world::statePropertyFromName("locked") == world::StateProperty::Locked);
-    // Still no row for any of those three: they are identity mappings.
-    assert(compat::kOverrides.size() == 8);
+    // Still no row for any of those three: they are identity mappings. The two
+    // rows added since (SLP-1's `part`, MDL-3's `layers`) are real deviations,
+    // asserted above.
+    assert(compat::kOverrides.size() == 10);
 }
 
 // --- Layer 4: reverse-mapping placeholder (JC4 seam), existence only ------

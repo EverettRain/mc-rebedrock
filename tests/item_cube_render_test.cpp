@@ -97,6 +97,10 @@ using mc::world::rendersAsModelItem;
     // 也不是扁平贴图）。
     case BlockModel::Layered:
         return ItemModelKind::SnowLayer;
+    // SLP-1：床的物品在 vanilla 是两个 special bed 模型的复合（整张床 3D），
+    // 包里没有任何 2D 贴图可退回，所以这里给它自己那半的几何。
+    case BlockModel::Bed:
+        return ItemModelKind::Bed;
     }
     return ItemModelKind::None;
 }

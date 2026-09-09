@@ -1224,6 +1224,7 @@ void WorldSimulation::breakUnsupportedBlocks(
         const std::size_t changeCount = changes.size();
         setSimulatedBlock(world, position, world::Block::Air, changes);
         if (changes.size() > changeCount &&
+            world::blockDefinition(block).dropsWhenUnsupported &&
             (world::isCrop(block) || world::blockDefinition(block).dropsItem)) {
             changes.back().dropped = previousState;
         }

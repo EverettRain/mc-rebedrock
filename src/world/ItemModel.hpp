@@ -111,6 +111,12 @@ enum class ItemModelKind : std::uint8_t {
     // MDL-3: `block/snow_height2` — the snow layer's item is a 2/16 slab (a
     // two-layer slice), not a flat sprite and not the carpet's single layer.
     SnowLayer,
+    // SLP-1: the bed. 26.1's `items/<colour>_bed.json` is a COMPOSITE of two
+    // `minecraft:bed` special models (head + foot) — a whole bed drawn in 3D,
+    // with no 2D sprite anywhere in the pack to fall back on. This build has no
+    // special-model path, so the icon is the bed's own foot-half geometry:
+    // mattress plus two legs, in the wool skin the block already wears.
+    Bed,
     Count,
 };
 
@@ -211,6 +217,35 @@ constexpr void putItemFace(ItemModelBox& box, bake::Facing facing, ItemLayerSlot
     }
     for (const bake::Facing side : {bake::Facing::East, bake::Facing::West}) {
         putItemFace(box, side, ItemLayerSlot::Side, itemRect(0, 16.0F - y1, 16, 16.0F - y0));
+    }
+    return box;
+}
+
+// SLP-1: the bed item's boxes — the mattress and the two legs of one half,
+// matching BlockShape's kBedMattressBox / kBedLegNorthWest.
+[[nodiscard]] constexpr ItemModelBox bedMattressItemBox() {
+    ItemModelBox box;
+    box.from16 = {0.0F, 3.0F, 0.0F};
+    box.to16 = {16.0F, 9.0F, 16.0F};
+    putItemFace(box, bake::Facing::Down, ItemLayerSlot::Bottom, itemRect(0, 0, 16, 16));
+    putItemFace(box, bake::Facing::Up, ItemLayerSlot::Top, itemRect(0, 0, 16, 16));
+    for (const bake::Facing side : {bake::Facing::North, bake::Facing::South,
+                                    bake::Facing::East, bake::Facing::West}) {
+        putItemFace(box, side, ItemLayerSlot::Side, itemRect(0, 7, 16, 13));
+    }
+    return box;
+}
+[[nodiscard]] constexpr ItemModelBox bedLegItemBox(float x0, float x1) {
+    ItemModelBox box;
+    box.from16 = {x0, 0.0F, 0.0F};
+    box.to16 = {x1, 3.0F, 3.0F};
+    putItemFace(box, bake::Facing::Down, ItemLayerSlot::Side, itemRect(x0, 0, x1, 3));
+    putItemFace(box, bake::Facing::Up, ItemLayerSlot::Side, itemRect(x0, 0, x1, 3));
+    for (const bake::Facing side : {bake::Facing::North, bake::Facing::South}) {
+        putItemFace(box, side, ItemLayerSlot::Side, itemRect(x0, 13, x1, 16));
+    }
+    for (const bake::Facing side : {bake::Facing::East, bake::Facing::West}) {
+        putItemFace(box, side, ItemLayerSlot::Side, itemRect(0, 13, 3, 16));
     }
     return box;
 }
@@ -385,7 +420,7 @@ constexpr void putItemFace(ItemModelBox& box, bake::Facing facing, ItemLayerSlot
 // that order: `cubeItemUvModel(block)` already returns 0/1/2 and both item vertex
 // shaders index their UV table with it, so keeping the cubes at 0..2 is what makes
 // this an extension of that table rather than a replacement for it.
-inline constexpr std::array<ItemModelBox, 25> kItemModelBoxes{{
+inline constexpr std::array<ItemModelBox, 28> kItemModelBoxes{{
     detail::wholeCube(CubeUvModel::Default),        // 0
     detail::wholeCube(CubeUvModel::PistonTemplate), // 1
     detail::wholeCube(CubeUvModel::Observer),       // 2
@@ -415,6 +450,9 @@ inline constexpr std::array<ItemModelBox, 25> kItemModelBoxes{{
     detail::fenceInventoryRailBox(6.0F, 9.0F),                // 22
     detail::carpetBox(),                                      // 23
     detail::snowLayerItemBox(),                               // 24
+    detail::bedMattressItemBox(),                             // 25
+    detail::bedLegItemBox(0.0F, 3.0F),                        // 26
+    detail::bedLegItemBox(13.0F, 16.0F),                      // 27
 }};
 
 // Where each kind's boxes live in the flat array, and how the inventory turns it.
@@ -438,6 +476,7 @@ inline constexpr std::array<ItemModelRange, static_cast<std::size_t>(ItemModelKi
         {19, 4, ItemIconTurn::None},          // Fence (two posts + two rails)
         {23, 1, ItemIconTurn::None},          // Carpet
         {24, 1, ItemIconTurn::None},          // SnowLayer
+        {25, 3, ItemIconTurn::ThreeQuarter},  // Bed (mattress + two legs)
     }};
 
 // The single point. Every item surface asks this and nothing else: `None` means
@@ -483,6 +522,8 @@ inline constexpr std::array<ItemModelRange, static_cast<std::size_t>(ItemModelKi
         return ItemModelKind::Carpet;
     case BlockModel::Layered:
         return ItemModelKind::SnowLayer;
+    case BlockModel::Bed:
+        return ItemModelKind::Bed;
     // A door item is a flat sprite in vanilla's `items/` entry
     // (`item/oak_door`); so are the diodes (`item/repeater`), the lever, the
     // torch, the crops and the wire, all of which vanilla draws from an

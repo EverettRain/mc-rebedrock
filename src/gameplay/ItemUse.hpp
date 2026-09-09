@@ -190,6 +190,10 @@ enum class ItemUseAction : std::uint8_t {
     // `level.setBlock(pos.above(), ...)` immediately following the lower
     // placement.
     PlaceDoor,
+    // SLP-1: a bed places two cells too, but side by side rather than stacked —
+    // the foot at the clicked cell and the head one step along FACING. Same
+    // atomic two-write treatment as the door.
+    PlaceBed,
     // AR-CX4-b: FlintAndSteelItem#useOn — places Fire in the cell adjacent to
     // the clicked face (result.state names the Fire block, default AGE 0). The
     // caller writes it into placeTarget like PlaceBlock, but this action is

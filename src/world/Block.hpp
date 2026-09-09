@@ -610,6 +610,24 @@ enum class Block : std::uint16_t {
     // in a snowy biome (WorldSimulation's precipitationTick says so in a
     // comment: only the freezing half of vanilla's tickPrecipitation is there).
     Snow,
+    // SLP-1: the 16 beds. Two cells apiece (PART), and the reason the village
+    // templates reference `bed` 120 times.
+    WhiteBed,
+    OrangeBed,
+    MagentaBed,
+    LightBlueBed,
+    YellowBed,
+    LimeBed,
+    PinkBed,
+    GrayBed,
+    LightGrayBed,
+    CyanBed,
+    PurpleBed,
+    BlueBed,
+    BrownBed,
+    GreenBed,
+    RedBed,
+    BlackBed,
     // MDL-2: the 16 carpets. A Cube of height 1/16 on any non-air cell — the
     // cheapest whole family in the roster, and the one village floors need.
     WhiteCarpet,
@@ -791,6 +809,18 @@ enum class BlockModel : std::uint8_t {
     // reads SHAPES[layers - 1]): a single layer of snow is walked over without
     // stepping up at all.
     Layered,
+    // SLP-1: BedBlock — two cells, `Shapes.or(column(16,3,9), two corner legs)`
+    // rotated so the legs sit at the bed's outer end. Its own model because the
+    // shape depends on FACING *and* PART together (the head's legs are at the
+    // opposite end from the foot's), which no other model asks.
+    //
+    // 26.1 draws a bed from a BlockEntityRenderer over `entity/bed/<colour>.png`,
+    // not from a blockstate model. This build has no entity-texture path into
+    // the terrain atlas, so the geometry here is vanilla's while the skin is the
+    // matching wool — registered as a deviation, and the faithful skin is RN's
+    // (it needs the atlas to take a cuboid-unwrapped 64x64 sheet, which
+    // BlockAtlasBaker's playerSkinCuboidFaces already shows how to do).
+    Bed,
 };
 
 // MDL-1: which row of the CrossCollision parameter table a block reads. Only
@@ -842,6 +872,7 @@ enum class ConnectFamily : std::uint8_t {
     case BlockModel::CrossCollision:
     case BlockModel::Carpet:
     case BlockModel::Layered:
+    case BlockModel::Bed:
         return true;
     case BlockModel::Cube:
     case BlockModel::Cross:
@@ -954,6 +985,12 @@ enum class BlockSupport : std::uint8_t {
     // below, sturdy or not (a carpet sits on a slab, a fence post, snow...).
     // Weaker than Ground, which demands a sturdy upward face.
     AnyBelow,
+    // SLP-1: BedBlock — the other half of the bed. Vanilla has no canSurvive on
+    // the bed at all (a bed may float); what it has is `playerWillDestroy`
+    // clearing the partner cell. This build says the same thing the other way
+    // round — "a half with no partner cannot stand" — so the existing support
+    // sweep removes the orphan and no new destruction path is needed.
+    BedOtherHalf,
     // MDL-3: SnowLayerBlock#canSurvive — a full upward collision face below, or
     // another snow layer below that is already at its full eight. Its own
     // category because of that second clause: no other support shape asks about
@@ -1237,6 +1274,12 @@ struct BlockDefinition final {
     float modelHeight = 1.0F;
     bool replaceable = false;
     bool dropsItem = true;
+    // SLP-1: whether losing its support ALSO drops the block. True for
+    // everything that pops off a wall or a floor (a torch, a flower, sugar
+    // cane). False for the bed: vanilla removes the partner half with
+    // `setBlock(AIR, 35)` — flag 35 has no drop — so breaking either half of a
+    // bed yields exactly one bed, not two.
+    bool dropsWhenUnsupported = true;
     // MDL-1: breaking this block yields nothing without silk touch (26.1's
     // glass / glass pane / stained pane loot tables are a silk-touch-only pool).
     // A bit rather than the identity test `block == Block::Glass` that
@@ -1473,6 +1516,13 @@ class BlockProperties final {
     [[nodiscard]] constexpr BlockProperties silkTouchOnly() const {
         BlockProperties copy = *this;
         copy.definition_.silkTouchOnly = true;
+        return copy;
+    }
+
+    // SLP-1: see BlockDefinition::dropsWhenUnsupported.
+    [[nodiscard]] constexpr BlockProperties noDropWhenUnsupported() const {
+        BlockProperties copy = *this;
+        copy.definition_.dropsWhenUnsupported = false;
         return copy;
     }
 
@@ -1899,6 +1949,20 @@ class BlockProperties final {
             .noOcclusion()
             .support(BlockSupport::SnowLayer)
             .state(StateProperty::Layers, 8U);
+    }
+
+    // SLP-1: BedBlock — FACING (pointing at the head), PART, OCCUPIED. Never
+    // occludes (it is 6/16 of a cell), and takes the player's own facing at
+    // placement (`getHorizontalDirection()`, no getOpposite) so the head lands
+    // away from the player.
+    [[nodiscard]] constexpr BlockProperties bed() const {
+        return model(BlockModel::Bed)
+            .noOcclusion()
+            .support(BlockSupport::BedOtherHalf)
+            .noDropWhenUnsupported()
+            .horizontalFacing(HorizontalPlacement::AwayFromPlayer)
+            .state(StateProperty::BedPart, 2U)
+            .state(StateProperty::Occupied, 2U);
     }
 
     // MDL-1: Block#isExceptionForConnection — this block never satisfies the
@@ -4191,6 +4255,58 @@ inline constexpr std::array<BlockDefinition, static_cast<std::size_t>(Block::Cou
         .strength(0.1F)
         .snowLayer()
         .creative(CreativeCategory::NaturalBlocks),
+    // SLP-1: beds. 26.1 skins them from entity/bed/<colour>.png through a block
+    // entity renderer; this build has no entity-texture path into the terrain
+    // atlas, so the skin is the matching wool and the deviation is registered.
+    // Geometry, states and both-cell behaviour are vanilla's.
+    BlockProperties::of(Block::WhiteBed, "white_bed", "White Bed")
+        .texture("white_wool").strength(0.2F).bed()
+        .creative(CreativeCategory::Functional),
+    BlockProperties::of(Block::OrangeBed, "orange_bed", "Orange Bed")
+        .texture("orange_wool").strength(0.2F).bed()
+        .creative(CreativeCategory::Functional),
+    BlockProperties::of(Block::MagentaBed, "magenta_bed", "Magenta Bed")
+        .texture("magenta_wool").strength(0.2F).bed()
+        .creative(CreativeCategory::Functional),
+    BlockProperties::of(Block::LightBlueBed, "light_blue_bed", "Light Blue Bed")
+        .texture("light_blue_wool").strength(0.2F).bed()
+        .creative(CreativeCategory::Functional),
+    BlockProperties::of(Block::YellowBed, "yellow_bed", "Yellow Bed")
+        .texture("yellow_wool").strength(0.2F).bed()
+        .creative(CreativeCategory::Functional),
+    BlockProperties::of(Block::LimeBed, "lime_bed", "Lime Bed")
+        .texture("lime_wool").strength(0.2F).bed()
+        .creative(CreativeCategory::Functional),
+    BlockProperties::of(Block::PinkBed, "pink_bed", "Pink Bed")
+        .texture("pink_wool").strength(0.2F).bed()
+        .creative(CreativeCategory::Functional),
+    BlockProperties::of(Block::GrayBed, "gray_bed", "Gray Bed")
+        .texture("gray_wool").strength(0.2F).bed()
+        .creative(CreativeCategory::Functional),
+    BlockProperties::of(Block::LightGrayBed, "light_gray_bed", "Light Gray Bed")
+        .texture("light_gray_wool").strength(0.2F).bed()
+        .creative(CreativeCategory::Functional),
+    BlockProperties::of(Block::CyanBed, "cyan_bed", "Cyan Bed")
+        .texture("cyan_wool").strength(0.2F).bed()
+        .creative(CreativeCategory::Functional),
+    BlockProperties::of(Block::PurpleBed, "purple_bed", "Purple Bed")
+        .texture("purple_wool").strength(0.2F).bed()
+        .creative(CreativeCategory::Functional),
+    BlockProperties::of(Block::BlueBed, "blue_bed", "Blue Bed")
+        .texture("blue_wool").strength(0.2F).bed()
+        .creative(CreativeCategory::Functional),
+    BlockProperties::of(Block::BrownBed, "brown_bed", "Brown Bed")
+        .texture("brown_wool").strength(0.2F).bed()
+        .creative(CreativeCategory::Functional),
+    BlockProperties::of(Block::GreenBed, "green_bed", "Green Bed")
+        .texture("green_wool").strength(0.2F).bed()
+        .creative(CreativeCategory::Functional),
+    BlockProperties::of(Block::RedBed, "red_bed", "Red Bed")
+        .texture("red_wool").strength(0.2F).bed()
+        .creative(CreativeCategory::Functional),
+    BlockProperties::of(Block::BlackBed, "black_bed", "Black Bed")
+        .texture("black_wool").strength(0.2F).bed()
+        .creative(CreativeCategory::Functional),
     // MDL-2: carpets. 26.1 CarpetBlock is `Block.column(16, 0, 1)` on the wool
     // texture, strength 0.1, and survives on any non-air cell below.
     BlockProperties::of(Block::WhiteCarpet, "white_carpet", "White Carpet")
