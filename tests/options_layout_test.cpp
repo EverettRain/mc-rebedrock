@@ -1624,6 +1624,44 @@ void testHeaderAndFooterClassification() {
     check(threeBandPages >= 5U, "expected several three-band pages", __LINE__);
 }
 
+// --- 27. 设置列表的滚动条拖拽（UI-6e ⑤ / D18）--------------------------------
+//
+// ★ 分母必须是**总行数**，不是可见行数。用可见行数的症状是"拖到底只滚了一小截"，
+//   而滑块画在哪儿用的是另一个函数——两者不一致时滑块会跑到光标之外。
+//   D18 之前设置列表根本没有拖拽（只有滚轮），所以这条路第一次有断言。
+void testOptionsScrollbarDrag() {
+    const mc::ui::HudLayout layout{1280.0F, 720.0F, 3};
+    const auto page = mc::ui::PageId::VideoSettings;
+    const std::size_t maximum = mc::ui::optionsMaximumFirstRow(layout, page);
+    CHECK(maximum > 0U);   // 这一屏确实滚得动，否则下面是空转
+
+    const auto track = mc::ui::optionsScrollbarTrack(layout);
+    // 光标在轨道顶端 → 第 0 行
+    CHECK(mc::ui::optionsScrollIndexFromCursor(layout, page, track.y) == 0U);
+    // 光标在轨道底端 → **最后一屏**，不是别的数
+    check(mc::ui::optionsScrollIndexFromCursor(layout, page, track.y + track.height) == maximum,
+          "dragging to the bottom must land on the last screenful", __LINE__);
+    // 越过两端要夹住
+    CHECK(mc::ui::optionsScrollIndexFromCursor(layout, page, track.y - 500.0F) == 0U);
+    CHECK(mc::ui::optionsScrollIndexFromCursor(layout, page, track.y + 5000.0F) == maximum);
+    // 单调不减：光标越往下，首行不会往回退
+    std::size_t previous = 0;
+    for (float y = track.y; y <= track.y + track.height; y += 4.0F) {
+        const std::size_t row = mc::ui::optionsScrollIndexFromCursor(layout, page, y);
+        check(row >= previous, "dragging down must not scroll back up", __LINE__);
+        check(row <= maximum, "dragging must not scroll past the end", __LINE__);
+        previous = row;
+    }
+
+    // 滑块位置与拖拽换算互为逆：把滑块拖到第 k 行，再从滑块中心读回来还是第 k 行。
+    for (std::size_t k = 0; k <= maximum; ++k) {
+        const auto thumb = mc::ui::optionsScrollbarThumb(layout, page, k);
+        const float centre = thumb.y + thumb.height * 0.5F;
+        check(mc::ui::optionsScrollIndexFromCursor(layout, page, centre) == k,
+              "the thumb position and the drag mapping must be inverses", __LINE__);
+    }
+}
+
 } // namespace
 
 int main() {
@@ -1654,6 +1692,7 @@ int main() {
     testPageDispatchHasNoDefault();
     testTruncateToWidth();
     testHeaderAndFooterClassification();
+    testOptionsScrollbarDrag();
     if (failures != 0) {
         std::printf("options_layout_test: %d checks failed\n", failures);
         return 1;
