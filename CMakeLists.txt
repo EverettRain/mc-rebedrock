@@ -1861,6 +1861,10 @@ if(BUILD_TESTING)
     )
     target_include_directories(mc_rebedrock_world_list_row_test PRIVATE src)
     target_link_libraries(mc_rebedrock_world_list_row_test PRIVATE glm::glm)
+    # 存档缩略图的**时机**（照 26.1 在游戏内抓、暂停时不抓、已有就不覆盖）住在渲染器的
+    # 翻译单元里，没有测试链接得到它——只能读源码守。
+    target_compile_definitions(mc_rebedrock_world_list_row_test PRIVATE
+        MC_REBEDROCK_RENDERER_SRC="${CMAKE_CURRENT_SOURCE_DIR}/src/render/vulkan/VulkanRenderer.cpp")
     add_test(NAME world_list_row COMMAND mc_rebedrock_world_list_row_test)
 
     add_executable(mc_rebedrock_tab_bar_test tests/tab_bar_test.cpp)

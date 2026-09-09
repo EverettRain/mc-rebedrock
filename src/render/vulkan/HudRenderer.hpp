@@ -193,6 +193,12 @@ class HudRenderer final {
         // 让它同时兼职"我在拍界面"就是一个字段两个意思——RN-14 让所有方块图标
         // 变成黑菱形的正是这种兼职。
         const bool& uiCaptureActive;
+        // UI-13：这一帧被选中去当存档缩略图。26.1 抓的是 `renderLevel` 之后、GUI 之前的
+        // 画面（图里没有 HUD），而本作的离屏场景图要整帧录完才读得到——那时 HUD 已经
+        // 画上去了。取 HUD 之前的内容要在两趟 pass 之间插一次 copy（动帧图与屏障，归 RN 线），
+        // 这里的做法是让被选中的那**一帧**不画 HUD，拍完就恢复。
+        // 一个存档一生只发生一次（见 `updateWorldIconRequest`）。
+        const bool& worldIconCapturePending;
         bool& paused;
         double& uiTimeSeconds;
         std::function<bool()> cameraSubmergedInWater;
@@ -243,7 +249,8 @@ class HudRenderer final {
           peakPendingSectionCount(b.peakPendingSectionCount),
           pendingSectionUpdates(b.pendingSectionUpdates), testScene(b.testScene),
           guiWidgetSprites(b.guiWidgetSprites), titleArtUv(b.titleArtUv),
-          pinnedCursor(b.pinnedCursor), uiCaptureActive(b.uiCaptureActive), paused(b.paused),
+          pinnedCursor(b.pinnedCursor), uiCaptureActive(b.uiCaptureActive),
+          worldIconCapturePending(b.worldIconCapturePending), paused(b.paused),
           uiTimeSeconds(b.uiTimeSeconds), cameraSubmergedInWater(b.cameraSubmergedInWater),
           keyBindLabels(b.keyBindLabels),
           drawHeldItem(b.drawHeldItem), currentFrameDescriptorSet(b.currentFrameDescriptorSet),
@@ -2365,12 +2372,11 @@ class HudRenderer final {
             const std::size_t remaining =
                 menuSystem.saveSummaries.size() - std::min(first, menuSystem.saveSummaries.size());
             const std::size_t visible = std::min(remaining, visibleRows);
-            // 26.1 的列表背景与周围菜单背景是两张可各自被资源包覆盖的贴图
-            const auto firstRow = worldListRow(0, layout);
-            const float listBandHeight =
-                static_cast<float>(visibleRows) * 22.0F * scale + 8.0F * scale;
-            const ui::UiRect listBand{0.0F, firstRow.y - 4.0F * scale,
-                                      static_cast<float>(swapchainExtent.width), listBandHeight};
+            // 26.1 的列表背景与周围菜单背景是两张可各自被资源包覆盖的贴图。
+            // ★ 带的矩形取自 `ui::worldListBox`，**不再在这里自己算一份**：那份写的是
+            //   `visibleRows * 22 + 8`，而 A6 把行距改成了 36，于是下缘那条分隔线
+            //   穿过第五行的中间、后面的行画在带外面（现场 export/savelist-problem.png）。
+            const ui::UiRect listBand = ui::worldListBox(layout);
             drawListBackground(commandBuffer, listBand, scale);
             drawListSeparators(commandBuffer, listBand, scale);
             if (visible == 0U) {
@@ -3823,6 +3829,9 @@ class HudRenderer final {
         // UI-6-0 之后同一个夹具也给界面截图当世界背景用——那时界面正是要拍的东西。
         if (testScene.has_value() && !uiCaptureActive)
             return;
+        // UI-13：这一帧要当存档缩略图，照 26.1 那样只留世界。见 bindings 里的注释。
+        if (worldIconCapturePending)
+            return;
         const ui::HudLayout layout{static_cast<float>(swapchainExtent.width),
                                    static_cast<float>(swapchainExtent.height),
                                    menuSystem.guiScaleSetting, menuSystem.forceUnicodeFont};
@@ -3993,6 +4002,7 @@ class HudRenderer final {
     // UI-2：截图通道钉死的光标位置；空表示照常读 GLFW
     const std::optional<ui::UiPoint>& pinnedCursor;
     const bool& uiCaptureActive;
+    const bool& worldIconCapturePending;
     bool& paused;
     double& uiTimeSeconds;
 

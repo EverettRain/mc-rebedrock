@@ -84,6 +84,19 @@ ScrollList worldScrollList(const HudLayout& layout) {
 
 // UI-11 / A6：世界行在**逻辑像素**下的矩形。行内那几块（缩略图、三行字）都从它派生，
 // 所以它只有这一处；`worldListRow` 是它换算到帧缓冲像素的那一层。
+// UI-13：世界列表那条带（列表视口）的矩形，帧缓冲像素。
+//
+// ★ 它存在的理由是一个**现场可见**的缺陷：绘制侧此前自己算了一份
+//   `visibleRows * 22 + 8`，而 A6 把行距改成了 36。于是底衬与上下两条分隔线仍按
+//   22 一行算高，带比内容矮了近四成——列表下缘那条线**穿过第五行的中间**，
+//   后面的行画在带外面（现场截图 export/savelist-problem.png）。
+//   「一份几何两处表述」的老形状：行距在 ScrollList 里，带高在绘制侧手抄。
+//   现在两者都从 `worldScrollList` 派生，行距改了带高跟着改。
+UiRect worldListBox(const HudLayout& layout) {
+    const auto list = worldScrollList(layout);
+    return {0.0F, toFb(layout, list.y), toFb(layout, list.width), toFb(layout, list.height)};
+}
+
 UiRect logicalWorldListRow(std::size_t index, const HudLayout& layout) {
     return scrollListRow(worldScrollList(layout), index);
 }

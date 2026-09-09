@@ -2169,7 +2169,11 @@ struct VulkanRenderer::Impl final : public gameplay::SimulationHost {
                         std::chrono::duration<double, std::milli>(drawStart - frameCpuStart)
                             .count();
                 }
+                // UI-13：存档缩略图的时机。★ 必须在 drawFrame **之前**决定，
+                // 因为决定的结果（这一帧不画 HUD）要影响的就是这一帧。
+                updateWorldIconRequest();
                 static_cast<void>(drawFrame());
+                writeWorldIconIfRequested();
                 if (diag::traceEnabled()) {
                     diag::frameTrace().drawFrameMs += diag::msSince(drawStart);
                     afterDrawStart = std::chrono::steady_clock::now();
@@ -2406,15 +2410,71 @@ struct VulkanRenderer::Impl final : public gameplay::SimulationHost {
         textures_.uploadWorldIcons(icons);
     }
 
-    // 退出世界时把最后一帧存成 `<world>/icon.png`（26.1
-    // `GameRenderer.takeAutoScreenshot`：短边居中裁成正方形再缩到 64x64）。
+    // UI-13：这一帧要不要抓存档缩略图。**一比一照 26.1
+    // `GameRenderer.tryTakeScreenshotIfNeeded()`（:614-631）**，那是本作此前搞错的地方。
     //
-    // ★ 在 `clearRenderedWorld()` **之前**：那之后离屏的场景图里已经没有世界了。
+    // 26.1 的规则，逐条：
+    //   ① 它在**游戏内渲染循环**里，紧跟 `renderLevel(deltaTracker)` 之后（:445），
+    //      **不是退出时、也不是按 Esc 时**。退出时抓的后果就是现场那六张图标——
+    //      每一张都是暂停菜单那块灰蒙蒙的底。
+    //   ② 那一行只在 `shouldRenderLevel = resourcesLoaded && advanceGameTime && level != null`
+    //      成立时才跑（:393/:441）。`advanceGameTime` 在暂停时为假，所以**菜单开着时
+    //      根本不会抓**——这正是本作要补的那一条。
+    //   ③ `!hasWorldScreenshot`：**一个存档只抓一次**；而且文件已经存在时它把
+    //      `hasWorldScreenshot` 置真（:622-623），**永远不覆盖已有的图标**。
+    //   ④ 每秒最多试一次（`time - lastScreenshotAttempt >= 1000L`，:617）。
+    //   ⑤ `countRenderedSections() > 10 && hasRenderedAllSections()`（:634）——
+    //      世界真的画出来了才抓，否则拍到的是半张空区块。
+    //
+    // ★ **一处如实的偏离**：26.1 抓的是 `renderLevel` 之后、GUI 之前的 mainRenderTarget，
+    //   所以图里没有 HUD。本作的离屏场景图要到整帧录完才读得到，那时 HUD 已经画上去了。
+    //   取 HUD 之前的内容要在世界 pass 与 GUI pass 之间插一次 copy（动帧图与屏障，归 RN 线）。
+    //   这里的做法是：被选中的那**一帧**不画 HUD（`worldIconPending_`），拍完就恢复。
+    //   代价是一个存档一生中有一帧没有 HUD（约 6~16 ms），换来的是与 vanilla 同样的内容。
+    void updateWorldIconRequest() {
+        worldIconPending_ = false;
+        if (worldIconDone_ || !worldSessionActive || paused || !worldReady ||
+            !currentSave.has_value() || uiCapture.has_value() || testScene.has_value()) {
+            return;
+        }
+        // ④ 每秒最多试一次。
+        const auto now = std::chrono::steady_clock::now();
+        if (now - lastWorldIconAttempt_ < std::chrono::seconds{1}) {
+            return;
+        }
+        lastWorldIconAttempt_ = now;
+        // ③ 已经有图标了就**永远**不再抓。★ 这一条同时意味着"想换一张就自己删掉
+        //   那个文件"，与 vanilla 完全一样。
+        std::error_code error;
+        if (std::filesystem::is_regular_file(
+                saveRepository.iconPath(currentSave->summary.identifier), error)) {
+            worldIconDone_ = true;
+            return;
+        }
+        // ⑤ 世界画出来了没有。本作的同构量是"这一帧可见的区段数"与"还欠上传的区段数"。
+        if (lastVisibleMeshCount <= 10U || !pendingSectionUpdates.empty()) {
+            return;
+        }
+        worldIconPending_ = true;
+    }
+
+    // 上一帧是被选中的那一帧的话，把它读回来存成 `<world>/icon.png`。
+    //
     // ★ 自己等一次 idle：`readSceneImageRgba` 会单开一次提交，不与在飞的帧同步。
-    void writeCurrentWorldIcon() {
+    //   它一个存档只发生一次，所以那一次停顿不在任何热路径上。
+    void writeWorldIconIfRequested() {
+        if (!worldIconPending_) {
+            return;
+        }
+        worldIconPending_ = false;
+        // 无论成功与否都不再重试这一秒；成功了就整局不再抓。
+        worldIconDone_ = writeCurrentWorldIcon();
+    }
+
+    [[nodiscard]] bool writeCurrentWorldIcon() {
         if (!currentSave.has_value() || !lastSceneImageIndex_.has_value() ||
             *lastSceneImageIndex_ >= sceneTargets.size()) {
-            return;
+            return false;
         }
         checkVk(vkDeviceWaitIdle(device), "vkDeviceWaitIdle(world icon)");
         const auto frame = readSceneImageRgba(
@@ -2423,10 +2483,14 @@ struct VulkanRenderer::Impl final : public gameplay::SimulationHost {
         const auto icon = worldIconFromFrame(frame, static_cast<int>(swapchainExtent.width),
                                              static_cast<int>(swapchainExtent.height));
         if (icon.empty()) {
-            return;
+            return false;
         }
-        static_cast<void>(saveRepository.writeIcon(currentSave->summary.identifier, icon,
-                                                   kWorldIconSize, kWorldIconSize));
+        if (!saveRepository.writeIcon(currentSave->summary.identifier, icon, kWorldIconSize,
+                                      kWorldIconSize)) {
+            return false;
+        }
+        // 写成了就让世界列表下次刷新时看得见它（`hasIcon` 是列目录 stat 出来的）。
+        return true;
     }
 
     void scrollWorldList(int rows) {
@@ -2897,12 +2961,14 @@ struct VulkanRenderer::Impl final : public gameplay::SimulationHost {
         if (inventoryOpen)
             setInventoryOpen(false);
         if (saveFirst) {
-            // ★ 缩略图要在 saveCurrentWorld() **之前**写：那一步末尾会
-            //   refreshSaveList()，而 `hasIcon` 是那次列目录 stat 出来的。
-            //   写在后面，新存的图标要等下一次刷新才被看见。
-            writeCurrentWorldIcon();
             saveCurrentWorld();
         }
+        // UI-13：这里**不再**抓缩略图。26.1 是在游戏内渲染循环里抓的
+        // （`GameRenderer.tryTakeScreenshotIfNeeded`，紧跟 `renderLevel` 之后），
+        // 不是退出时——退出时最后一帧上盖着暂停菜单，每个存档的图标都成了那块灰蒙蒙的
+        // 菜单底。见 updateWorldIconRequest。
+        worldIconDone_ = false;
+        worldIconPending_ = false;
         worldSessionActive = false;
         paused = true;
         menuSystem.optionsOpen = false;
@@ -9283,6 +9349,11 @@ struct VulkanRenderer::Impl final : public gameplay::SimulationHost {
     // UI-11 / A6：上一帧画在哪个离屏目标上。退出世界时那一帧就是存档缩略图的来源
     // ——那时已经画不出新的一帧了（世界正要被卸载）。
     std::optional<std::uint32_t> lastSceneImageIndex_;
+    // UI-13：存档缩略图的三个状态，语义逐条对应 26.1 `GameRenderer` 的
+    // `hasWorldScreenshot` / `lastScreenshotAttempt`（:120-121），外加"这一帧就是那一帧"。
+    bool worldIconDone_ = false;
+    bool worldIconPending_ = false;
+    std::chrono::steady_clock::time_point lastWorldIconAttempt_{};
     // 压测的帧数上限，取自 MC_REBEDROCK_STRESS_FRAMES，为 0 表示不启用
     std::size_t stressFrames = 0;
     // MC_REBEDROCK_DISABLE_OCCLUSION 关掉遮挡通道
@@ -9367,6 +9438,7 @@ struct VulkanRenderer::Impl final : public gameplay::SimulationHost {
             .titleArtUv = textures_.titleArtUv,
             .pinnedCursor = pinnedCursor,
             .uiCaptureActive = uiCaptureActive_,
+            .worldIconCapturePending = worldIconPending_,
             .paused = paused,
             .uiTimeSeconds = uiTimeSeconds,
             .cameraSubmergedInWater = [this] { return cameraSubmergedInWater(); },

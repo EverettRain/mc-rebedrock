@@ -23,6 +23,9 @@ namespace mc::ui {
 
 // 标题与底部按钮之间那条带里的一个存档列表行
 [[nodiscard]] UiRect worldListRow(std::size_t index, const HudLayout& layout);
+// UI-13：世界列表那条带（列表视口）。底衬与上下两条分隔线都照它画——绘制侧此前自己
+// 算一份 `visibleRows * 22 + 8`，A6 把行距改成 36 之后那份就说了假话。
+[[nodiscard]] UiRect worldListBox(const HudLayout& layout);
 // UI-11 / A6：同一行的**逻辑像素**版本。行内那几块（32x32 缩略图与三行字）由
 // `ui::worldRowParts` 从它派生，绘制侧据此画，布局侧据此发缩略图的矩形。
 [[nodiscard]] UiRect logicalWorldListRow(std::size_t index, const HudLayout& layout);

@@ -18,7 +18,13 @@
 #include "ui/WorldListRow.hpp"
 
 #include <cstdio>
+#include <fstream>
+#include <sstream>
 #include <string>
+
+#ifndef MC_REBEDROCK_RENDERER_SRC
+#error "MC_REBEDROCK_RENDERER_SRC must point at src/render/vulkan/VulkanRenderer.cpp"
+#endif
 
 namespace {
 
@@ -44,6 +50,31 @@ void testRowBox() {
     CHECK(next.y - row.y == 36.0F);
     // 行在画布里居中：427/2 - 270/2 = 213 - 135 = 78（两次整数除法，不化简）。
     CHECK(row.x == 78.0F);
+}
+
+// --- 1b. 列表带：底衬与两条分隔线的矩形，必须**正好装下**那几行 --------------
+//
+// ★ 这一条是现场缺陷逼出来的（export/savelist-problem.png）：绘制侧自己算了一份
+//   `visibleRows * 22 + 8`，而 A6 把行距改成了 36。带比内容矮了近四成，下缘那条
+//   分隔线**穿过第五行的中间**，后面的行画在带外面。
+//   「一份几何两处表述」的老形状——现在带与行都从 `worldScrollList` 派生。
+void testListBand() {
+    for (const int scale : {1, 2, 3}) {
+        const mc::ui::HudLayout layout{1280.0F, 720.0F, scale, false};
+        const auto band = mc::ui::worldListBox(layout);
+        const std::size_t rows = mc::ui::worldListVisibleRows(layout);
+        CHECK(rows >= 1U);
+        // 带的高**正好**是"放得下几行 x 行距"，不多不少。
+        CHECK(band.height == static_cast<float>(rows) * 36.0F * layout.scale());
+        // 带的上缘就是第一行的上缘（此前绘制侧还往上多留了 4 像素）。
+        CHECK(band.y == mc::ui::worldListRow(0U, layout).y);
+        // ★ 最后一行**整行**都在带里。带按 22 一行算高时这一条会红。
+        const auto last = mc::ui::worldListRow(rows - 1U, layout);
+        CHECK(last.y + last.height <= band.y + band.height);
+        // 带整宽（26.1 的列表视口是整宽的，行自己在里面居中）。
+        CHECK(band.x == 0.0F);
+        CHECK(band.width >= 1280.0F);
+    }
 }
 
 // --- 2. 行内几块：图标、三行字 -----------------------------------------------
@@ -240,10 +271,59 @@ void testManyRowsDoNotThrow() {
     CHECK(!threw);
 }
 
+// --- 8. 源码守：存档缩略图的**时机**照 26.1，不是退出时抓 --------------------
+//
+// ★ 这一条是现场反馈逼出来的：第一版在 `returnToTitle` 里抓最后一帧，于是每个存档的
+//   图标都是**暂停菜单那块灰蒙蒙的底**。26.1 是在游戏内渲染循环里抓的
+//   （`GameRenderer.tryTakeScreenshotIfNeeded`:614-631，紧跟 `renderLevel`:445 之后），
+//   而那一行只在 `advanceGameTime` 为真时才跑——**菜单开着时根本不会抓**。
+//   规则住在渲染器的翻译单元里，没有测试链接得到它，只能读源码守。
+void testWorldIconTimingSourceGuard() {
+    std::ifstream input{MC_REBEDROCK_RENDERER_SRC, std::ios::binary};
+    if (!input) {
+        std::printf("world_list_row_test: cannot open %s\n", MC_REBEDROCK_RENDERER_SRC);
+        ++failures;
+        return;
+    }
+    std::ostringstream buffer;
+    buffer << input.rdbuf();
+    const std::string source = buffer.str();
+
+    const std::size_t begin = source.find("void updateWorldIconRequest()");
+    CHECK(begin != std::string::npos);
+    if (begin == std::string::npos) {
+        return;
+    }
+    const std::size_t end = source.find("\n    // 上一帧是被选中的那一帧", begin);
+    const std::string body = source.substr(begin, end - begin);
+    // ② 暂停时不抓 —— 这正是"每张图标都是暂停菜单"的那条修正。
+    CHECK(body.find("paused") != std::string::npos);
+    // ③ 已经有 icon.png 就永远不再抓（26.1 的 hasWorldScreenshot）。
+    CHECK(body.find("is_regular_file") != std::string::npos);
+    CHECK(body.find("worldIconDone_ = true") != std::string::npos);
+    // ④ 每秒最多试一次。
+    CHECK(body.find("std::chrono::seconds{1}") != std::string::npos);
+    // ⑤ 世界真的画出来了才抓。
+    CHECK(body.find("pendingSectionUpdates.empty()") != std::string::npos);
+    // 出图与方块预览两条路径都不许写盘。
+    CHECK(body.find("uiCapture.has_value()") != std::string::npos);
+    CHECK(body.find("testScene.has_value()") != std::string::npos);
+
+    // ★ 而且 `returnToTitle` 里**不能**再有抓图那一步。
+    const std::size_t exitAt = source.find("void returnToTitle(bool saveFirst)");
+    CHECK(exitAt != std::string::npos);
+    if (exitAt != std::string::npos) {
+        const std::size_t exitEnd = source.find("\n    // ---- 输入归属", exitAt);
+        const std::string exitBody = source.substr(exitAt, exitEnd - exitAt);
+        CHECK(exitBody.find("writeCurrentWorldIcon()") == std::string::npos);
+    }
+}
+
 } // namespace
 
 int main() {
     testRowBox();
+    testListBand();
     testRowParts();
     testMaxTextWidth();
     testBrokenDownTime();
@@ -252,6 +332,7 @@ int main() {
     testIconSlots();
     testColours();
     testPageLayout();
+    testWorldIconTimingSourceGuard();
     testManyRowsDoNotThrow();
     if (failures > 0) {
         std::printf("world_list_row_test: %d failure(s)\n", failures);
