@@ -1238,6 +1238,32 @@ void PlayerInteraction::performUse(GameSession& session, world::World& world,
             }
             break;
         }
+        case ItemUseAction::PrimeTnt: {
+            // EXP-2: TntBlock#onCaughtFire — the block is removed and a primed
+            // entity takes its place with vanilla's 80-tick fuse. The flint and
+            // steel wears exactly as it does lighting a fire.
+            const auto cell = use.block;
+            GameplayMutationSink sink{world, session};
+            if (session.worldMutations()
+                    .setBlock(world, {cell.x, cell.y, cell.z}, world::BlockState{},
+                              world::MutationFlags::All, world::MutationCause::PlayerBreak, sink)
+                    .changed) {
+                session.worldSimulation().ignitePrimedTnt(
+                    {static_cast<float>(cell.x) + 0.5F, static_cast<float>(cell.y) + 0.5F,
+                     static_cast<float>(cell.z) + 0.5F},
+                    80);
+                session.events().publish(SoundEvent{SoundEventKind::FlintAndSteelUse,
+                                                    glm::vec3{cell} + glm::vec3{0.5F}});
+                session.playerActions().swingHand(InteractionHand::Main, SwingAnimation::Use, 6U);
+                if (session.gameMode() == GameMode::Survival) {
+                    if (session.damageHeldTool(kPrimaryPlayerId, ToolUse::Ignite, 0.0F)) {
+                        session.events().publish(SoundEvent{SoundEventKind::ItemBreak,
+                                                            session.player().eyePosition()});
+                    }
+                }
+            }
+            break;
+        }
         case ItemUseAction::PlaceFire: {
             // AR-CX4-b: FlintAndSteelItem#useOn — write Fire into the adjacent
             // cell (already resolved to a replaceable, survivable target by

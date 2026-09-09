@@ -362,8 +362,17 @@ namespace {
 // PlaceBlock targets), but only when a Fire block would actually survive there
 // (FireBlock#canSurvive: sturdy floor below, or a flammable neighbour) — a lit
 // tool clicked at empty air over nothing does nothing, exactly like vanilla.
+// EXP-2: TntBlock#onCaughtFire — flint and steel on TNT primes it instead of
+// putting a fire block beside it. Vanilla checks this before the fire placement
+// for the same reason: the fire would be the wrong answer on a block that has
+// its own reaction to being lit.
 [[nodiscard]] ItemUseResult igniteWithFlintAndSteel(
     const Item*, world::World& world, const world::PlacementContext& context) {
+    // The clicked block itself decides first: TNT is lit, not built beside.
+    const auto clicked = context.clickedBlock;
+    if (world.block(clicked.x, clicked.y, clicked.z) == world::Block::Tnt) {
+        return {ItemUseAction::PrimeTnt, world::BlockState{world::Block::Tnt}};
+    }
     const auto target = context.placePosition;
     if (!world::isReplaceable(world.block(target.x, target.y, target.z))) {
         return {};

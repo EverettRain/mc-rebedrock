@@ -11,6 +11,7 @@
 
 #include "gameplay/Explosion.hpp"
 #include "gameplay/GameSession.hpp"
+#include "gameplay/WorldSimulation.hpp"
 #include "world/Block.hpp"
 #include "world/Chunk.hpp"
 #include "world/World.hpp"
@@ -260,6 +261,75 @@ int main() {
                 .at(mc::world::attribute::EnvAttr::BedRule)
                 .asEnum());
         assert(overworld == mc::world::attribute::BedRule::CanSleepWhenDark);
+    }
+
+    // ---------------------------------------------------------------------
+    // 7) EXP-2: TNT. Lighting it removes the block and starts a fuse; the fuse
+    //    running out raises a blast; a blast that reaches other TNT LIGHTS it
+    //    rather than destroying it, which is what makes a stack chain.
+    // ---------------------------------------------------------------------
+    {
+        World world = solidWorld(Block::Stone);
+        mc::gameplay::WorldSimulation simulation;
+        simulation.ignitePrimedTnt({8.5F, 9.5F, 8.5F}, 80);
+        assert(simulation.primedTnt().size() == 1U);
+
+        // Nothing goes off early.
+        for (int tick = 0; tick < 79; ++tick) {
+            static_cast<void>(simulation.tick(world));
+            assert(simulation.takePendingExplosions().empty());
+        }
+        static_cast<void>(simulation.tick(world));
+        const auto pending = simulation.takePendingExplosions();
+        assert(pending.size() == 1U);
+        assert(std::fabs(pending[0].radius - 4.0F) < 1.0e-4F); // PrimedTnt's own radius
+        assert(simulation.primedTnt().empty());
+
+        // It falls: primed TNT over a hole drops until something stops it.
+        World hole = solidWorld(Block::Stone);
+        for (int y = 4; y <= 8; ++y) {
+            hole.setBlock(8, y, 8, Block::Air);
+        }
+        mc::gameplay::WorldSimulation falling;
+        falling.ignitePrimedTnt({8.5F, 8.5F, 8.5F}, 80);
+        const float startY = falling.primedTnt()[0].position.y;
+        for (int tick = 0; tick < 20; ++tick) {
+            static_cast<void>(falling.tick(hole));
+        }
+        assert(!falling.primedTnt().empty());
+        assert(falling.primedTnt()[0].position.y < startY); // it fell
+        // ...and came to rest ON the stone at the bottom of the hole (y = 3),
+        // i.e. centred at 4.5. A loose "it is above the floor" assertion would
+        // pass for a TNT that merely stopped mid-air with its velocity zeroed.
+        assert(std::fabs(falling.primedTnt()[0].position.y - 4.5F) < 0.01F);
+        assert(std::fabs(falling.primedTnt()[0].verticalVelocity) < 1.0e-4F);
+    }
+
+    // ---------------------------------------------------------------------
+    // 8) The chain: a blast over a bed of TNT primes it instead of breaking it.
+    // ---------------------------------------------------------------------
+    {
+        World world = solidWorld(Block::Stone);
+        // A short row of TNT just under the surface.
+        for (int x = 6; x <= 10; ++x) {
+            world.setBlock(x, 8, 8, Block::Tnt);
+        }
+        mc::gameplay::GameSession session;
+        session.setGameMode(mc::gameplay::GameMode::Survival);
+        session.player().setPosition({8.5F, 40.0F, 8.5F}); // well clear of it
+        TestHost host;
+        static_cast<void>(
+            session.explode(world, host, ExplosionSpec{{8.5F, 9.5F, 8.5F}, 4.0F, true}));
+        // The TNT cells are cleared...
+        assert(world.block(8, 8, 8) == Block::Air);
+        // ...but as primed entities, not as rubble.
+        const auto& primed = session.worldSimulation().primedTnt();
+        assert(!primed.empty());
+        for (const auto& tnt : primed) {
+            // TntBlock#wasExploded's short random fuse, so a stack goes off
+            // raggedly instead of all in the same tick.
+            assert(tnt.fuse >= 10 && tnt.fuse < 30);
+        }
     }
 
     std::cout << "explosion_test passed\n";

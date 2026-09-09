@@ -200,6 +200,14 @@ void GameSession::tick(world::World& world, SimulationHost& host) {
                                                 primaryLevel().weather.thunderGradient());
     worldSimulation_.setEnvironment(environment_);
 
+    // EXP-2: the blasts whose fuses ran out this tick. Drained before the sleep
+    // check so a TNT going off beside a sleeping player wakes them the ordinary
+    // way (the damage does it) rather than a tick late.
+    for (const auto& pending : worldSimulation_.takePendingExplosions()) {
+        static_cast<void>(explode(world, host, ExplosionSpec{pending.center, pending.radius,
+                                                             true}));
+    }
+
     // SLP-3: the sleeping player, once the clock and the sky for this tick are
     // settled. Vanilla's ServerLevel does the same thing in the same place:
     // count the sleepers, and if they have been under long enough, move the
@@ -1346,6 +1354,18 @@ std::size_t GameSession::explode(world::World& world, SimulationHost& host,
                                                       world::MutationFlags::All,
                                                       world::MutationCause::Explosion, sink);
         if (!result.changed) {
+            continue;
+        }
+        // TntBlock#wasExploded: a blast does not destroy TNT, it lights it — with
+        // a short random fuse so a stack goes off in a ragged chain rather than
+        // all at once.
+        if (previous.block() == world::Block::Tnt) {
+            const int fuse =
+                static_cast<int>(mc::rng::nextInt(lootRandomState_, 20U)) + 10;
+            worldSimulation_.ignitePrimedTnt({static_cast<float>(cell.x) + 0.5F,
+                                              static_cast<float>(cell.y) + 0.5F,
+                                              static_cast<float>(cell.z) + 0.5F},
+                                             fuse);
             continue;
         }
         // Vanilla's explosion_decay loot function: each stack survives with
