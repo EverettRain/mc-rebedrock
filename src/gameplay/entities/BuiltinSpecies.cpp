@@ -85,6 +85,38 @@ class CreeperAi final : public MonsterAi {
 
 const CreeperAi kCreeperAi;
 
+// AR-M5: the villager. MobCategory::Misc — vanilla's own category for it, which
+// is exactly why a villager never spawns naturally, never despawns and is
+// untouched by Peaceful; it arrives by spawn egg (or, later, with a village).
+// The category's placeholder MiscAi is an empty base because vanilla Misc
+// entities are projectiles and item frames; a villager is the first Misc entity
+// that is also a mob, so it gets a real AI here.
+//
+// The idle half only. Claiming a job site and working it are not goals in this
+// build — they are a per-tick pass in EntitySystem, because both need to reach
+// the world and the AI pass holds only a `const World&`.
+class VillagerAi final : public EntityAi {
+  public:
+    void configureBrain(MobBrain& brain) const override {
+        brain.goals().add(0, std::make_unique<SwimGoal>());
+        // The work goal sits above the wander/look fallback: a villager on its
+        // way to a crop or its composter must not be pulled off course by the
+        // idle stroll. Vanilla expresses the same precedence as an Activity
+        // (WORK replaces IDLE wholesale) rather than a priority.
+        brain.goals().add(2, std::make_unique<VillagerWorkGoal>());
+        // Villager#registerGoals has no PanicGoal of its own — panic is an
+        // Activity there — but EscapeDangerGoal is this build's equivalent of
+        // "something hurt me, run", and a villager that stood still while being
+        // hit would read as broken long before it read as unfaithful.
+        brain.goals().add(1, std::make_unique<EscapeDangerGoal>(0.5F));
+        brain.goals().add(5, std::make_unique<WanderAroundFarGoal>(0.6F));
+        brain.goals().add(6, std::make_unique<LookAtPlayerGoal>(8.0F));
+        brain.goals().add(7, std::make_unique<LookAroundGoal>());
+    }
+};
+
+const VillagerAi kVillagerAi;
+
 // --- loot ----------------------------------------------------------------
 
 // Pig.json (26.1): one to three raw porkchops. (Vanilla drops the cooked cut
@@ -202,6 +234,22 @@ constexpr EntityRenderDescriptor kCreeperRender{
     /*secondaryTexturePath=*/{},
 };
 
+// AR-M5: villager. Geometry transcribed from 26.1's VillagerModel — head with
+// its brimmed hat and nose, body with jacket, the single crossed-arms part and
+// two legs. The profession overlay (textures/entity/villager/profession/*.png)
+// is a second layer vanilla composites on top; this build draws only the base
+// skin, registered as a deviation.
+constexpr EntityRenderDescriptor kVillagerRender{
+    /*geometryPath=*/"animation/villager.geo.json",
+    /*animationPath=*/"animation/villager.animation.json",
+    /*texturePath=*/"entity/villager/villager.png",
+    /*geometryId=*/"geometry.villager",
+    /*walkAnimation=*/"animation.villager.walk",
+    /*idleAnimation=*/"animation.villager.idle",
+    /*scale=*/1.0F,
+    /*secondaryTexturePath=*/{},
+};
+
 constexpr EntityRenderDescriptor kZombieRender{
     /*geometryPath=*/"animation/zombie.geo.json",
     /*animationPath=*/"animation/zombie.animation.json",
@@ -296,6 +344,13 @@ constexpr audio::MobSoundProfile kCreeperSounds{
     "", "entity.creeper.hurt", "entity.creeper.death", "entity.creeper.step", 1.0F, 0.15F,
 };
 
+// Villager (26.1): SoundEvents.VILLAGER_AMBIENT / HURT / DEATH. It has no step
+// sound of its own — Villager never overrides playStepSound — so stepEvent is
+// empty and the block's own footstep is what plays.
+constexpr audio::MobSoundProfile kVillagerSounds{
+    "entity.villager.ambient", "entity.villager.hurt", "entity.villager.death", "", 1.0F, 0.15F,
+};
+
 constexpr audio::MobSoundProfile kHuskSounds{
     "entity.husk.ambient", "entity.husk.hurt", "entity.husk.death",
     "entity.husk.step",    1.0F,               0.15F,
@@ -317,7 +372,7 @@ constexpr audio::MobSoundProfile kHuskSounds{
 
 // --- the manifest --------------------------------------------------------
 
-const std::array<SpeciesDef, 7> kManifest{{
+const std::array<SpeciesDef, 8> kManifest{{
     // Pig (26.1): 10 health, MOVEMENT_SPEED 0.25, box 0.9 x 0.9, egg tint
     // 0xF0A5A5 / 0xDB635E. Drops 1-3 raw porkchops. Not breedable yet (26.1
     // tempts a pig with a carrot, an item this build does not have).
@@ -438,6 +493,27 @@ const std::array<SpeciesDef, 7> kManifest{{
         SpawnEggColors{0x0DA70BU, 0x000000U}, kCreeperRender, kCreeperSounds, &kCreeperAi,
         &rollCreeperLoot, /*breeding=*/BreedingProfile{}, /*behaviorFlags=*/0U,
         /*eggLay=*/EggLayProfile{}, /*xpRewardMin=*/5, /*xpRewardMax=*/5},
+    // Villager (26.1): Villager.createAttributes() is Mob.createMobAttributes()
+    // plus MOVEMENT_SPEED 0.5 — so 20 health and follow range 16 are the shared
+    // mob defaults and 0.5 is the one number Villager itself sets. It has no
+    // ATTACK_DAMAGE attribute at all (it never attacks), so 0. Box 0.6 x 1.95
+    // (EntityType.VILLAGER), egg tint 0x563C33 / 0xBD8B72.
+    //
+    // MobCategory::Misc, which is vanilla's: a villager does not spawn
+    // naturally, does not despawn, and Peaceful does not remove it. This task
+    // spawns them with the egg on purpose.
+    //
+    // xpReward 0: a killed villager drops no experience (Mob's default, which
+    // Villager never raises the way Monster does) and no loot — its whole value
+    // is what it trades.
+    SpeciesDef{
+        /*path=*/"villager", /*vanillaName=*/"villager", MobCategory::Misc,
+        SpawnPlacement::OnGround, EntityDimensions{0.6F, 1.95F},
+        attributesOf(20.0F, 0.5F, 0.0F, 16.0F), /*hasSpawnEgg=*/true,
+        SpawnEggColors{0x563C33U, 0xBD8B72U}, kVillagerRender, kVillagerSounds, &kVillagerAi,
+        /*loot=*/nullptr, /*breeding=*/BreedingProfile{},
+        /*behaviorFlags=*/static_cast<std::uint16_t>(EntityBehavior::Villager),
+        /*eggLay=*/EggLayProfile{}, /*xpRewardMin=*/0, /*xpRewardMax=*/0},
 }};
 
 // Builds one manifest row into an immutable EntityType. The mechanical

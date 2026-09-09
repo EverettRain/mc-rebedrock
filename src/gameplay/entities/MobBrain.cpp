@@ -649,6 +649,164 @@ std::optional<glm::ivec3> MobBrain::takeEatGrassRequest() {
     return request;
 }
 
+void MobBrain::requestVillagerWork(glm::ivec3 cell, VillagerWorkRequest::Kind kind) {
+    villagerWorkRequest_ = VillagerWorkRequest{cell, kind};
+}
+
+std::optional<MobBrain::VillagerWorkRequest> MobBrain::takeVillagerWorkRequest() {
+    auto request = villagerWorkRequest_;
+    villagerWorkRequest_.reset();
+    return request;
+}
+
+// --- AR-M5: the farmer's working day ---------------------------------------
+
+namespace {
+
+// Whether another villager has already claimed this workstation. Vanilla gives
+// each POI a ticket count and the claim is atomic; here the roster of live
+// villagers IS the ticket list, which is exact for the one thing that matters —
+// two villagers never share a composter.
+[[nodiscard]] bool jobSiteTaken(MobAiContext& context, std::uint64_t selfId, glm::ivec3 cell) {
+    for (const SimpleEntity& other : context.entities()) {
+        if (other.id == selfId || !other.hasJobSite) {
+            continue;
+        }
+        if (other.jobSite == cell) {
+            return true;
+        }
+    }
+    return false;
+}
+
+// The nearest cell within `radius` that `accept` likes, measured from `origin`
+// in squared distance. One scan shared by the job-site search and the crop
+// search — they differ only in the predicate.
+template <typename Accept>
+[[nodiscard]] std::optional<glm::ivec3> nearestCell(const world::World& world, glm::ivec3 origin,
+                                                    int radius, Accept&& accept) {
+    std::optional<glm::ivec3> best;
+    int bestDistance = 0;
+    for (int dy = -radius; dy <= radius; ++dy) {
+        const int y = origin.y + dy;
+        if (!world::isWorldYInRange(y)) {
+            continue;
+        }
+        for (int dz = -radius; dz <= radius; ++dz) {
+            for (int dx = -radius; dx <= radius; ++dx) {
+                const glm::ivec3 cell{origin.x + dx, y, origin.z + dz};
+                if (!accept(world, cell)) {
+                    continue;
+                }
+                const int distance = dx * dx + dy * dy + dz * dz;
+                if (!best.has_value() || distance < bestDistance) {
+                    best = cell;
+                    bestDistance = distance;
+                }
+            }
+        }
+    }
+    return best;
+}
+
+[[nodiscard]] float squaredDistanceToCell(glm::vec3 position, glm::ivec3 cell) {
+    const glm::vec3 centre = glm::vec3{cell} + glm::vec3{0.5F};
+    const glm::vec3 delta = centre - position;
+    return glm::dot(delta, delta);
+}
+
+} // namespace
+
+bool VillagerWorkGoal::canStart(SimpleEntity& self, MobAiContext&, MobBrain&) {
+    // Read off the type, never a species id: the bit is what makes a creature a
+    // villager as far as this goal is concerned.
+    return self.type != nullptr && self.type->villager();
+}
+
+bool VillagerWorkGoal::shouldContinue(SimpleEntity& self, MobAiContext& context, MobBrain& brain) {
+    return canStart(self, context, brain);
+}
+
+void VillagerWorkGoal::tick(SimpleEntity& self, MobAiContext& context, MobBrain& brain) {
+    const world::World& world = context.world();
+    const glm::ivec3 feet{static_cast<int>(std::floor(self.position.x)),
+                          static_cast<int>(std::floor(self.position.y)),
+                          static_cast<int>(std::floor(self.position.z))};
+    if (scanCooldown_ > 0) {
+        --scanCooldown_;
+    }
+
+    // A job site that was mined out (or replaced) is released, and with it the
+    // profession — vanilla's ValidateNearbyPoi plus ResetProfession, which is
+    // why breaking a composter un-employs the villager standing at it.
+    if (self.hasJobSite &&
+        world.block(self.jobSite.x, self.jobSite.y, self.jobSite.z) !=
+            entities::professionWorkstation(self.villagerProfession)) {
+        self.hasJobSite = false;
+        self.villagerProfession = entities::VillagerProfession::None;
+    }
+
+    if (!self.hasJobSite) {
+        if (scanCooldown_ > 0) {
+            return;
+        }
+        scanCooldown_ = kScanIntervalTicks;
+        const auto claim = nearestCell(
+            world, feet, kJobSiteSearchRadius,
+            [&](const world::World& w, glm::ivec3 cell) {
+                return entities::professionForWorkstation(w.block(cell.x, cell.y, cell.z)) !=
+                           entities::VillagerProfession::None &&
+                       !jobSiteTaken(context, self.id, cell);
+            });
+        if (!claim.has_value()) {
+            return;
+        }
+        // AssignProfessionFromJobSite: the block decides the profession.
+        self.jobSite = *claim;
+        self.hasJobSite = true;
+        self.villagerProfession =
+            entities::professionForWorkstation(world.block(claim->x, claim->y, claim->z));
+        return;
+    }
+
+    // Carrying nothing: go and reap.
+    if (self.villagerCarryCount == 0U) {
+        if (scanCooldown_ > 0 && !self.hasWorkTarget) {
+            return;
+        }
+        if (!self.hasWorkTarget || !entities::isMatureCrop(world, self.workTarget)) {
+            scanCooldown_ = kScanIntervalTicks;
+            const auto crop = nearestCell(world, feet, kCropSearchRadius,
+                                          [](const world::World& w, glm::ivec3 cell) {
+                                              return entities::isMatureCrop(w, cell);
+                                          });
+            self.hasWorkTarget = crop.has_value();
+            if (!crop.has_value()) {
+                return;
+            }
+            self.workTarget = *crop;
+        }
+        if (squaredDistanceToCell(self.position, self.workTarget) <= kWorkReachSquared) {
+            brain.navigation().stop(self);
+            brain.requestVillagerWork(self.workTarget, MobBrain::VillagerWorkRequest::Kind::Harvest);
+            self.hasWorkTarget = false;
+            return;
+        }
+        static_cast<void>(brain.navigation().startMovingTo(
+            world, self, glm::vec3{self.workTarget} + glm::vec3{0.5F}, 0.6F));
+        return;
+    }
+
+    // Carrying something: take it to the composter.
+    if (squaredDistanceToCell(self.position, self.jobSite) <= kWorkReachSquared) {
+        brain.navigation().stop(self);
+        brain.requestVillagerWork(self.jobSite, MobBrain::VillagerWorkRequest::Kind::Compost);
+        return;
+    }
+    static_cast<void>(brain.navigation().startMovingTo(
+        world, self, glm::vec3{self.jobSite} + glm::vec3{0.5F}, 0.6F));
+}
+
 bool ActiveTargetPlayerGoal::canStart(SimpleEntity& self, MobAiContext& context, MobBrain&) {
     const auto& player = context.player();
     if (!player.present || !player.alive || player.creative ||

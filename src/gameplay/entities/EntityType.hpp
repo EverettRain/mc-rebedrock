@@ -287,6 +287,11 @@ enum class EntityBehavior : std::uint16_t {
     // the interaction call site, exactly as Undead/Arthropod do for their own
     // mechanics. A creature without this bit ignores a dye click entirely.
     Dyeable = 1U << 6U,
+    // AR-M5: the villager family — the creatures that claim a workstation, work
+    // it, and trade. Read by the work goal and by the right-click that opens
+    // the trade screen, so neither needs `species == villager`; it is the same
+    // species-narrow gate Dyeable gives the sheep.
+    Villager = 1U << 7U,
 };
 
 [[nodiscard]] constexpr std::uint16_t operator|(EntityBehavior a, EntityBehavior b) {
@@ -360,6 +365,8 @@ class EntityType final {
     // EntityBehavior::Dyeable. The interaction call site reads this one bit off
     // the target's type instead of naming the sheep species.
     [[nodiscard]] bool dyeable() const { return hasBehavior(EntityBehavior::Dyeable); }
+    // AR-M5: claims a job site, works it, and trades.
+    [[nodiscard]] bool villager() const { return hasBehavior(EntityBehavior::Villager); }
     // AgeableMob breeding parameters (EM-3). `breedable()` is the one-flag test
     // the AI/tick reads before installing or running any breeding logic.
     [[nodiscard]] const BreedingProfile& breeding() const { return breeding_; }

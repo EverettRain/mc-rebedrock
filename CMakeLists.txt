@@ -2261,6 +2261,17 @@ if(BUILD_TESTING)
     )
     add_test(NAME composter COMMAND mc_rebedrock_composter_test)
 
+    # AR-M5: the villager — job-site claim, farming, composting and trading.
+    add_executable(mc_rebedrock_villager_test
+        tests/villager_test.cpp
+    )
+    target_link_libraries(mc_rebedrock_villager_test PRIVATE mc_rebedrock_runtime)
+    target_include_directories(mc_rebedrock_villager_test PRIVATE
+        src
+        "${glm_SOURCE_DIR}"
+    )
+    add_test(NAME villager COMMAND mc_rebedrock_villager_test)
+
     add_executable(mc_rebedrock_face_occlusion_test
         tests/face_occlusion_test.cpp
     )

@@ -1,5 +1,7 @@
 #include "gameplay/GameSession.hpp"
 
+#include "gameplay/Composter.hpp"  // AR-M5: the villager composts through the player's own rule
+
 #include "gameplay/ArmorEnchantment.hpp"
 #include "gameplay/BlockEntityTicker.hpp"
 #include "gameplay/Enchantment.hpp"
@@ -511,6 +513,82 @@ void GameSession::tick(world::World& world, SimulationHost& host) {
             // clearSheared-only relay so eating grass also speeds a lamb's
             // growth, matching vanilla ate().
             static_cast<void>(worldEntities().ate(request.entityId));
+        }
+    }
+    // AR-M5: the farmer villagers' work. Both kinds are block writes the AI pass
+    // could not make itself, and both re-check the world before acting — the
+    // cell may have changed between the goal seeing it and this drain, exactly
+    // as the grass eat above must.
+    for (const auto& work : entityTick.villagerWorks) {
+        auto* villager = worldEntities().byId(work.entityId);
+        if (villager == nullptr) {
+            continue;
+        }
+        const auto& cell = work.cell;
+        GameplayMutationSink sink{world, *this};
+        switch (work.kind) {
+        case entities::MobBrain::VillagerWorkRequest::Kind::Harvest: {
+            // HarvestFarmland: reap and replant in one action. The crop is set
+            // back to age 0 rather than broken, so the field is never left empty
+            // and no seed item is involved — a villager farms, it does not mine.
+            const auto state = world.state(cell.x, cell.y, cell.z);
+            if (!entities::isMatureCrop(world, cell)) {
+                break;
+            }
+            const Item* produce = entities::cropProduce(state.block());
+            if (produce == nullptr) {
+                break;
+            }
+            if (worldMutations_
+                    .setBlock(world, {cell.x, cell.y, cell.z}, state.withAge(0),
+                              world::MutationFlags::All, world::MutationCause::Gravity, sink)
+                    .changed) {
+                // Into the villager's one carry slot. A different produce
+                // replaces what is there rather than mixing: one slot, one item.
+                if (villager->villagerCarryItem != produce) {
+                    villager->villagerCarryItem = produce;
+                    villager->villagerCarryCount = 0U;
+                }
+                if (villager->villagerCarryCount < entities::kVillagerCarryCapacity) {
+                    ++villager->villagerCarryCount;
+                }
+            }
+            break;
+        }
+        case entities::MobBrain::VillagerWorkRequest::Kind::Compost: {
+            // WorkAtComposter: one item in, through the same rule the player's
+            // right-click uses — including the roll, so a villager fills a
+            // composter at exactly the odds a player would.
+            const auto state = world.state(cell.x, cell.y, cell.z);
+            if (state.block() != world::Block::Composter ||
+                villager->villagerCarryItem == nullptr || villager->villagerCarryCount == 0U) {
+                break;
+            }
+            const int level = state.composterLevel();
+            if (level >= kComposterMaxFillLevel) {
+                break;  // full and ripening, or ready: nothing to put in
+            }
+            const float chance = itemCompostChance(villager->villagerCarryItem);
+            if (chance <= 0.0F) {
+                villager->villagerCarryCount = 0U;  // not compostable: drop it
+                villager->villagerCarryItem = nullptr;
+                break;
+            }
+            const int newLevel = composterAddItem(level, chance, composterRandom_.nextFloat());
+            --villager->villagerCarryCount;
+            if (villager->villagerCarryCount == 0U) {
+                villager->villagerCarryItem = nullptr;
+            }
+            if (newLevel != level &&
+                worldMutations_
+                    .setBlock(world, {cell.x, cell.y, cell.z}, state.withComposterLevel(newLevel),
+                              world::MutationFlags::All, world::MutationCause::Gravity, sink)
+                    .changed &&
+                newLevel == kComposterMaxFillLevel) {
+                worldSimulation_.queueComposterReady({cell.x, cell.y, cell.z});
+            }
+            break;
+        }
         }
     }
     // NaturalSpawner: creatures and monsters settle inside the simulation

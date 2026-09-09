@@ -13,6 +13,7 @@
 #include "gameplay/Random.hpp"
 #include "gameplay/ScreenHandler.hpp"
 #include "gameplay/entities/BuiltinSpecies.hpp"
+#include "gameplay/entities/Villager.hpp"
 #include "world/Block.hpp"
 #include "world/BlockPlacement.hpp"
 #include "world/BlockShape.hpp"
@@ -313,6 +314,54 @@ bool tryAutoEquipArmor(GameSession& session) {
                                         glm::vec3{clicked} + glm::vec3{0.5F}, clickedState.block(),
                                         nullptr, 1.0F, /*heavy(on)=*/on});
     return true;
+}
+
+// AR-M5: one trade with the villager `entityId`, taking the first offer its
+// profession and level have unlocked that the player's held stack can pay for.
+// Returns whether a trade actually happened.
+//
+// Everything that makes a trade a trade lives here: the payment comes out of the
+// held stack, the goods go into the inventory (or nowhere, if it is full — in
+// which case the trade does not happen at all rather than eating the payment),
+// the offer's use count climbs toward max_uses, and the villager earns the
+// offer's trading experience, which is what raises its level and unlocks the
+// next tier.
+bool tradeWithVillager(GameSession& session, std::uint64_t entityId) {
+    SimpleEntity* villager = session.worldEntities().byId(entityId);
+    if (villager == nullptr || villager->dead()) {
+        return false;
+    }
+    const auto offers = entities::offersFor(villager->villagerProfession);
+    if (offers.empty()) {
+        return false;  // unemployed: nothing to sell
+    }
+    const auto& held = session.inventory().selectedStack();
+    if (held.empty()) {
+        return false;
+    }
+    for (std::size_t index = 0; index < offers.size(); ++index) {
+        const auto& offer = offers[index];
+        if (!entities::offerAvailable(offer, static_cast<int>(villager->villagerLevel),
+                                      villager->villagerOfferUses[index])) {
+            continue;
+        }
+        if (!sameItem(held, offer.wants) || held.count < offer.wants.count) {
+            continue;
+        }
+        // The goods first: a full inventory must not swallow the payment.
+        ItemStack goods = offer.gives;
+        if (!session.inventory().add(goods) || goods.count != 0U) {
+            return false;
+        }
+        static_cast<void>(session.inventory().consumeSelected(offer.wants.count));
+        ++villager->villagerOfferUses[index];
+        const auto progress = entities::villagerAfterTrade(
+            static_cast<int>(villager->villagerLevel), villager->villagerTradeXp, offer.xp);
+        villager->villagerLevel = static_cast<std::uint8_t>(progress.level);
+        villager->villagerTradeXp = progress.xp;
+        return true;
+    }
+    return false;
 }
 
 // AR-M4: ComposterBlock's right-click, both halves of it.
@@ -1397,6 +1446,24 @@ void PlayerInteraction::performUseOnEntity(GameSession& session, world::World&,
                   << " species=" << target->kind().id().path << " held=" << heldName
                   << " dyeable=" << (target->kind().dyeable() ? 1 : 0)
                   << " sheared=" << (target->sheared ? 1 : 0) << std::endl;
+    }
+
+    // AR-M5: Villager#mobInteract — the trade. Ahead of every other branch,
+    // because a villager is not shearable, not dyeable and not tempted, and
+    // vanilla's own dispatch answers the click with startTrading before
+    // anything else on a villager can.
+    //
+    // Registered deviation: 26.1 opens a MerchantScreen and lets the player pick
+    // an offer. This build has no merchant screen (a real one is a UI-line
+    // task — panel geometry, a scrolling offer list, three slots and the level
+    // bar all have to be built, and half-drawing it would be worse than not
+    // having it), so a click takes the FIRST unlocked offer the held stack can
+    // pay for. The mechanism underneath — per-offer uses, level unlocks and
+    // trading experience — is vanilla's, and the screen can be laid over it
+    // without changing any of it.
+    if (target->kind().villager()) {
+        tradeWithVillager(session, use.entityId);
+        return;
     }
 
     // Sheep#mobInteract: shears win over the tempt-feed branch below (a shears

@@ -1354,6 +1354,9 @@ EntityTickResult EntitySystem::tick(
             if (const auto grassCell = entity.brain.takeEatGrassRequest()) {
                 result.grassEats.push_back({entity.id, *grassCell});
             }
+            if (const auto work = entity.brain.takeVillagerWorkRequest()) {
+                result.villagerWorks.push_back({entity.id, work->cell, work->kind});
+            }
             // EXP-3: Creeper#tick's fuse. The goal sets a level ("swelling" or
             // not) and this integrates it, so walking away from a hissing
             // creeper winds the fuse back DOWN rather than merely pausing it.
