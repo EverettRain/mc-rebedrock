@@ -104,6 +104,14 @@ struct TestSceneOptions final {
     // 的缺陷。改成钉成**命令行的函数**——仍然与机器上的 options.properties 无关，
     // 但可以指定。进目录名，和其余每一项一样。
     config::AntiAliasingMode antiAliasing = config::AntiAliasingMode::Off;
+    // RN-55：近段级联那个框的半边长（8/16/24 格）。它是**每帧读**的选项，因此按
+    // 「出图钉死分两类」属于必须在 applyPreviewDeterminism 里钉的那一类——而它一直
+    // 没被钉，出图跑哪一档全看那台机器的 options.properties 写了什么。
+    //
+    // 这条线上它恰恰是最关键的可变量：用户报的光斑就是 24 档才有的，而 RN-52 的
+    // 「三档各出一张」当时只能靠手改代码。与 --anti-aliasing 同一个规矩：钉的是
+    // **与 options.properties 无关**，不是钉成一个常量；档位进目录名。
+    int shadowNearDistance = 8;
     // Square, and fixed rather than taken from the window: an export whose size
     // depends on the monitor it ran on cannot be compared with one from another
     // machine, and RN-15 is a comparison tool before it is anything else.

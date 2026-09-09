@@ -390,6 +390,9 @@ set(MC_REBEDROCK_RUNTIME_SOURCES
     # about Vulkan, so it belongs here where its test links the library instead of
     # re-listing sources -- the same trade ParticleSystem took just above.
     src/render/EntityShadowDecal.cpp
+    # 世界图标那段「帧缓冲 -> 64x64」的纯算术。同样不碰 Vulkan、不碰文件系统，
+    # 放进运行时库，它的测试就能链库而不是再列一遍源文件。
+    src/render/WorldIcon.cpp
     # RN-20a: the baked frame graph. It is the orchestration layer — it knows Vulkan
     # handles and descriptions, nothing about WorldRenderer or VulkanRenderer::Impl —
     # so it belongs in the runtime library where its test can link the library instead
@@ -3328,6 +3331,16 @@ if(BUILD_TESTING)
         "${stb_SOURCE_DIR}"
     )
     add_test(NAME save_icon COMMAND mc_rebedrock_save_icon_test)
+
+    # 世界图标那段「帧缓冲 -> 64x64」的纯算术。WorldIcon.cpp 已在运行时库里，
+    # 所以这里只列测试自己那一个源文件，不重复列被测源码。
+    add_executable(mc_rebedrock_world_icon_test tests/world_icon_test.cpp)
+    target_link_libraries(mc_rebedrock_world_icon_test PRIVATE mc_rebedrock_runtime)
+    target_include_directories(mc_rebedrock_world_icon_test PRIVATE
+        src
+        "${glm_SOURCE_DIR}"
+    )
+    add_test(NAME world_icon COMMAND mc_rebedrock_world_icon_test)
 
     if(MC_REBEDROCK_BUILD_TOOLS)
         # migration_diag <world-dir> loads a real old-format world, saves it

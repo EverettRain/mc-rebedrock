@@ -1,6 +1,8 @@
 #include "persistence/SaveRepository.hpp"
 
 #include "assets/ImageData.hpp"
+#include "core/VersionManifest.hpp"
+#include "gameplay/GameMode.hpp"
 
 #include <algorithm>
 #include <chrono>
@@ -321,6 +323,96 @@ void testIconsArePerWorld() {
     std::filesystem::remove_all(root);
 }
 
+// 世界列表第三行的那两个字段。26.1 的
+// WorldSelectionList.WorldListEntry.extractContent:443 画的是
+// LevelSummary.getInfo()，而它的内容（LevelSummary.createInfo():166-186）就是
+// 「游戏模式名 + ", Version: " + 写这个世界的版本名」。所以列表要拿得到这两样。
+//
+// 关键在于：两者都**不在** level.properties 里，只在 world.dat 的 WRLD / VERS
+// 两个块里。因此这几条测试真正守的是「列表那条路径确实去 world.dat 取了，而且
+// 取的是这个世界自己的那一份」。
+void testListingCarriesGameModeAndVersionName() {
+    const auto root = makeUniqueRoot();
+    persistence::SaveRepository repository{root};
+
+    // 两个世界，模式**不同**。同模式的夹具分不出"逐世界读出来的"和"照抄了某个
+    // 全局默认值"——两者都会全绿。
+    auto survival = repository.create("Survival World", 1ULL);
+    survival.gameMode = gameplay::GameMode::Survival;
+    repository.save(survival);
+    auto creative = repository.create("Creative World", 2ULL);
+    creative.gameMode = gameplay::GameMode::Creative;
+    repository.save(creative);
+
+    const auto saves = repository.list();
+    const auto* survivalSummary = findSummary(saves, survival.summary.identifier);
+    const auto* creativeSummary = findSummary(saves, creative.summary.identifier);
+    REQUIRE(survivalSummary != nullptr);
+    REQUIRE(creativeSummary != nullptr);
+    REQUIRE(survivalSummary->gameMode == gameplay::GameMode::Survival);
+    REQUIRE(creativeSummary->gameMode == gameplay::GameMode::Creative);
+
+    // 版本名的来源是 VERS 块在**写入时**记下的快照，也就是这次 save() 打上的
+    // 本 build 的版本名。钉的是 kVersion.name 这个唯一真相源，不是抄一份
+    // "26.1beta1" 字面量——那会让同一个事实有两份表述，且下次改版本号时静默过期。
+    REQUIRE(survivalSummary->versionName == core::kVersion.name);
+    REQUIRE(creativeSummary->versionName == core::kVersion.name);
+    // 而且不是空串：一个压根没去读 world.dat 的实现会让两条都留在默认值上，
+    // 上面那条 `== kVersion.name` 才是有意义的。
+    REQUIRE(!survivalSummary->versionName.empty());
+
+    // 版本感知的那条列表是另一条代码路径，必须给出同样的答案；同时它自己的
+    // versionHeader.versionName 与 summary.versionName 必须是同一个字符串——
+    // 一份事实在 WorldSummary 里出现两次，只有它们由同一次读取赋值才不会漂。
+    const auto worlds = repository.worldSummaries();
+    const auto found = std::ranges::find(worlds, survival.summary.identifier,
+        [](const persistence::WorldSummary& world) { return world.summary.identifier; });
+    REQUIRE(found != worlds.end());
+    REQUIRE(found->summary.gameMode == gameplay::GameMode::Survival);
+    REQUIRE(found->summary.versionName == core::kVersion.name);
+    REQUIRE(found->summary.versionName == found->versionHeader.versionName);
+
+    // 打开世界后，summary 说的必须和这个世界本身说的一致，否则玩家点进去的那一行
+    // 和进去之后的状态会各说各话。
+    const auto loaded = repository.load(survival.summary.identifier);
+    REQUIRE(loaded.gameMode == gameplay::GameMode::Survival);
+    REQUIRE(loaded.summary.gameMode == loaded.gameMode);
+    REQUIRE(loaded.summary.versionName == loaded.versionHeader.versionName);
+
+    std::filesystem::remove_all(root);
+}
+
+// 一个 level.properties 还在、world.dat 却读不出来的世界仍然要出现在列表里：
+// 能不能列出来由 level.properties 决定，第三行的两个字段读不到就留默认值，
+// 而不是把整条目吞掉。这条守的是 list() 里那个 try 的范围。
+void testUnreadableWorldDatStillLists() {
+    const auto root = makeUniqueRoot();
+    persistence::SaveRepository repository{root};
+    auto game = repository.create("Broken", 7ULL);
+    game.gameMode = gameplay::GameMode::Survival;
+    repository.save(game);
+    const auto identifier = game.summary.identifier;
+
+    // 先确认健康状态下确实读出了 Survival，否则下面"变回默认值"证明不了任何事。
+    {
+        const auto* summary = findSummary(repository.list(), identifier);
+        REQUIRE(summary != nullptr);
+        REQUIRE(summary->gameMode == gameplay::GameMode::Survival);
+    }
+
+    // 砍掉 world.dat（连它的 .bak 一起），level.properties 原封不动。
+    std::filesystem::remove(root / identifier / "world.dat");
+    std::filesystem::remove(root / identifier / "world.dat.bak");
+
+    const auto* summary = findSummary(repository.list(), identifier);
+    REQUIRE(summary != nullptr);              // 仍然可列
+    REQUIRE(summary->displayName == "Broken");  // level.properties 的字段照常
+    REQUIRE(summary->versionName.empty());    // 读不到版本名就不编一个
+    REQUIRE(summary->gameMode == persistence::SaveSummary{}.gameMode);  // 留默认值
+
+    std::filesystem::remove_all(root);
+}
+
 } // namespace
 
 int main() {
@@ -330,5 +422,7 @@ int main() {
     testWriteIconRejectsBadInput();
     testRemoveDeletesTheIcon();
     testIconsArePerWorld();
+    testListingCarriesGameModeAndVersionName();
+    testUnreadableWorldDatStillLists();
     return 0;
 }

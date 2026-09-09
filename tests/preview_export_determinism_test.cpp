@@ -144,13 +144,30 @@ int main() {
     // 它们本来就在，这里列出来是为了让「哪些设置被钉死」有一个能被读的清单：
     // 少一档就是又一次「图片取决于跑它的那台机器」。
     for (const auto* pinned : {"options.viewBobbing = false;", "options.entityShadows = true;",
-                               "options.menuBackgroundBlurriness = 0;",
-                               // RN-47：接缝离视点多远。它是**每帧读**的（只进正交矩阵），
-                               // 所以钉在这个函数里，与抗锯齿那一档正相反
-                               "options.shadowNearDistance = render::kDefaultSunShadowNearDistance;"}) {
+                               "options.menuBackgroundBlurriness = 0;"}) {
         require(body.find(pinned) != std::string::npos,
                 std::string{"applyPreviewDeterminism 必须钉死 "} + pinned);
     }
+
+    // ---- RN-55：钉死不等于钉成常量 ----------------------------------------
+    //
+    // `shadowNearDistance` 是**每帧读**的（只进那个正交矩阵），所以它钉在这个函数里
+    // ——位置一直是对的。但从前钉的是**常量** `kDefaultSunShadowNearDistance`，
+    // 而这条断言把那个常量写成了规格。
+    //
+    // 后果：16 / 24 档那两条路在出图里**根本拍不到**（实测两档的 PNG 逐字节相同），
+    // 于是 RN-52 那张「三档各出一张掩模」的表不可复现，而用户报的光斑只在 24 档出现。
+    // 这与 RN-44 在抗锯齿上踩过的是同一个坑，那条注释就写在旁边：
+    // 「钉的是**与 options.properties 无关**，不是钉成一个常量」。
+    //
+    // 确定性的要求没有降低：档位来自命令行，**不**来自那台机器的 options.properties，
+    // 而且它进输出目录名，所以两次同参数运行仍然逐字节相同。
+    require(body.find("options.shadowNearDistance = testScene->shadowNearDistance;") !=
+                std::string::npos,
+            "近段档必须来自命令行的 --near-shadow，而不是那台机器的 options.properties");
+    require(body.find("options.shadowNearDistance = render::kDefaultSunShadowNearDistance") ==
+                std::string::npos,
+            "钉成常量会让 16/24 档在出图里拍不到——那正是 RN-52 三档对照失真的原因");
 
     // ================= TAA-1：同一个陷阱的第二次现身 =========================
     //

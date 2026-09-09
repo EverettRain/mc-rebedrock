@@ -1793,7 +1793,16 @@ void checkNearDistanceOption() {
 
 // RN-49：级联**不混合**。RN-43 加过一条过渡带，本节点删了它——理由见 docs。
 // 这条测试因此从「带内两级各采一次」整个反过来：**任何时候都只采一级**。
-// RN-51/52：薄投射者侧对光到判不出来的程度就不投影，而门槛随**这一级的纹素**走。
+// RN-51/52/55：薄投射者与光**平行到整个面塌成一条线**时才不投影，门槛随这一级的纹素走。
+//
+// ★ RN-55 更正了这里从前钉住的那个公式。旧断言把 RN-51 的缺陷写成了规格
+// （HANDOFF §5.2 的第五次）——它要求门槛是 `2 x 纹素 / (1/16)`，即把边框在投影里的
+// 宽度当成 `1/16 x |N·L|`。而边框宽度的方向是**面内**的一个轴 W，它在投影里的压缩
+// 系数是 `sqrt(1 - (W·L)^2)`，与 `|N·L|` 毫无关系。
+//
+// 后果是量出来的：正午的南北向玻璃面 |N·L| = 0.2696（那是太阳轨道倾角定死的上界），
+// 旧门槛 16 档 0.5、24 档 0.75 把它整个筛掉——16/24 档下玻璃与玻璃板的侧向阴影
+// **一天都没有**，掩模量到的是彻底的 0。
 void checkThinCasterFacing() {
     const std::filesystem::path shaderDir{MC_REBEDROCK_SHADER_SRC_DIR};
     const std::string vertexSource = stripLineComments(readFile(shaderDir / "shadow.vert"));
@@ -1811,9 +1820,11 @@ void checkThinCasterFacing() {
     //   噪声原样回来，而画面上就是「近处的阴影质量随这个参数变高而变差」。
     REQUIRE(vertexSource.find("sunShadowTexelBlocksOf(shadow.lightViewProj)") != std::string::npos,
             "the threshold must come from the texel of the cascade being rendered");
-    REQUIRE(vertexSource.find("kThinCasterMinTexels * texelBlocks / kThinCasterFrameBlocks") !=
+    REQUIRE(vertexSource.find("kThinCasterMinTexels * texelBlocks / kThinCasterFaceBlocks") !=
                 std::string::npos,
-            "and it must be 'the frame must cover at least N texels', not a magic constant");
+            "and it must be 'the face must still be N texels wide', not a magic constant");
+    REQUIRE(vertexSource.find("kThinCasterFrameBlocks") == std::string::npos,
+            "the frame width is not what this threshold divides by; that was RN-51's mistake");
     REQUIRE(cutoutSource.find("kThinCasterMinFacing") == std::string::npos,
             "the fixed 0.25 threshold is gone; it only held at the default setting");
 
@@ -1832,31 +1843,68 @@ void checkThinCasterFacing() {
         return std::stof(tail);
     };
     const float minTexels = shaderConstant("kThinCasterMinTexels");
-    const float frameBlocks = shaderConstant("kThinCasterFrameBlocks");
-    REQUIRE(std::abs(frameBlocks - 1.0F / 16.0F) < 1e-6F,
-            "the frame width is one sixteenth of a block; that is what vanilla's glass.png draws");
+    const float faceBlocks = shaderConstant("kThinCasterFaceBlocks");
+    REQUIRE(std::abs(faceBlocks - 1.0F) < 1e-6F,
+            "the projected width that vanishes is the **face**'s, and a block face is one block");
     // 奈奎斯特：一个特征只盖住一个采样点，正是它开始混叠的那一点。低于两个纹素渲进去的
     // 是噪声——实测把它调到 1.0，默认档的发丝影原样回来
     REQUIRE(minTexels >= 2.0F,
             "a frame must cover at least two texels to be signal rather than noise");
     const auto minFacing = [&](int nearBlocks) {
-        return minTexels * mc::render::sunShadowTexelSize(0, nearBlocks) / frameBlocks;
+        return minTexels * mc::render::sunShadowTexelSize(0, nearBlocks) / faceBlocks;
     };
-    REQUIRE(std::abs(minFacing(8) - 0.25F) < 1e-6F,
-            "the default setting must still land on the value RN-51 measured");
-    REQUIRE(std::abs(minFacing(16) - 0.5F) < 1e-6F, "16 blocks doubles it");
-    REQUIRE(std::abs(minFacing(24) - 0.75F) < 1e-6F, "24 blocks trebles it");
     float previous = 0.0F;
     for (const int blocks : mc::render::kSunShadowNearDistances) {
-        REQUIRE(minFacing(blocks) > previous, "a coarser texel must demand a more face-on frame");
-        REQUIRE(minFacing(blocks) < 1.0F,
-                "and never exceed one, or the setting would drop every glass shadow");
+        REQUIRE(minFacing(blocks) > previous, "a coarser texel must demand a more face-on face");
         previous = minFacing(blocks);
     }
-    // 远段那一级的门槛必然超过 1 —— 也就是「远段一个纹素就是边框宽度，怎么摆都撑不住」，
-    // 这正是 RN-50 只把玻璃画进近段的算术依据
-    REQUIRE(2.0F * mc::render::kSunShadowTexelSize / (1.0F / 16.0F) > 1.0F,
-            "the far cascade cannot resolve a one-sixteenth-block frame at any facing");
+
+    // ---- 3b. ★ 门槛必须放得过真实存在的侧面朝向 ---------------------------
+    //
+    // 这一条钉的是**会错的那个量**，不是「门槛等于 0.0156」那种自己等于自己的算术。
+    //
+    // 太阳整天严格落在一个平面里，倾角是 kSunOrbitTilt。于是南北向的竖直面（法线 ±Z）
+    // 的 |N·L| 有一个**由轨道形状定死的上界**：正午时 tilt / sqrt(1 + tilt^2) = 0.2696。
+    // 门槛一旦逼近它，那些面就一天都投不出影子——旧公式的 16/24 档（0.5 / 0.75）正是
+    // 越过了这条线，掩模量到的是彻底的 0。
+    //
+    // 留一倍的余量：门槛不得超过那个上界的一半。
+    constexpr float kTilt = mc::world::DayNightCycle::kSunOrbitTilt;
+    const float northSouthFacingCeiling = kTilt / std::sqrt(1.0F + kTilt * kTilt);
+    REQUIRE(std::abs(northSouthFacingCeiling - 0.2696F) < 1e-3F,
+            "the orbit tilt caps how face-on a north-south wall can ever get");
+    for (const int blocks : mc::render::kSunShadowNearDistances) {
+        REQUIRE(minFacing(blocks) < northSouthFacingCeiling * 0.5F,
+                "a threshold this high drops the side shadows of glass for the whole day");
+    }
+    // 而它仍要拦住真正退化的面：正午的东西向墙 |N·L| 恰好是 0
+    REQUIRE(minFacing(8) > 0.0F, "a face exactly edge-on to the light still casts nothing");
+
+    // RN-50「玻璃只进近段」的算术依据是**另一条**判据，与朝向无关：远段一个纹素正好
+    // 就是边框宽度 1/16 格，于是边框在任何朝向下都盖不住一个采样点。两条判据正交——
+    // 把它们混成一个数正是 RN-51 的缺陷。
+    REQUIRE(mc::render::kSunShadowTexelSize >= 1.0F / 16.0F,
+            "the far cascade's texel is at least as wide as the frame, at any facing");
+
+    // ---- 3c. RN-55：出图必须能拍到三档，否则「三档各出一张」是句空话 -------
+    //
+    // `shadowNearDistance` 是**每帧读**的，所以按「出图钉死分两类」它钉在
+    // `applyPreviewDeterminism` 里——位置一直是对的，但从前钉的是**常量**
+    // `kDefaultSunShadowNearDistance`。于是 16/24 档那两条路在出图里根本拍不到，
+    // 而用户报的光斑只在 24 档出现。这与 RN-44 在抗锯齿上踩过的是同一个坑，
+    // 那条注释就写着：「钉的是**与 options.properties 无关**，不是钉成一个常量」。
+    //
+    // 这条断言钉的是接线（HANDOFF §5.3）：上面所有算术断言调的都是那个公式本身，
+    // 没有一条能证明出图真的跑得到 24 档。
+    {
+        const std::string renderer = stripLineComments(readFile(MC_REBEDROCK_RENDERER_SRC));
+        REQUIRE(renderer.find("options.shadowNearDistance = testScene->shadowNearDistance;") !=
+                    std::string::npos,
+                "the preview must take the near-cascade setting from the command line");
+        REQUIRE(renderer.find("options.shadowNearDistance = render::kDefaultSunShadowNearDistance") ==
+                    std::string::npos,
+                "pinning it to a constant makes 16 and 24 unreachable from the export tool");
+    }
 
     // ---- 4. 只筛薄投射者 --------------------------------------------------
     REQUIRE(vertexSource.find("if (shadow.sectionOrigin.w > 0.5) {") != std::string::npos,
