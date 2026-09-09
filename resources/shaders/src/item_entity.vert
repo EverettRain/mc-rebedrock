@@ -315,6 +315,14 @@ void main() {
         bool blockItemBox =
             isItemMode(kItemModeBlockItemDropped) || isItemMode(kItemModeBlockItemHeld);
         bool blockItemHeld = isItemMode(kItemModeBlockItemHeld);
+        // 六面闭合、且**不镜像**的盒。三个成员各自列出，不写成 `blockItemBox || ...`：
+        // 这份清单要能被 hud_push_constant_test 逐个读出来。
+        //
+        // RN-37 只写了模式 1，而模式 1 是「下落方块 / 破坏叠加」——手持（11）与掉落
+        // （10）的方块物品自 RN-14 起就是另外两个模式，于是手持玻璃照旧露出内壁。
+        // 出图夹具用的偏偏是下落的沙子，也就是唯一被修好的那个模式，所以它是绿的。
+        bool closedBox = isItemMode(kItemModeBlockCube) ||
+            isItemMode(kItemModeBlockItemDropped) || isItemMode(kItemModeBlockItemHeld);
         bool useMatrix = matrixViewModel || worldMatrixCuboid || boxUvEntity || blockItemHeld;
         bool heldInViewSpace = isItemMode(kItemModeHeldSprite) ||
             isItemMode(kItemModeViewSkinCuboid) || matrixViewModel || blockItemHeld;
@@ -558,9 +566,10 @@ void main() {
         fragmentNormal = normal;
         fragmentFallingBlock = isItemMode(kItemModeBlockCube) && item.data.w > 1.5 ? 1.0 : 0.0;
         fragmentIsCube = 1.0;
-        // 方块图标（手持、快捷栏、掉落物、下落方块）是六面闭合的盒，且不镜像。
-        // 生物模型走的是同一条分支却**会**镜像，所以判据是模式而不是 fragmentIsCube
-        fragmentClosedBox = isItemMode(kItemModeBlockCube) ? 1.0 : 0.0;
+        // 方块图标（手持、掉落物、下落方块）是六面闭合的盒，且不镜像。生物模型走的是
+        // 同一条分支却**会**镜像，所以判据是模式的清单而不是 fragmentIsCube。
+        // 快捷栏那一张不在这里：它由 hud.vert 过程化生成，见 RN-40 的留账
+        fragmentClosedBox = closedBox ? 1.0 : 0.0;
         fragmentShadowOpacity = 0.0;
         fragmentOpacity = 1.0;
         fragmentCameraDistance = heldInViewSpace

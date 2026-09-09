@@ -425,6 +425,19 @@ inline constexpr std::array kItemModesWithoutProducer{
     return isItemMode(mode, kItemModeBlockItemDropped) ||
            isItemMode(mode, kItemModeBlockItemHeld);
 }
+// 六面闭合、且不镜像的盒。只有这样的几何才能逐片元丢背面：闭合保证背面永远被正面
+// 挡着（半透明方块除外，那正是要丢它的原因），不镜像保证 gl_FrontFacing 说的是真话。
+//
+// **不是** itemBranchCuboid：那条分支还收着生物模型，而生物的左半边是沿局部 X 轴镜像
+// 出来的，镜像翻绕序。按 gl_FrontFacing 丢会剃掉半个生物。
+//
+// RN-40：这份清单原来只有 kItemModeBlockCube 一个，写在着色器里没有镜像。模式 1 是
+// 下落方块与破坏叠加；手持（11）与掉落（10）的方块物品自 RN-14 起是另外两个模式。
+[[nodiscard]] inline constexpr bool itemClosedBox(float mode) {
+    return isItemMode(mode, kItemModeBlockCube) ||
+           isItemMode(mode, kItemModeBlockItemDropped) ||
+           isItemMode(mode, kItemModeBlockItemHeld);
+}
 [[nodiscard]] inline constexpr bool itemUsesMatrix(float mode) {
     return isItemMode(mode, kItemModeMatrixViewModel) ||
            isItemMode(mode, kItemModeWorldMatrixCuboid) ||

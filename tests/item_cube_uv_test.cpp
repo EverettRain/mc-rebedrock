@@ -211,14 +211,19 @@ int main() {
         assert(fragment.find("discard") != std::string::npos);
         // ★ 判据必须是模式。写成 fragmentIsCube 会把生物一起卷进来——那是一个
         //   「半个猪不见了」的缺陷，而源码读起来毫无异样
-        assert(vertex.find("fragmentClosedBox = isItemMode(kItemModeBlockCube) ? 1.0 : 0.0;") !=
-              std::string::npos);
+        //
+        // ★★ RN-40：这一条原本钉的是 `isItemMode(kItemModeBlockCube) ? 1.0 : 0.0`，
+        //    **一字不差地钉住了缺陷本身**。判据是模式没错，但少了两个模式：手持（11）
+        //    与掉落（10）的方块物品。钉一条语句的拼写，证不了这条语句认全了它该认的
+        //    模式——那份清单现在由 hud_push_constant_test 的 `bool closedBox =`
+        //    逐成员比对，与 mc::render::itemClosedBox 双向对齐。
+        assert(vertex.find("fragmentClosedBox = closedBox ? 1.0 : 0.0;") != std::string::npos);
         assert(vertex.find("fragmentClosedBox = fragmentIsCube") == std::string::npos);
         // 默认值必须是「别丢」：GLSL 里没被写过的 out 是未定义值，而写错方向的代价
         //   是整块几何消失，不是多画几个看不见的面
         const auto mainAt = vertex.find("void main() {");
         const auto defaultAt = vertex.find("fragmentClosedBox = 0.0;");
-        const auto setAt = vertex.find("fragmentClosedBox = isItemMode(");
+        const auto setAt = vertex.find("fragmentClosedBox = closedBox");
         assert(mainAt != std::string::npos && defaultAt != std::string::npos);
         assert(defaultAt > mainAt && defaultAt < setAt);
     }

@@ -591,6 +591,12 @@ int main() {
             {"bool heldInViewSpace =",
              sortedNames({"kItemModeHeldSprite", "kItemModeViewSkinCuboid"}),
              nullptr}, // matrixViewModel and blockItemHeld arrive via named bools
+            // RN-40：闭合盒的清单。这一条是补出来的——原来着色器里写的是单一模式，
+            // 没有任何东西比对它与「哪些模式画的是闭合盒」这份认识
+            {"bool closedBox =",
+             sortedNames({"kItemModeBlockCube", "kItemModeBlockItemDropped",
+                          "kItemModeBlockItemHeld"}),
+             &mc::render::itemClosedBox},
             {"bool heldBillboard =", sortedNames({"kItemModeHeldBillboard"}), nullptr},
             {"bool atlasBillboard =", sortedNames({"kItemModeAtlasBillboard"}),
              &mc::render::itemAtlasBillboard},
@@ -613,6 +619,17 @@ int main() {
             const bool expected = mode == mc::render::kItemModeBlockItemDropped ||
                                   mode == mc::render::kItemModeBlockItemHeld;
             assert(mc::render::itemBlockItemBox(mode) == expected);
+        }
+        // RN-40：手持的方块物品必须在闭合盒里，掉落的也是。生物模型必须不在——
+        // 它镜像，按 gl_FrontFacing 丢会剃掉半个身体
+        assert(mc::render::itemClosedBox(mc::render::kItemModeBlockItemHeld));
+        assert(mc::render::itemClosedBox(mc::render::kItemModeBlockItemDropped));
+        assert(!mc::render::itemClosedBox(mc::render::kItemModeBoxUvEntity));
+        for (const float mode : mc::render::kItemModes) {
+            const bool expected = mode == mc::render::kItemModeBlockCube ||
+                                  mode == mc::render::kItemModeBlockItemDropped ||
+                                  mode == mc::render::kItemModeBlockItemHeld;
+            assert(mc::render::itemClosedBox(mode) == expected);
         }
         for (const float mode : mc::render::kItemModes) {
             const bool expected = mode == mc::render::kItemModeMatrixViewModel ||
