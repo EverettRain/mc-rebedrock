@@ -107,6 +107,16 @@ struct UiCaptureOptions final {
     //   状态**，不是目标身份的一部分——把它做进目标表，26 个目标会立刻变成 28 个，
     //   而真正变化的只有一屏。默认 0 保持现状，既有基线不动。
     std::size_t tabIndex = 0U;
+    // UI-12：按了几次 Tab。0 = 没有焦点（默认，既有基线因此逐字节不变）。
+    //
+    // ★ 语义是"**按了 n 次 Tab**"而不是"第 n 个控件"：焦点是页面里的**可聚焦**控件
+    //   序，Label / Panel / Image 不占位；给一个裸的控件下标，页面一改就指到别处去了。
+    // ★ 它是这条通道的第五根轴。理由与 --ui-cursor / --ui-carry 同族：
+    //   焦点态在 26.1 里换的是**另一张精灵**（按钮的 highlighted、复选框的
+    //   checkbox_highlighted / checkbox_selected_highlighted、列表选中框由灰变白），
+    //   而在这之前**没有任何一张基线拍到过焦点** —— 那几张图从图集烘进去之后
+    //   一次都没进过画。
+    std::size_t focusSteps = 0U;
     std::filesystem::path root{"export/ui-preview"};
 
     [[nodiscard]] bool operator==(const UiCaptureOptions&) const = default;

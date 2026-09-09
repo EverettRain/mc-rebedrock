@@ -240,6 +240,46 @@ void testPageShape() {
     CHECK(proceeded == 1 && backed == 0);
 }
 
+// --- 8b. 焦点遍历：Tab 走得到复选框，而且跳过标题与正文 ---------------------
+//
+// ★ 偏差表 D37 曾说"提示屏还没有接进 Tab 序，所以复选框的焦点态永远是 false"。
+//   **那条也是错的**（UI-12 复核）：Tab 的处理是**完全通用**的
+//   （`ui::nextFocus(buildCurrentPage(), …)`），提示屏的三个可交互控件本来就在序里，
+//   而 `drawMenuWidgets` 把 `widgetIndex == focused` 直接传给 `drawCheckbox`。
+//   这里把它写成断言，免得下一个人再照那条已作废的登记去"补"一遍。
+void testFocusOrder() {
+    using mc::ui::WidgetId;
+    const auto ctx = noticeContext();
+    mc::ui::MenuCallbacks cb;
+    mc::ui::Page page;
+    mc::ui::buildPageInto(page, mc::ui::PageId::AdvancedGraphicsNotice, ctx, cb);
+
+    // 没有焦点时正向第一次 Tab 落在**第一个可聚焦控件**上——标题与六行正文是
+    // Label（`interactive()` 为假），一个都不占位。
+    const std::size_t first = mc::ui::nextFocus(page, mc::ui::kNoWidget, /*forward=*/true);
+    CHECK(first == 7U);
+    CHECK(static_cast<WidgetId>(page[first].debugId) == WidgetId::NoticeStopShowing);
+    const std::size_t second = mc::ui::nextFocus(page, first, true);
+    CHECK(static_cast<WidgetId>(page[second].debugId) == WidgetId::NoticeProceed);
+    const std::size_t third = mc::ui::nextFocus(page, second, true);
+    CHECK(static_cast<WidgetId>(page[third].debugId) == WidgetId::Back);
+    // 循环回到复选框（26.1 的 Tab 序是环）。
+    CHECK(mc::ui::nextFocus(page, third, true) == first);
+    // Shift+Tab 反向。
+    CHECK(mc::ui::nextFocus(page, first, /*forward=*/false) == third);
+
+    // Enter/Space 激活当前焦点：焦点在复选框上时翻的是它，不是 Proceed。
+    int toggled = 0;
+    int proceeded = 0;
+    mc::ui::MenuCallbacks live;
+    live.toggleNoticeStopShowing = [&] { ++toggled; };
+    live.proceedAdvancedGraphicsNotice = [&] { ++proceeded; };
+    mc::ui::Page armed;
+    mc::ui::buildPageInto(armed, mc::ui::PageId::AdvancedGraphicsNotice, ctx, live);
+    CHECK(mc::ui::activateFocused(armed, first));
+    CHECK(toggled == 1 && proceeded == 0);
+}
+
 // --- 9. 勾选状态是**装配时的快照**，不是绘制侧另算的 ------------------------
 void testCheckedSnapshot() {
     auto ctx = noticeContext();
@@ -326,6 +366,7 @@ int main() {
     testOddRemainder();
     testCheckboxSprites();
     testPageShape();
+    testFocusOrder();
     testCheckedSnapshot();
     testPageClassification();
     testTitleGuardSourceGuard();

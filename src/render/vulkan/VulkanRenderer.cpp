@@ -1628,6 +1628,19 @@ struct VulkanRenderer::Impl final : public gameplay::SimulationHost {
         } else {
             textures_.uploadWorldIcons({});
         }
+        // UI-12：焦点。★ **无论用不用这根轴都要设**——不设的话上一个目标留下的焦点
+        //   会跟到下一张图上（同一次运行拍多屏），那正是 determinism knob 的定义。
+        //   语义是"按了几次 Tab"：焦点走的是**可聚焦**控件序，Label / Image 不占位，
+        //   所以这里必须先把页面装配出来再一步步推，不能拿一个裸下标当焦点。
+        menuSystem.setFocus(target.page, ui::kNoWidget);
+        if (uiCapture.has_value() && uiCapture->focusSteps > 0U) {
+            const ui::Page focusPage = buildCurrentPage();
+            std::size_t focus = ui::kNoWidget;
+            for (std::size_t step = 0; step < uiCapture->focusSteps; ++step) {
+                focus = ui::nextFocus(focusPage, focus, /*forward=*/true);
+            }
+            menuSystem.setFocus(target.page, focus);
+        }
         // 背包屏那口黑井里画的是玩家模型，而它的骨骼姿态要动画器**求值过一次**才绑定
         // （`drawPlayerPreview`：未绑定就一根骨骼也不画）。求值发生在 run() 的帧循环里，
         // 而截图通道根本不走那条循环——不喂这一下，每一张背包截图都只有 vanilla

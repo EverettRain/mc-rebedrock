@@ -319,6 +319,22 @@ std::optional<UiCaptureOptions> parseUiCaptureArguments(
                                             std::string{value});
             }
             result->tabIndex = parsed;
+        } else if (arguments[index] == "--ui-focus") {
+            if (++index >= arguments.size()) {
+                throw std::invalid_argument("--ui-focus requires a step count");
+            }
+            if (!result.has_value()) {
+                result = UiCaptureOptions{};
+            }
+            const std::string_view value = arguments[index];
+            std::uint32_t parsed = 0U;
+            const auto [end, error] =
+                std::from_chars(value.data(), value.data() + value.size(), parsed);
+            if (error != std::errc{} || end != value.data() + value.size()) {
+                throw std::invalid_argument("--ui-focus takes a non-negative integer, got: " +
+                                            std::string{value});
+            }
+            result->focusSteps = parsed;
         } else if (arguments[index] == "--ui-carry") {
             if (!result.has_value()) {
                 result = UiCaptureOptions{};

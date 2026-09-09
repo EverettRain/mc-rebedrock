@@ -2192,10 +2192,13 @@ class HudRenderer final {
             const float y =
                 static_cast<float>(top + info.height - ui::kOptionsHeaderLineHeight -
                                    ui::kOptionsHeaderPadding) * scale;
-            drawHudText(commandBuffer, text,
-                        (static_cast<float>(swapchainExtent.width) -
-                         hudTextWidth(text, scale)) * 0.5F,
-                        y, scale, {1.0F, 1.0F, 1.0F, 1.0F});
+            // ★ **左对齐于行的左缘，不是居中**（spec §13.2 #14 的答案，UI-12 查源码关掉）：
+            //   26.1 `OptionsList.HeaderEntry.extractContent`（:196）是
+            //   `widget.setPosition(screen.width / 2 - 155, ...)`，而 155 正是
+            //   `getRowWidth() / 2`——也就是那张 310 宽列表的**行左缘**。
+            //   本作从前把它按整屏居中，行左缘与画布中线在窄画布上差得出来。
+            drawHudText(commandBuffer, text, static_cast<float>(list.rowLeft()) * scale, y, scale,
+                        {1.0F, 1.0F, 1.0F, 1.0F});
         }
     }
 
