@@ -504,10 +504,20 @@ ItemUseResult legacyBlockStackUseOn(
     if (stack.item != nullptr || stack.block == world::Block::Air) {
         return {};
     }
-    // AR-B2: a legacy door stack (a null item pointer naming a door block)
-    // still routes through the two-cell placement, matching the live-item path.
-    if (world::blockDefinition(stack.block).model == world::BlockModel::Door) {
+    // AR-B2 / SLP-1: a legacy stack (a null item pointer naming a block) that
+    // names a TWO-CELL block still has to route through the two-cell placement,
+    // exactly as the live-item path does.
+    //
+    // The bed was missing here and the failure was silent in the worst way: the
+    // single-cell path ran instead, and a lone bed half fails its own support
+    // rule (BedOtherHalf — no partner), so nothing was placed at all and nothing
+    // said why. Any future two-cell block belongs in this list too.
+    const auto model = world::blockDefinition(stack.block).model;
+    if (model == world::BlockModel::Door) {
         return doorPlaceResult(stack.block, world, context);
+    }
+    if (model == world::BlockModel::Bed) {
+        return bedPlaceResult(stack.block, world, context);
     }
     return placeBlockResult(blockItemFor(stack.block), stack.block, world, context);
 }

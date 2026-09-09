@@ -1003,6 +1003,17 @@ bool GameSession::hurtPlayer(PlayerId playerId, DamageType source, float amount,
                              SimulationHost& host, bool causedByLivingNonPlayer) {
     hostBridge_.setHost(&host);
     auto& player = players_.at(playerId);
+    // Player#isInvulnerableTo: a creative player carries abilities.invulnerable,
+    // and only a BYPASSES_INVULNERABILITY source gets through it (the void and
+    // /kill). Until EXP-1 nothing reached this function in creative — the mobs
+    // do not target a creative player and tickPlayerVitals returns early for
+    // anything but survival — so an explosion was the first source that could,
+    // and it killed a creative player outright. The gate belongs here, on the
+    // one entry every damage source shares, not on each caller.
+    if (player.gameMode == GameMode::Creative &&
+        !hasDamageTag(source, DamageTag::BypassesInvulnerability)) {
+        return false;
+    }
     // EQ-2: the armor/toughness stage reads the player's currently worn
     // armor, summed fresh on every hit (armor can change between hits, so
     // this is not cached on the player).
@@ -1350,9 +1361,16 @@ std::size_t GameSession::explode(world::World& world, SimulationHost& host,
         if (previous.block() == world::Block::Air) {
             continue;
         }
-        const auto result = worldMutations().setBlock(world, cell, world::BlockState{},
-                                                      world::MutationFlags::All,
-                                                      world::MutationCause::Explosion, sink);
+        // SuppressDrops: WorldMutationService rolls a full drop for every
+        // Explosion-caused removal, which is vanilla's `destroyBlock` behaviour
+        // and NOT an explosion's — an explosion drops each block with
+        // probability 1/radius (vanilla's `explosion_decay` loot function).
+        // Without this every blasted block dropped, and the roll below was a
+        // second, redundant one.
+        const auto result = worldMutations().setBlock(
+            world, cell, world::BlockState{},
+            world::MutationFlags::All | world::MutationFlags::SuppressDrops,
+            world::MutationCause::Explosion, sink);
         if (!result.changed) {
             continue;
         }
@@ -1440,9 +1458,12 @@ BedSleepProblem GameSession::trySleepInBed(world::World& world, SimulationHost& 
     if (conditions.rule == world::attribute::BedRule::Explodes &&
         decision.problem == BedSleepProblem::NotPossibleHere) {
         GameplayMutationSink sink{world, *this};
-        worldMutations().setBlock(world, head, world::BlockState{}, world::MutationFlags::All,
+        // The bed is consumed by the blast, not dropped (vanilla removes it with
+        // `level.removeBlock(pos, false)` — no drop).
+        const auto flags = world::MutationFlags::All | world::MutationFlags::SuppressDrops;
+        worldMutations().setBlock(world, head, world::BlockState{}, flags,
                                   world::MutationCause::Explosion, sink);
-        worldMutations().setBlock(world, foot, world::BlockState{}, world::MutationFlags::All,
+        worldMutations().setBlock(world, foot, world::BlockState{}, flags,
                                   world::MutationCause::Explosion, sink);
         // `pos.relative(FACING.getOpposite())` from the head — the cell on the
         // far side of the bed from where the player is standing.

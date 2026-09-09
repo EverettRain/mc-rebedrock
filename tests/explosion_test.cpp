@@ -11,6 +11,7 @@
 
 #include "gameplay/Explosion.hpp"
 #include "gameplay/GameSession.hpp"
+#include "gameplay/DamageType.hpp"
 #include "gameplay/WorldSimulation.hpp"
 #include "world/Block.hpp"
 #include "world/Chunk.hpp"
@@ -330,6 +331,49 @@ int main() {
             // raggedly instead of all in the same tick.
             assert(tnt.fuse >= 10 && tnt.fuse < 30);
         }
+    }
+
+    // ---------------------------------------------------------------------
+    // 9) The four field bugs, each pinned so it cannot come back.
+    // ---------------------------------------------------------------------
+    {
+        // (a) A creative player is not hurt by a blast — Player#isInvulnerableTo.
+        //     Nothing reached hurtPlayer in creative before EXP-1 (mobs do not
+        //     target them and tickPlayerVitals returns early), so an explosion
+        //     was the first source that could, and it killed them.
+        World world = solidWorld(Block::Stone);
+        mc::gameplay::GameSession creative;
+        creative.setGameMode(mc::gameplay::GameMode::Creative);
+        creative.player().setPosition({8.5F, 9.0F, 8.5F});
+        TestHost host;
+        const float creativeHealth = creative.vitals().health();
+        static_cast<void>(
+            creative.explode(world, host, ExplosionSpec{{8.5F, 9.5F, 8.5F}, 4.0F, true}));
+        assert(creative.vitals().health() == creativeHealth);
+        // ...but the void and /kill still get through (BypassesInvulnerability).
+        assert(mc::gameplay::hasDamageTag(mc::gameplay::DamageType::OutOfWorld,
+                                          mc::gameplay::DamageTag::BypassesInvulnerability));
+        assert(!mc::gameplay::hasDamageTag(mc::gameplay::DamageType::Explosion,
+                                           mc::gameplay::DamageTag::BypassesInvulnerability));
+
+        // (b) Not every broken block drops. WorldMutationService rolls a full
+        //     drop for any Explosion-caused removal, so the blast has to
+        //     suppress that and roll its own 1/radius instead. With both active
+        //     every block dropped.
+        World dropWorld = solidWorld(Block::Stone);
+        mc::gameplay::GameSession dropper;
+        dropper.setGameMode(mc::gameplay::GameMode::Survival);
+        dropper.player().setPosition({8.5F, 40.0F, 8.5F});
+        const std::size_t brokeCount =
+            dropper.explode(dropWorld, host, ExplosionSpec{{8.5F, 9.5F, 8.5F}, 4.0F, true});
+        assert(brokeCount > 20U);
+        std::size_t dropped = 0U;
+        for (const auto& item : dropper.itemEntities().entities()) {
+            dropped += item.stack.count;
+        }
+        // 1/radius = 1/4, so a couple of dozen blocks leave a handful of stacks.
+        // The bug made this equal to brokeCount.
+        assert(dropped < brokeCount);
     }
 
     std::cout << "explosion_test passed\n";
