@@ -113,6 +113,16 @@ struct Widget final {
     std::function<void()> onActivate{};  // Button/Toggle/ListRow click
     SliderBind slider{};                 // Slider only
 
+    // UI-10 / D20：悬停时显示的提示框文本。空 = 没有。
+    //
+    // ★ 26.1 的每个 `AbstractWidget` 都能挂一个 `Tooltip`（`WidgetTooltipHolder`），
+    //   显示条件是"悬停，或键盘聚焦且上一次输入来自键盘"，延迟默认是
+    //   `Duration.ZERO`（**没有延迟**——只有个别控件调 `setTooltipDelay`）。
+    //   本作此前只有容器屏的物品有提示框，菜单控件一个都没有：`drawTooltipBox`
+    //   与它的定位（`ui::positionTooltip`）早就是通用的，缺的只是"控件能带一句话"
+    //   这一层。
+    std::string tooltip{};
+
     // A0：`kind == Slot` 时这一格是哪个槽。其余 kind 下这两个字段没有意义。
     //
     // ★ 为什么直接用 `gameplay::SlotKind` 而不在 ui 里另建一个镜像枚举：那会是

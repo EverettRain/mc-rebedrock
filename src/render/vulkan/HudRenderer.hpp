@@ -430,6 +430,10 @@ class HudRenderer final {
         // ★ **装配与布局必须读同一个值**——装配按当前页造控件、布局按同一页算矩形，
         //   两边不同步就是"点 A 触发 B"（护栏 21）。所以它从这一处喂给两遍。
         drawContext_.createWorldTab = menuSystem.createWorldTab;
+        // UI-10 / D20：世界名框那句提示框文案。与 SaveRepository::create 用的是**同一个**
+        // slug 函数，"预览说的"与"真正建出来的"因此不可能各自演化。重名时 create()
+        // 还会加 `-2` 这类后缀，那要摸磁盘，预览不做——26.1 那行提示同样只给基名。
+        drawContext_.createWorldFolderHint = folderHintForCreateWorld();
         drawContext_.createWorldTabLabels = {
             translated("createWorld.tab.game.title", "Game"),
             translated("createWorld.tab.world.title", "World"),
@@ -1211,43 +1215,24 @@ class HudRenderer final {
         // vanilla 的 GRAY：预览与提示都是"这不是你输入的内容"，不该和正文一个亮度
         const glm::vec4 hintColour{0.66F, 0.66F, 0.66F, 1.0F};
 
-        // ★ UI-9：**按当前标签页跳过不属于它的那一组**。判据是矩形本身为空
+        // ★ UI-10：**框本身已经是控件**（`drawPageTextField`），这里只剩它上面那行标签。
+        //   ★ 框下面那行"Will be saved in: …"的灰字**没有了**——26.1 是
+        //     `nameEdit.setTooltip(Tooltip.create(selectWorld.targetFolder))`，也就是
+        //     输入框的**悬停提示框**（偏差 D20）。文案在装配时喂进控件的 tooltip。
+        //
+        // ★ 按当前标签页跳过不属于它的那一组。判据是矩形本身为空
         //   （`createWorldLayout` 对不属于本页的字段返回空矩形），而不是在这里再判
         //   一次"现在是哪一页"——那会是同一事实的第二份表述，而症状是种子标签
         //   画在 y=0（画布顶）上，压着标签栏。
+        static_cast<void>(hintColour);
         if (form.nameField.width > 0.0F) {
-        drawHudText(commandBuffer, translated("selectWorld.enterName", "World Name"),
-                    form.nameField.x, form.nameLabelY, scale, labelColour);
-        TextFieldStyle nameStyle;
-        nameStyle.focused = !menuSystem.createWorldSeedFocused;
-        drawTextField(commandBuffer, form.nameField, scale, menuSystem.createWorldName,
-                      ui::kWorldNameFieldRules, nameStyle);
-
-        // 文件夹预览：与 SaveRepository::create 用的是同一个 slug 函数，"预览说的"与
-        // "真正建出来的"因此不可能各自演化。重名时 create() 还会加 `-2` 这类后缀，
-        // 那要摸磁盘，预览不做——26.1 那行提示同样只给基名
-        drawHudText(commandBuffer,
-                    formatTemplate(translated("selectWorld.targetFolder", "Will be saved in: %s"),
-                                   persistence::SaveRepository::slugForDisplayName(
-                                       menuSystem.createWorldName.value)),
-                    form.nameField.x, form.folderLineY, scale, hintColour);
+            drawHudText(commandBuffer, translated("selectWorld.enterName", "World Name"),
+                        form.nameField.x, form.nameLabelY, scale, labelColour);
         }
-
-        if (form.seedField.width <= 0.0F) {
-            return;
+        if (form.seedField.width > 0.0F) {
+            drawHudText(commandBuffer, translated("selectWorld.enterSeed", "Seed"),
+                        form.seedField.x, form.seedLabelY, scale, labelColour);
         }
-        drawHudText(commandBuffer, translated("selectWorld.enterSeed", "Seed"), form.seedField.x,
-                    form.seedLabelY, scale, labelColour);
-        TextFieldStyle seedStyle;
-        seedStyle.focused = menuSystem.createWorldSeedFocused;
-        // 空框里那行灰字就是 26.1 的 `seedEdit.setHint`。走 style.suggestion 这条
-        // 既有的"光标处灰字"通道，而不是再画一行文本：它已经处理了内边距与滚动
-        if (menuSystem.createWorldSeed.value.empty()) {
-            seedStyle.suggestion =
-                translated("selectWorld.seedInfo", "Leave blank for a random seed");
-        }
-        drawTextField(commandBuffer, form.seedField, scale, menuSystem.createWorldSeed,
-                      ui::kWorldNameFieldRules, seedStyle);
     }
 
     void drawWorldNameField(VkCommandBuffer commandBuffer, const ui::HudLayout& layout,
@@ -1587,6 +1572,10 @@ class HudRenderer final {
     void drawMenuWidgets(VkCommandBuffer commandBuffer, const ui::Page& widgets,
                          float scale) const {
         const auto cursor = currentFramebufferCursor();
+        // UI-10 / D20：光标下那个控件的提示框。**整页只有一个**，而且画在所有控件
+        // 之后——它要盖在最上层（26.1 `Screen.render` 把 tooltip 留到最后）。
+        // 26.1 的显示条件是"悬停，或键盘聚焦且上次输入来自键盘"，延迟默认为零。
+        const std::string* hoveredTooltip = nullptr;
         // UI-4：键盘焦点与鼠标悬停共用 highlighted 那张精灵（26.1 `AbstractButton:46`）
         const std::size_t focused = menuSystem.focusFor(menuSystem.pageStack.current());
         for (std::size_t widgetIndex = 0; widgetIndex < widgets.size(); ++widgetIndex) {
@@ -1595,6 +1584,15 @@ class HudRenderer final {
             // 语言与世界列表的行：一块底衬加一行文本，样子对齐 vanilla 的列表项，
             // 而不是完整的按钮边框。
             // （UI-6b 之后按键绑定行不再走这里——它现在是 Label + Button 两个控件。）
+            if (!widget.tooltip.empty() && widget.rect.contains(cursor.x, cursor.y)) {
+                hoveredTooltip = &widget.tooltip;
+            }
+            // UI-10：输入框。它此前不是控件——绘制侧自己画、自己命中，于是
+            // "控件不越界"那条通用护栏抓不住它（README 护栏 28）。
+            if (widget.kind == ui::WidgetKind::TextField) {
+                drawPageTextField(commandBuffer, widget, scale);
+                continue;
+            }
             if (widget.kind == ui::WidgetKind::ListRow) {
                 drawSelectionListRow(commandBuffer, widget, cursor.x, cursor.y, scale);
                 continue;
@@ -1636,6 +1634,44 @@ class HudRenderer final {
                 drawMinecraftButton(commandBuffer, widget.rect, widget.label, state, scale,
                                     tint);
             }
+        }
+        // ★ 提示框最后画：它要盖在所有控件之上。
+        if (hoveredTooltip != nullptr) {
+            drawTooltipBox(commandBuffer, scale,
+                           {{*hoveredTooltip, ui::TooltipStyle::NameCommon}});
+        }
+    }
+
+    // UI-10 / D20：世界名框那句提示框文案。**一处来源**——绘制侧与输入侧都从这里取，
+    // 各拼一遍就是同一事实的两份表述。
+    [[nodiscard]] std::string folderHintForCreateWorld() const {
+        return formatTemplate(
+            translated("selectWorld.targetFolder", "Will be saved in: %s"),
+            persistence::SaveRepository::slugForDisplayName(menuSystem.createWorldName.value));
+    }
+
+    // UI-10：页面里的一个输入框。文字与光标状态仍由 TextFieldState 管（编辑走输入侧
+    // 那条既有路径），这里只按控件的矩形把它画出来。
+    void drawPageTextField(VkCommandBuffer commandBuffer, const ui::Widget& widget,
+                           float scale) const {
+        const auto id = static_cast<ui::WidgetId>(widget.debugId);
+        TextFieldStyle style;
+        if (id == ui::WidgetId::CreateWorldNameField) {
+            style.focused = !menuSystem.createWorldSeedFocused;
+            drawTextField(commandBuffer, widget.rect, scale, menuSystem.createWorldName,
+                          ui::kWorldNameFieldRules, style);
+            return;
+        }
+        if (id == ui::WidgetId::CreateWorldSeedField) {
+            style.focused = menuSystem.createWorldSeedFocused;
+            // 空框里那行灰字就是 26.1 的 `seedEdit.setHint`。
+            if (menuSystem.createWorldSeed.value.empty()) {
+                style.suggestion =
+                    translated("selectWorld.seedInfo", "Leave blank for a random seed");
+            }
+            drawTextField(commandBuffer, widget.rect, scale, menuSystem.createWorldSeed,
+                          ui::kWorldNameFieldRules, style);
+            return;
         }
     }
 

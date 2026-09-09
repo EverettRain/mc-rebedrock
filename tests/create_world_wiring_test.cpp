@@ -182,25 +182,29 @@ void testCreateWorldPageWiring() {
         return ui::UiRect{0.0F, static_cast<float>(index) * 20.0F, 200.0F, 20.0F};
     });
 
-    // UI-9：装配顺序 = 三个页签 → 当前页的内容 → 页脚两个。
-    // 默认停在 Game 页，内容照 26.1 `GameTab`：游戏模式、难度、允许作弊。
-    assert(page.size() == 8U);
+    // UI-9/UI-10：装配顺序 = 三个页签 → 当前页的内容 → 页脚两个。
+    // 默认停在 Game 页，内容照 26.1 `GameTab`：**世界名输入框**、游戏模式、难度、允许作弊。
+    assert(page.size() == 9U);
     for (std::size_t tab = 0; tab < 3U; ++tab) {
         assert(page[tab].debugId ==
                static_cast<std::uint16_t>(ui::WidgetId::CreateWorldTabButton));
         // ★ 页签上的字**各不相同**：三个共用一个 id，文字由装配时给（ctx 里那一组）。
         assert(!page[tab].label.empty());
     }
-    assert(page[3].debugId == static_cast<std::uint16_t>(ui::WidgetId::CreateGameMode));
-    assert(page[4].debugId == static_cast<std::uint16_t>(ui::WidgetId::Difficulty));
-    assert(page[5].debugId == static_cast<std::uint16_t>(ui::WidgetId::CreateAllowCommands));
-    assert(page[6].debugId == static_cast<std::uint16_t>(ui::WidgetId::CreateConfirm));
-    assert(page[7].debugId == static_cast<std::uint16_t>(ui::WidgetId::Back));
+    // ★ UI-10 / D20：世界名输入框**第一次进 ui::Page**（从前是绘制侧自己画自己命中的
+    //   东西），并且带一个提示框——26.1 `nameEdit.setTooltip(selectWorld.targetFolder)`。
+    assert(page[3].kind == ui::WidgetKind::TextField);
+    assert(page[3].debugId == static_cast<std::uint16_t>(ui::WidgetId::CreateWorldNameField));
+    assert(page[4].debugId == static_cast<std::uint16_t>(ui::WidgetId::CreateGameMode));
+    assert(page[5].debugId == static_cast<std::uint16_t>(ui::WidgetId::Difficulty));
+    assert(page[6].debugId == static_cast<std::uint16_t>(ui::WidgetId::CreateAllowCommands));
+    assert(page[7].debugId == static_cast<std::uint16_t>(ui::WidgetId::CreateConfirm));
+    assert(page[8].debugId == static_cast<std::uint16_t>(ui::WidgetId::Back));
 
-    assert(page[4].onActivate);
-    page[4].onActivate();
+    assert(page[5].onActivate);
+    page[5].onActivate();
     assert(menu.createWorldDifficulty == gameplay::Difficulty::Hard);  // Normal -> Hard
-    page[4].onActivate();
+    page[5].onActivate();
     assert(menu.createWorldDifficulty == gameplay::Difficulty::Peaceful);  // 循环回头
     assert(!inWorldDifficultyCycled);
 
@@ -214,17 +218,21 @@ void testCreateWorldPageWiring() {
                                                                  static_cast<float>(index) * 20.0F,
                                                                  200.0F, 20.0F};
                                            });
-        assert(tabPage.size() == 8U);
-        assert(tabPage[6].debugId == static_cast<std::uint16_t>(ui::WidgetId::CreateConfirm));
-        assert(tabPage[7].debugId == static_cast<std::uint16_t>(ui::WidgetId::Back));
-        // ★ 这两页的三个控件**全部置灰**：后端确实不存在（D22 已查证），按既定裁定
+        // World 页多一个种子输入框，More 页没有输入框。
+        const std::size_t expected = tab == ui::CreateWorldTab::World ? 9U : 8U;
+        assert(tabPage.size() == expected);
+        assert(tabPage[expected - 2U].debugId ==
+               static_cast<std::uint16_t>(ui::WidgetId::CreateConfirm));
+        assert(tabPage[expected - 1U].debugId == static_cast<std::uint16_t>(ui::WidgetId::Back));
+        // ★ 这两页的三个按钮**全部置灰**：后端确实不存在（D22 已查证），按既定裁定
         //   "只补有后端的，其余置灰在位"——版面对上，而"没做"看得出来。
-        for (std::size_t i = 3; i < 6U; ++i) {
+        const std::size_t firstButton = tab == ui::CreateWorldTab::World ? 4U : 3U;
+        for (std::size_t i = firstButton; i < firstButton + 3U; ++i) {
             assert(!tabPage[i].enabled);
             assert(!tabPage[i].onActivate);
         }
         // 而 Game 页那三个是能点的。
-        assert(page[3].enabled && page[4].enabled && page[5].enabled);
+        assert(page[4].enabled && page[5].enabled && page[6].enabled);
     }
 }
 

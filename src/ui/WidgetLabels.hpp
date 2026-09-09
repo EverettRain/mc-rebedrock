@@ -160,7 +160,7 @@ inline constexpr std::array<WidgetId, 19> kRuntimeWidgetLabels{{
 // 不经 widgetLabel 取标签的 id
 // 三种列表行的文本各自在页面装配时给出，分别是世界名、语言名与按键行
 // None 则根本不是一个按钮
-inline constexpr std::array<WidgetId, 13> kUnlabelledWidgets{{
+inline constexpr std::array<WidgetId, 15> kUnlabelledWidgets{{
     WidgetId::None,
     WidgetId::WorldRow,
     WidgetId::LanguageRow,
@@ -175,6 +175,9 @@ inline constexpr std::array<WidgetId, 13> kUnlabelledWidgets{{
     // UI-9：创建世界的三个标签页共用一个 id，页签上的字（Game / World / More）在装配
     // 时给——与世界行、语言行、包行同类。
     WidgetId::CreateWorldTabButton,
+    // UI-10：两个输入框里的字是玩家打的，不是标签。
+    WidgetId::CreateWorldNameField,
+    WidgetId::CreateWorldSeedField,
     // A0：容器界面的四个非槽位控件。三条附魔选项条上的字是**乱码名 + 等级数字**，
     // 由绘制侧按附魔种子现算（`EnchantmentNames`）；页签、删除框与滚动条上根本
     // 没有文字，画的是精灵。都不经 widgetLabel。

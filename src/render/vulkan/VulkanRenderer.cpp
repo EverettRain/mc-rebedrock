@@ -4341,6 +4341,7 @@ struct VulkanRenderer::Impl final : public gameplay::SimulationHost {
         // UI-9：与绘制侧读同一个标签页。两侧不一致的后果不是"少画一页"，而是
         // **点 A 触发 B**：装配按一页造控件、布局按另一页给矩形。
         ctx.createWorldTab = menuSystem.createWorldTab;
+        ctx.createWorldFolderHint = hud_.folderHintForCreateWorld();
         ctx.createWorldTabLabels = {
             hud_.translated("createWorld.tab.game.title", "Game"),
             hud_.translated("createWorld.tab.world.title", "World"),

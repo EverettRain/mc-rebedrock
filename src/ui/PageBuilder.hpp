@@ -89,6 +89,9 @@ struct MenuBuildContext final {
     //   漏填在类型上就不成立。
     CreateWorldTab createWorldTab = CreateWorldTab::Game;
     std::array<std::string, 3> createWorldTabLabels{};
+    // UI-10 / D20：世界名框那句提示框文案（"Will be saved in: <目录名>"）。
+    // 它要拼进真正的 slug，所以由调用方给——与页签的文字同理。
+    std::string createWorldFolderHint{};
     std::size_t keyBindFirstIndex = 0;
     std::size_t keyBindRowCount = 0;
     // UI-4：这一次点击是否按着 Shift。循环选项按钮据此反向步进（spec §2.3）。
@@ -189,6 +192,21 @@ struct MenuCallbacks final {
 // ★ 它给的是"同一个 id、不同文字"那一族：三个标签页共用 `CreateWorldTabButton`
 //   （第几个由次序决定），但页签上的字各不相同，所以标签不能来自 id 表。
 //   与世界行、语言行、包行同类——那三种也是文字在装配时给。
+// UI-10：一个文本输入框控件。
+//
+// ★ 输入框此前**不是 Widget**：它由绘制侧自己画、自己命中。README 护栏 28 说的
+//   "绘制侧自己画的东西，Widget 上的护栏一概管不到"——创建世界那次把输入框顶出画布
+//   的事故，通用护栏抓不住，正是因为它不在页面里。现在它进来了。
+//   文本的编辑仍走既有路径（TextFieldState + 输入侧的焦点），这里给的是**几何、命中
+//   与提示框**。
+inline void addTextField(Page& page, WidgetId id, std::string tooltip = {}) {
+    Widget w;
+    w.kind = WidgetKind::TextField;
+    w.debugId = static_cast<std::uint16_t>(id);
+    w.tooltip = std::move(tooltip);
+    page.push_back(std::move(w));
+}
+
 inline void addLabelledButton(Page& page, WidgetId id, std::string text,
                               std::function<void()> onActivate, bool enabled = true,
                               WidgetKind kind = WidgetKind::Button) {
@@ -481,7 +499,12 @@ inline void buildPageInto(Page& page, PageId id, const MenuBuildContext& ctx,
             }
             switch (ctx.createWorldTab) {
             case CreateWorldTab::Game:
-                // 26.1 `GameTab`：名称框（版面里）、游戏模式、难度、允许作弊。
+                // 26.1 `GameTab`：名称框、游戏模式、难度、允许作弊。
+                // ★ 名称框带一个提示框：26.1 是
+                //   `nameEdit.setTooltip(Tooltip.create(selectWorld.targetFolder))`，
+                //   也就是**存档目录名做成输入框的悬停提示**，而不是框下面另起一行灰字
+                //   （偏差 D20）。文案由调用方给（它要拼进真正的目录名）。
+                addTextField(page, WidgetId::CreateWorldNameField, ctx.createWorldFolderHint);
                 addButton(page, ctx, WidgetId::CreateGameMode, cb.toggleCreateGameMode);
                 // ★ 复用 WidgetId::Difficulty，不新开一个 id：标签"难度: 普通"那段算法
                 //   世界内选项页已经有了，另起一个 id 就得再抄一份，两份迟早分岔
@@ -490,7 +513,8 @@ inline void buildPageInto(Page& page, PageId id, const MenuBuildContext& ctx,
                           cb.toggleCreateAllowCommands);
                 break;
             case CreateWorldTab::World:
-                // 26.1 `WorldTab`：种子框（版面里）、世界类型、生成结构、奖励箱。
+                // 26.1 `WorldTab`：种子框、世界类型、生成结构、奖励箱。
+                addTextField(page, WidgetId::CreateWorldSeedField);
                 // ★ 三个按钮**都置灰**：后端确实不存在（偏差 D22 已查证：世界类型与
                 //   极限模式是机制真缺失、生成结构缺存档字段、奖励箱机制缺）。
                 //   按既定裁定"只补有后端的，其余置灰在位"——版面与 26.1 对上，

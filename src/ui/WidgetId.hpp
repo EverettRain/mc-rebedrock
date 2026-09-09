@@ -107,6 +107,10 @@ enum class WidgetId : std::uint16_t {
     CreateWorldType, CreateBonusChest, CreateGenerateStructures,
     // More 页：三个跳转，目标屏本作都没有，同样置灰在位。
     CreateGameRules, CreateExperiments, CreateDataPacks,
+    // UI-10：创建世界的两个输入框。它们**第一次进 ui::Page**——从前是绘制侧自己画
+    // 自己命中的东西（护栏 28 那一族）。文字仍由 TextFieldState 管，这两个 id 给的是
+    // 几何、命中与提示框的归属。
+    CreateWorldNameField, CreateWorldSeedField,
 
     // 哨兵，值等于 id 的个数，表因此能断言自己覆盖了每一个 id，ui/WidgetLabels.hpp 就是这么做的
     // 它永远不是一个控件，也永远排在最后

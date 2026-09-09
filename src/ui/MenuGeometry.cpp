@@ -432,8 +432,20 @@ UiRect frontendButtonRect(const HudLayout& layout, PageId page, std::size_t inde
         if (buttonCount >= 1U && index + 1U == buttonCount) {
             return fbRect(layout, form.footerRight);
         }
-        return fbRect(layout, createWorldOptionButton(form, layout.logicalWidth(),
-                                                      index - kCreateWorldTabCount));
+        // UI-10：页签之后的第一个控件是**输入框**（Game 页是世界名、World 页是种子），
+        // 那两页因此比 More 页多一个。判据是"这一页有没有输入框"，也就是
+        // `createWorldLayout` 给出的矩形是不是空的——与绘制侧同一个判据，
+        // 而不是在这里再列一张"哪一页有框"的清单。
+        const auto& field =
+            createWorldTab == CreateWorldTab::Game ? form.nameField : form.seedField;
+        std::size_t contentIndex = index - kCreateWorldTabCount;
+        if (field.width > 0.0F) {
+            if (contentIndex == 0U) {
+                return fbRect(layout, field);
+            }
+            --contentIndex;
+        }
+        return fbRect(layout, createWorldOptionButton(form, layout.logicalWidth(), contentIndex));
     }
     case PageLayoutKind::HeaderFooterDualColumn: {
         // 26.1 PackSelectionScreen 的页脚：Open Folder 与 Done 横排。本作多两个
