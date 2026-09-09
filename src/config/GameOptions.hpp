@@ -102,6 +102,13 @@ struct GameOptions final {
     // 编译期剪枝而不是运行期 if。改它必须重编译帧图（applyOptionChanged 里那一条），
     // 而离屏出图要钉死它就得钉在 glfwInit 之前（见 initialize()）。
     bool cascadedShadows = true;
+    // RN-47：近段级联那个框的半边长（格），也就是**接缝离视点多远**。8 / 16 / 24。
+    //
+    // 与上面那一档不同，这一项是**每帧读**的：它只进那个正交矩阵，阴影图仍是同一张
+    // 2048 两层数组。所以改它不重编译帧图、不重建交换链资源——它更像 FOV，不像抗锯齿。
+    // 取值表与收口在 render/SunShadowMap.hpp（`kSunShadowNearDistances`）；这里放一个
+    // 字面量是为了不让配置层依赖渲染层，越界的值由那边的 sanitized… 收口。
+    int shadowNearDistance = 8;
     // PX-6: show sound subtitles (26.1 accessibility captions). A client option,
     // not a gamerule; off by default, matching vanilla. Gates the subtitle
     // overlay feed — captions only appear when this is on.

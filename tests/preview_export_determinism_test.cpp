@@ -144,7 +144,10 @@ int main() {
     // 它们本来就在，这里列出来是为了让「哪些设置被钉死」有一个能被读的清单：
     // 少一档就是又一次「图片取决于跑它的那台机器」。
     for (const auto* pinned : {"options.viewBobbing = false;", "options.entityShadows = true;",
-                               "options.menuBackgroundBlurriness = 0;"}) {
+                               "options.menuBackgroundBlurriness = 0;",
+                               // RN-47：接缝离视点多远。它是**每帧读**的（只进正交矩阵），
+                               // 所以钉在这个函数里，与抗锯齿那一档正相反
+                               "options.shadowNearDistance = render::kDefaultSunShadowNearDistance;"}) {
         require(body.find(pinned) != std::string::npos,
                 std::string{"applyPreviewDeterminism 必须钉死 "} + pinned);
     }

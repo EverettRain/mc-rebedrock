@@ -1218,6 +1218,10 @@ struct VulkanRenderer::Impl final : public gameplay::SimulationHost {
         // 已经建出来的东西。它钉在 initialize() 开头那一段，和各向异性、垂直同步一起。
         // 这条注释留在这里，是因为「逐条列视频设置」的人下一次还会先找到这个函数。
         options.sunShadows = testScene->sunShadows;
+        // RN-47：接缝离视点多远。它是**每帧读**的（只进那个正交矩阵），所以钉在这里
+        // 而不是 initialize()——与抗锯齿正相反，那一档初始化期就读走了。
+        // 钉成默认档：出图要展示玩家默认看到的那一档，而不是跑它那台机器上恰好写了什么
+        options.shadowNearDistance = render::kDefaultSunShadowNearDistance;
         // RN-23：贴花在导出里显式打开，和上面两项同理——一张取决于用户设置的图片
         // 没法和另一台机器上的图片对比，而对比正是这个工具的全部价值。
         options.entityShadows = true;
@@ -4368,6 +4372,12 @@ struct VulkanRenderer::Impl final : public gameplay::SimulationHost {
             // 那一行上，不是另造的生命周期。
             checkVk(vkDeviceWaitIdle(device), "vkDeviceWaitIdle");
             rebuildFrameGraph();
+            break;
+        // RN-47：接缝离视点多远。**这一档什么都不用重建**——它只进那个正交矩阵，
+        // 而矩阵是每帧算的；阴影图仍是同一张 2048 两层数组，管线、渲染通道、帧图
+        // 一个都不动。所以这里没有 case：默认分支的「什么都不做」就是对的。
+        // 写在这里是为了让下一个人不必再问一遍「它是不是漏了一条」。
+        case ui::WidgetId::ShadowNearDistance:
             break;
         case ui::WidgetId::RainCollisionCache:
             rainSystem.setCollisionCache(options.rainCollisionCache);

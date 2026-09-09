@@ -6,7 +6,9 @@
 // 视点。它们是可证的，而且都是先红后绿的。剩下那条（PCF 与偏置的观感）只能靠源码
 // 护栏钉住形状，数值留给 mac。
 
+#include "config/GameOptions.hpp"
 #include "render/MeshData.hpp"
+#include "ui/OptionCycle.hpp"
 #include "render/SunShadowMap.hpp"
 #include "render/EntityRenderDraws.hpp"
 #include "world/DayNightCycle.hpp"
@@ -123,6 +125,36 @@ const float kSunOverhead = 1.0F;
 // RN-46a：头顶的水柱（格）。既有的每一条断言都在「不在水下」这一档上
 const float kDryLand = 0.0F;
 
+// RN-47：着色器不再存纹素常量，它从正在采的那张矩阵里推。测试这一侧因此取 C++ 的
+// 单一源——默认档（近段 8 格）下的两个值
+const float kNearTexelBlocks = mc::render::sunShadowTexelSize(0,
+                                   mc::render::kDefaultSunShadowNearDistance);
+// ★ 夹具里的「远段矩阵」多半是单位阵——RN-47 之后纹素是从矩阵推的，所以那些夹具里的
+// 纹素**不是** 1/16 格，而是单位阵推出来的 2/2048。断言要用这一个，否则钉的是一个
+// 夹具里根本不成立的量
+const float kIdentityTexelBlocks = 2.0F / 2048.0F;
+
+// 而需要「生产那样的纹素」的夹具用这一张：横向缩放 1/64（远段半边长 64 格 ⇒ 纹素
+// 1/16 格），深度轴留恒等，好让 z = 0.5 这些既有取值继续成立
+const glm::mat4 kFarScaleMatrix = [] {
+    glm::mat4 matrix{1.0F};
+    matrix[0][0] = 1.0F / 64.0F;
+    matrix[1][1] = 1.0F / 64.0F;
+    return matrix;
+}();
+const float kFarTexelBlocks = mc::render::sunShadowTexelSize(1,
+                                  mc::render::kDefaultSunShadowNearDistance);
+
+[[nodiscard]] std::size_t occurrencesIn(const std::string& text, std::string_view needle) {
+    std::size_t count = 0;
+    std::size_t cursor = 0;
+    while ((cursor = text.find(needle, cursor)) != std::string::npos) {
+        ++count;
+        cursor += needle.size();
+    }
+    return count;
+}
+
 void require(bool condition, const std::string& message, int line) {
     if (!condition) {
         throw std::runtime_error{"sun_shadow_map_test line " + std::to_string(line) + ": " +
@@ -227,18 +259,18 @@ void checkShadowFacing() {
                     // RN-33：投影的**输入**现在是沿法线抬起来的那个点，不是 worldPosition
                     // 本身。这条断言因此同时钉住两件事：抬高确实加在了投影之前（加在之后
                     // 就又变成沿光线方向的位移，亮边原样回来），以及 tap 网格是 ±0.5 纹素。
-                    const float lift = shaderBias::sunShadowNormalOffsetBlocks(incidence, shaderBias::kSunShadowFarTexelBlocks);
+                    const float lift = shaderBias::sunShadowNormalOffsetBlocks(incidence, kIdentityTexelBlocks);
                     const glm::vec3 lifted = glm::vec3{0, 0, 0.5F} + normal * lift;
                     for (std::size_t tap = 0; tap < 4; ++tap) {
                         // (i - 0.5) * penumbraTexels * 2，而这里 penumbraTexels 饱和在 0.5
-                        const float penumbra = shaderBias::sunShadowPenumbraTexels(0.5F * 319.9F, shaderBias::kSunShadowFarTexelBlocks);
+                        const float penumbra = shaderBias::sunShadowPenumbraTexels(0.5F * 319.9F, kIdentityTexelBlocks);
                         const float x = (static_cast<float>(tap % 2) - 0.5F) * penumbra * 2.0F;
                         const float y = (static_cast<float>(tap / 2) - 0.5F) * penumbra * 2.0F;
                         const auto expectedUv = glm::vec2{lifted} * 0.5F + glm::vec2{0.5F} +
                                                 glm::vec2{x, y} / 2048.0F;
                         const float expectedDepth = lifted.z +
                             (shaderBias::sunShadowTapOffsetBlocks(normal.x, normal.y, incidence, x, y,
-                                                shaderBias::kSunShadowFarTexelBlocks) -
+                                                kIdentityTexelBlocks) -
                              shaderBias::kSunShadowDepthBiasBlocks) / 319.9F;
                         const auto coordinates = samples.coordinates[tap];
                         REQUIRE(glm::length(glm::vec2{coordinates} - expectedUv) < 0.000001F &&
@@ -920,15 +952,38 @@ void checkCascades() {
     using mc::render::sunShadowTexelSize;
     REQUIRE(kSunShadowCascadeCount == 2, "本轮是两级；加级数要连着下面的黄金值一起改");
 
-    // ---- 1. GLSL 与 C++ 的纹素尺寸必须逐位相同 ----------------------------
+    // ---- 1. 接收端的纹素是从矩阵推出来的，逐档都要对 ----------------------
     //
-    // 着色器那边是两个手写常量（GLSL 没有 constexpr 能算 2*halfExtent/resolution）。
-    // 两处一漂移，接收端就按错误的纹素抬偏置——而画面上只表现为「影子有点飘」
-    REQUIRE(shaderBias::sunShadowTexelBlocks(0) == sunShadowTexelSize(0) &&
-                shaderBias::sunShadowTexelBlocks(1) == sunShadowTexelSize(1),
-            "receiver texel sizes must match SunShadowMap's per-cascade geometry");
-    REQUIRE(sunShadowTexelSize(1) == sunShadowTexelSize(0) * 8.0F,
-            "near cascade must be exactly eight times finer; the receiver's constants assume it");
+    // RN-47：着色器那边不再存常量——近段框成了玩家可调的一档，纹素从**正在采的那张
+    // 矩阵**里推（正交的 x 轴缩放正好是 1/半边长）。所以这里钉的不是「两处常量相等」，
+    // 而是「推导出来的等于 C++ 算出来的」，而且**每一档都要对**
+    const auto probeSun = glm::normalize(mc::world::DayNightCycle::stateAtTick(3000.0).sunDirection);
+    const glm::vec3 probeEye{12.3F, 70.0F, -45.7F};
+    for (const int nearBlocks : mc::render::kSunShadowNearDistances) {
+        for (std::size_t cascade = 0; cascade < kSunShadowCascadeCount; ++cascade) {
+            const auto matrix =
+                mc::render::sunShadowLightViewProj(probeSun, probeEye, cascade, nearBlocks);
+            const float derived = shaderReceiver::sunShadowTexelBlocksOf(matrix);
+            const float expected = sunShadowTexelSize(cascade, nearBlocks);
+            REQUIRE(std::abs(derived - expected) < expected * 1e-5F,
+                    "cascade " + std::to_string(cascade) + " at " + std::to_string(nearBlocks) +
+                        " blocks: the receiver derives " + std::to_string(derived) +
+                        " but the matrix was built for " + std::to_string(expected));
+        }
+        // 近段永远比远段细——那是它存在的理由。8/16/24 分别是 8x/4x/2.67x
+        REQUIRE(sunShadowTexelSize(0, nearBlocks) < sunShadowTexelSize(1, nearBlocks),
+                "the near cascade must stay finer than the far one at every setting");
+        // 而远段与档位无关：换档不该动远处的影子
+        REQUIRE(sunShadowTexelSize(1, nearBlocks) ==
+                    sunShadowTexelSize(1, mc::render::kDefaultSunShadowNearDistance),
+                "changing the near setting must not move the far cascade");
+    }
+    // 表外的值收口到默认档，而不是造出一个第四种框
+    REQUIRE(mc::render::sanitizedSunShadowNearDistance(7) ==
+                    mc::render::kDefaultSunShadowNearDistance &&
+                mc::render::sanitizedSunShadowNearDistance(1000) ==
+                    mc::render::kDefaultSunShadowNearDistance,
+            "an out-of-table setting must fall back to the default, not build a fourth box");
 
     // ---- 2. 每一级吸附到**自己**的纹素网格 --------------------------------
     //
@@ -938,15 +993,17 @@ void checkCascades() {
     const glm::vec3 eye{12.3F, 70.0F, -45.7F};
     const auto far = mc::render::sunShadowLightViewProj(sun, eye, 1);
     const auto right = glm::normalize(glm::vec3{far[0][0], far[1][0], far[2][0]});
-    const float nearTexel = sunShadowTexelSize(0);
-    const float farTexel = sunShadowTexelSize(1);
+    const float nearTexel = kNearTexelBlocks;
+    const float farTexel = kFarTexelBlocks;
 
     // 从矩阵里取回吸附后的光源空间中心。lightViewProj = ortho * translate(-center) * R，
     // 而 ortho 在 x 上的缩放是 1/halfExtent，所以 m[3][0] = -center.x / halfExtent。
     // 直接问「中心落在网格上吗」，比问「平移一点点画面变没变」稳：后者取决于起点
     // 离量化边界多远，是一条会看起点脸色的断言
     const auto snappedCenterX = [](const glm::mat4& matrix, std::size_t cascade) {
-        return -matrix[3][0] * mc::render::kSunShadowOrthoHalfExtents[cascade];
+        return -matrix[3][0] *
+               mc::render::sunShadowOrthoHalfExtent(
+                   cascade, mc::render::kDefaultSunShadowNearDistance);
     };
     const auto isMultiple = [](float value, float step) {
         const float quotient = value / step;
@@ -1026,14 +1083,18 @@ void checkCascades() {
         shaderReceiver::Samples grazing{};
         grazing.visibility = {1, 1, 1, 1, 1, 1, 1, 1, 1};
         grazing.blockerDepth = {0.0F, 0.0F, 0.0F, 0.0F};
+        // RN-47：纹素从矩阵推，所以夹具的两张矩阵必须**尺度不同**，否则这条断言分不清
+        // 两级。近段用恒等阵（纹素 2/2048），远段缩放 1/8（纹素正好是它的八倍）——
+        // 与生产里 8 格 / 64 格那一档的比值相同
+        const glm::mat4 coarseFar = glm::scale(glm::mat4{1.0F}, glm::vec3{0.125F});
         static_cast<void>(shaderReceiver::sunShadowFactor(
-            &grazing, &grazing, glm::mat4{1.0F}, kMissNearCascade, glm::vec3{0, 0, 0.5F}, up,
+            &grazing, &grazing, glm::mat4{1.0F}, coarseFar, glm::vec3{0, 0, 0.5F}, up,
             grazingSun, kNearCascadeOn, kClearWeather, kSolidFace));
         REQUIRE(grazing.count == 4, "the grazing near-cascade probe must reach the PCF taps");
         const float nearLift = shaderBias::sunShadowNormalOffsetBlocks(
-            incidence, shaderBias::kSunShadowNearTexelBlocks);
+            incidence, kIdentityTexelBlocks);
         const float farLift = shaderBias::sunShadowNormalOffsetBlocks(
-            incidence, shaderBias::kSunShadowFarTexelBlocks);
+            incidence, kIdentityTexelBlocks * 8.0F);
         REQUIRE(std::abs(farLift - nearLift * 8.0F) < 1e-6F && nearLift > 0.0F,
                 "fixture check: the two cascades' lifts must differ by eight, or the assertion "
                 "below cannot tell them apart");
@@ -1112,10 +1173,10 @@ void checkCascades() {
 
     // 近段的半影上限仍是 0.5 个**纹素**，而纹素细八倍 ⇒ 物理半影细八倍。
     // 这就是这个节点买到的东西，写成断言而不是散文
-    REQUIRE(shaderBias::sunShadowPenumbraTexels(1e6F, shaderBias::kSunShadowNearTexelBlocks) ==
+    REQUIRE(shaderBias::sunShadowPenumbraTexels(1e6F, kNearTexelBlocks) ==
                     shaderBias::kSunMaxPenumbraTexels &&
-                shaderBias::kSunShadowNearTexelBlocks * shaderBias::kSunMaxPenumbraTexels * 8.0F ==
-                    shaderBias::kSunShadowFarTexelBlocks * shaderBias::kSunMaxPenumbraTexels,
+                kNearTexelBlocks * shaderBias::kSunMaxPenumbraTexels * 8.0F ==
+                    kFarTexelBlocks * shaderBias::kSunMaxPenumbraTexels,
             "the near cascade's maximum penumbra must be one eighth of the far cascade's in world "
             "units — that eight is the whole point of the node");
 }
@@ -1248,9 +1309,9 @@ void checkBias() {
                                         .058730789F, .062262169F, .0625F};
     for (std::size_t i = 0; i < angles.size(); ++i) {
         const float lift = shaderBias::sunShadowNormalOffsetBlocks(std::cos(glm::radians(angles[i])),
-                                                shaderBias::kSunShadowFarTexelBlocks);
+                                                kFarTexelBlocks);
         REQUIRE(std::isfinite(lift) && lift >= 0.0F &&
-                    lift <= shaderBias::kSunShadowFarTexelBlocks + 1e-6F,
+                    lift <= kFarTexelBlocks + 1e-6F,
                 "normal offset outside [0, one texel] blocks at " + std::to_string(angles[i]) +
                 " degrees: " + std::to_string(lift));
         REQUIRE(std::abs(lift - expected[i]) < 2e-6F,
@@ -1262,7 +1323,7 @@ void checkBias() {
     REQUIRE(shaderBias::kSunShadowDepthBiasBlocks > 0.0F &&
                 shaderBias::kSunShadowDepthBiasBlocks <= 0.01F,
             "depth bias must stay a quantisation floor; anything larger reopens peter-panning");
-    REQUIRE(shaderBias::kSunShadowFarTexelBlocks == mc::render::kSunShadowTexelSize,
+    REQUIRE(kFarTexelBlocks == mc::render::kSunShadowTexelSize,
             "receiver plane tap spacing must match SunShadowMap texel geometry");
     // 独立几何 oracle：沿光源 right/up 平移一纹素，再沿深度轴移动回 y=70 的平面。
     for (const double tick : {1500.0, 3000.0, 6000.0, 9000.0}) {
@@ -1272,7 +1333,7 @@ void checkBias() {
         const auto up = glm::normalize(glm::vec3{matrix[0][1], matrix[1][1], matrix[2][1]});
         for (int y = -1; y <= 1; ++y) for (int x = -1; x <= 1; ++x) {
             const float offset = shaderBias::sunShadowTapOffsetBlocks(right.y, up.y, sun.y,
-                static_cast<float>(x), static_cast<float>(y), shaderBias::kSunShadowFarTexelBlocks);
+                static_cast<float>(x), static_cast<float>(y), kFarTexelBlocks);
             const glm::vec3 moved = glm::vec3{0, 70, 0} +
                 (right * static_cast<float>(x) + up * static_cast<float>(y)) * mc::render::kSunShadowTexelSize -
                 sun * offset;
@@ -1282,8 +1343,8 @@ void checkBias() {
     }
     // 护栏：喂进 [0,1] 之外的 cos 时结果仍然有限且有界。(-1) 走到上界，(2) 走到 0。
     // 背面在 sunShadowFactor 开头就返回了，走不到这里，但这条 clamp 不能删。
-    REQUIRE(shaderBias::sunShadowNormalOffsetBlocks(-1, shaderBias::kSunShadowFarTexelBlocks) == shaderBias::kSunShadowFarTexelBlocks &&
-            shaderBias::sunShadowNormalOffsetBlocks(2, shaderBias::kSunShadowFarTexelBlocks) == 0.0F,
+    REQUIRE(shaderBias::sunShadowNormalOffsetBlocks(-1, kFarTexelBlocks) == kFarTexelBlocks &&
+            shaderBias::sunShadowNormalOffsetBlocks(2, kFarTexelBlocks) == 0.0F,
             "normal-offset clamp must handle backfaces/roundoff");
 }
 
@@ -1623,6 +1684,98 @@ void checkWaterTransmittance() {
     }
 }
 
+// RN-47：近段框做成玩家可调的一档，三处取值表必须同源。
+void checkNearDistanceOption() {
+    // ---- 1. 三张表逐值对齐 -------------------------------------------------
+    // 渲染层（kSunShadowNearDistances）、界面层（kShadowNearDistanceValues）、
+    // 配置层（GameOptions::sanitize 里那个 if）。三处任一漂移的症状都不一样：
+    // 界面多一档 ⇒ 选到一个渲染层会收口成默认的值，界面显示 32 而画面是 8
+    REQUIRE(mc::ui::findCyclingOption(mc::ui::WidgetId::ShadowNearDistance) != nullptr,
+            "the near-cascade distance must be a cycling option");
+    const mc::ui::OptionDesc* desc =
+        mc::ui::findCyclingOption(mc::ui::WidgetId::ShadowNearDistance);
+    REQUIRE(desc->values.size() == mc::render::kSunShadowNearDistances.size(),
+            "the UI must offer exactly the settings the renderer knows");
+    for (std::size_t i = 0; i < desc->values.size(); ++i) {
+        REQUIRE(desc->values[i].value == mc::render::kSunShadowNearDistances[i],
+                "UI value " + std::to_string(desc->values[i].value) +
+                    " is not the renderer's " +
+                    std::to_string(mc::render::kSunShadowNearDistances[i]));
+        // 而每一档都必须活过配置层的收口——收口把它改成默认档的话，玩家选了没反应
+        mc::config::GameOptions options{};
+        options.shadowNearDistance = desc->values[i].value;
+        options.sanitize();
+        REQUIRE(options.shadowNearDistance == desc->values[i].value,
+                "the config layer must accept every value the UI offers");
+    }
+    // 默认档必须在表里，而且是玩家不动它时拿到的那个
+    REQUIRE(mc::config::GameOptions{}.shadowNearDistance ==
+                mc::render::kDefaultSunShadowNearDistance,
+            "the shipped default must be the renderer's default");
+    REQUIRE(mc::render::sanitizedSunShadowNearDistance(
+                mc::render::kDefaultSunShadowNearDistance) ==
+                mc::render::kDefaultSunShadowNearDistance,
+            "and the default must survive its own sanitiser");
+
+    // ---- 2. 换档真的动了框，而且只动近段 -----------------------------------
+    const auto sun = glm::normalize(mc::world::DayNightCycle::stateAtTick(3000.0).sunDirection);
+    const glm::vec3 eye{5.0F, 70.0F, -3.0F};
+    const auto farAt = [&](int blocks) {
+        return mc::render::sunShadowLightViewProj(sun, eye, 1, blocks);
+    };
+    REQUIRE(farAt(8) == farAt(24), "the far cascade must not move when the near setting changes");
+    float previousHalfExtent = 0.0F;
+    for (const int blocks : mc::render::kSunShadowNearDistances) {
+        const auto matrix = mc::render::sunShadowLightViewProj(sun, eye, 0, blocks);
+        const float halfExtent = 1.0F / glm::length(glm::vec3{matrix[0][0], matrix[1][0],
+                                                              matrix[2][0]});
+        REQUIRE(std::abs(halfExtent - static_cast<float>(blocks)) < 0.01F,
+                "the near box's half extent must be the setting itself: expected " +
+                    std::to_string(blocks) + ", got " + std::to_string(halfExtent));
+        REQUIRE(halfExtent > previousHalfExtent, "and the settings must be ordered");
+        previousHalfExtent = halfExtent;
+    }
+
+    // ---- 3. 选项真的接到了矩阵上 -------------------------------------------
+    // ★ 这一条是补出来的：sabotage「矩阵仍用默认档」**一条测试都没红**——上面第 2 节
+    //   证的是「不同档位造出不同的框」，而它调的是 sunShadowLightViewProj，与生产里
+    //   到底传了什么无关。选项接不上的症状是「选了没反应」，画面本身毫无异样。
+    //
+    //   接线在 WorldRenderer 那一趟里，逐帧、要 GPU，单测跑不到；所以钉源码，
+    //   与本文件其余几条渲染器护栏同一种办法。
+    {
+        const std::filesystem::path rendererDir =
+            std::filesystem::path{MC_REBEDROCK_RENDERER_SRC}.parent_path();
+        const std::string worldRenderer =
+            stripLineComments(readFile(rendererDir / "WorldRenderer.hpp"));
+        const auto call = worldRenderer.find("sunShadowLightViewProj(shadowSunDirection_");
+        REQUIRE(call != std::string::npos,
+                "WorldRenderer must still build the light matrices per frame");
+        const auto callEnd = worldRenderer.find(");", call);
+        const std::string arguments = worldRenderer.substr(call, callEnd - call);
+        REQUIRE(arguments.find("options.shadowNearDistance") != std::string::npos,
+                "the per-frame matrix must take the player's setting, not a constant: an option "
+                "that is not wired reads as 'the setting does nothing'");
+        REQUIRE(arguments.find("kDefaultSunShadowNearDistance") == std::string::npos,
+                "and it must not fall back to the default in the production path");
+    }
+
+    // ---- 4. 换档不重建任何东西 ---------------------------------------------
+    // ★ 这是这一档便宜的**全部理由**：阴影图仍是同一张 2048 两层数组，只有正交矩阵变了。
+    //   哪天有人给它加上重编译帧图，这条断言会说明为什么不该加
+    const std::string renderer = stripLineComments(readFile(MC_REBEDROCK_RENDERER_SRC));
+    const auto caseAt = renderer.find("case ui::WidgetId::ShadowNearDistance:");
+    REQUIRE(caseAt != std::string::npos,
+            "the option must be listed in applyOptionChanged, even if it does nothing");
+    const auto nextBreak = renderer.find("break;", caseAt);
+    const std::string caseBody = renderer.substr(caseAt, nextBreak - caseAt);
+    REQUIRE(caseBody.find("rebuildFrameGraph") == std::string::npos &&
+                caseBody.find("recreateSwapchain") == std::string::npos &&
+                caseBody.find("vkDeviceWaitIdle") == std::string::npos,
+            "changing the near distance must not rebuild anything: it only feeds a matrix that "
+            "is rebuilt every frame anyway");
+}
+
 void checkCascadeBlend() {
     // ---- 1. 混合系数本身 ---------------------------------------------------
     REQUIRE(shaderBias::sunShadowCascadeBlend(0.0F, 0.0F) == 0.0F,
@@ -1650,6 +1803,9 @@ void checkCascadeBlend() {
             "the blend band must stay a rim of the near box");
 
     // ---- 2. 带内两级各采一次，结果落在两者之间 -----------------------------
+    // RN-47：纹素从矩阵推，所以远段必须给一张**尺度像远段**的矩阵（横向 1/64）。
+    // 两张都用恒等阵的话两级推出同一个纹素，下面那条「远段的足迹按自己的纹素算」
+    // 就无从谈起
     const auto run = [](float x) {
         shaderReceiver::Samples samples{};
         // 前四个 tap 是近段（全亮），后四个是远段（全暗）
@@ -1657,7 +1813,7 @@ void checkCascadeBlend() {
         samples.blockerDepth = {0.499F, 0.499F, 0.499F, 0.499F,
                                 0.499F, 0.499F, 0.499F, 0.499F};
         const float factor = shaderReceiver::sunShadowFactor(
-            &samples, &samples, glm::mat4{1.0F}, glm::mat4{1.0F}, glm::vec3{x, 0, 0.5F},
+            &samples, &samples, glm::mat4{1.0F}, kFarScaleMatrix, glm::vec3{x, 0, 0.5F},
             glm::vec3{0, 1, 0}, glm::vec3{0, 1, 0}, kNearCascadeOn, kClearWeather, kSolidFace);
         return std::pair{factor, samples.count};
     };
@@ -1681,7 +1837,7 @@ void checkCascadeBlend() {
     shaderReceiver::Samples samples{};
     samples.visibility = {1, 1, 1, 1, 0, 0, 0, 0, 0};
     samples.blockerDepth = {0.499F, 0.499F, 0.499F, 0.499F, 0.499F, 0.499F, 0.499F, 0.499F};
-    shaderReceiver::sunShadowFactor(&samples, &samples, glm::mat4{1.0F}, glm::mat4{1.0F},
+    shaderReceiver::sunShadowFactor(&samples, &samples, glm::mat4{1.0F}, kFarScaleMatrix,
                                     glm::vec3{0.9F, 0, 0.5F}, glm::vec3{0, 1, 0},
                                     glm::vec3{0, 1, 0}, kNearCascadeOn, kClearWeather, kSolidFace);
     for (std::size_t tap = 0; tap < 4; ++tap) {
@@ -1693,18 +1849,18 @@ void checkCascadeBlend() {
     // 半影一个是 0.0039 格、一个是 0.031 格——正好 8 倍。uv 里两者反而一样宽，因为
     // 两级共用一张 2048 的图；差别全在一个纹素有多大
     const float saturatedNear = shaderBias::sunShadowPenumbraTexels(
-                                    160.0F, shaderBias::kSunShadowNearTexelBlocks) *
-                                shaderBias::kSunShadowNearTexelBlocks;
+                                    160.0F, kNearTexelBlocks) *
+                                kNearTexelBlocks;
     const float saturatedFar = shaderBias::sunShadowPenumbraTexels(
-                                   160.0F, shaderBias::kSunShadowFarTexelBlocks) *
-                               shaderBias::kSunShadowFarTexelBlocks;
+                                   160.0F, kFarTexelBlocks) *
+                               kFarTexelBlocks;
     REQUIRE(std::abs(saturatedFar / saturatedNear - 8.0F) < 1e-3F,
             "the seam this node blends away is an eightfold jump in penumbra width");
     // 而两级各按各的纹素算半影：把 texelBlocks 传错的症状是「带内的影子比带外更糊」
     shaderReceiver::Samples saturated{};
     saturated.visibility = {1, 1, 1, 1, 0, 0, 0, 0, 0};
     saturated.blockerDepth = {0.0F, 0.0F, 0.0F, 0.0F, 0.0F, 0.0F, 0.0F, 0.0F};
-    shaderReceiver::sunShadowFactor(&saturated, &saturated, glm::mat4{1.0F}, glm::mat4{1.0F},
+    shaderReceiver::sunShadowFactor(&saturated, &saturated, glm::mat4{1.0F}, kFarScaleMatrix,
                                     glm::vec3{0.9F, 0, 0.5F}, glm::vec3{0, 1, 0},
                                     glm::vec3{0, 1, 0}, kNearCascadeOn, kClearWeather,
                                     kSolidFace);
@@ -1728,7 +1884,7 @@ void checkCascadeBlend() {
     shaderReceiver::Samples off{};
     off.visibility = {0, 0, 0, 0, 0, 0, 0, 0, 0};
     off.blockerDepth = {0.499F, 0.499F, 0.499F, 0.499F, 0.499F, 0.499F, 0.499F, 0.499F};
-    shaderReceiver::sunShadowFactor(&off, &off, glm::mat4{1.0F}, glm::mat4{1.0F},
+    shaderReceiver::sunShadowFactor(&off, &off, glm::mat4{1.0F}, kFarScaleMatrix,
                                     glm::vec3{0.9F, 0, 0.5F}, glm::vec3{0, 1, 0},
                                     glm::vec3{0, 1, 0}, kNearCascadeOff, kClearWeather,
                                     kSolidFace);
@@ -1740,8 +1896,10 @@ void checkContactHardening() {
         shaderReceiver::Samples samples{};
         samples.visibility = {0, 0, 0, 0, 0, 0, 0, 0, 0};
         samples.blockerDepth = {blockerDepth, blockerDepth, blockerDepth, blockerDepth};
+        // RN-47：接触硬化的「0.05 格」只在**生产那样的纹素**（远段 1/16 格）下才算
+        // 接触。纹素既然从矩阵推，夹具就得给一张尺度对的矩阵
         const float factor = shaderReceiver::sunShadowFactor(
-            &samples, &samples, kMissNearCascade, glm::mat4{1.0F}, glm::vec3{0, 0, 0.5F},
+            &samples, &samples, kMissNearCascade, kFarScaleMatrix, glm::vec3{0, 0, 0.5F},
             glm::vec3{0, 1, 0}, glm::vec3{0, 1, 0}, kNearCascadeOn, kClearWeather, kSolidFace);
         return std::pair{factor, samples};
     };
@@ -1803,13 +1961,13 @@ void checkContactHardening() {
     // 逐值：半影 = 距离 x tan(太阳视角半径) / 纹素尺寸，上限 kSunMaxPenumbraTexels。
     for (const float blocks : {0.0F, 0.5F, 1.0F, 2.0F, 4.0F}) {
         const float wanted = std::min(blocks * shaderBias::kSunPenumbraTangent /
-                                          shaderBias::kSunShadowFarTexelBlocks,
+                                          kFarTexelBlocks,
                                       shaderBias::kSunMaxPenumbraTexels);
-        REQUIRE(std::abs(shaderBias::sunShadowPenumbraTexels(blocks, shaderBias::kSunShadowFarTexelBlocks) - wanted) < 1e-6F,
+        REQUIRE(std::abs(shaderBias::sunShadowPenumbraTexels(blocks, kFarTexelBlocks) - wanted) < 1e-6F,
                 "penumbra golden value mismatch at " + std::to_string(blocks) + " blocks");
     }
-    REQUIRE(shaderBias::sunShadowPenumbraTexels(-1.0F, shaderBias::kSunShadowFarTexelBlocks) == 0.0F &&
-            shaderBias::sunShadowPenumbraTexels(1e6F, shaderBias::kSunShadowFarTexelBlocks) == shaderBias::kSunMaxPenumbraTexels,
+    REQUIRE(shaderBias::sunShadowPenumbraTexels(-1.0F, kFarTexelBlocks) == 0.0F &&
+            shaderBias::sunShadowPenumbraTexels(1e6F, kFarTexelBlocks) == shaderBias::kSunMaxPenumbraTexels,
             "penumbra must clamp on both ends (negative distances come from roundoff)");
 }
 
@@ -1933,9 +2091,20 @@ void checkEntityWiring() {
             sampling.find("* vec4(worldPosition, 1.0)") == std::string::npos,
             "the normal offset must be applied to the world position before projection");
     // 每一级都必须先把 texelBlocks 换成自己那一档，再算抬升。漏掉第二次赋值时源码
-    // 仍然「看起来对」——两条分支的文字几乎一样
-    REQUIRE(sampling.find("texelBlocks = sunShadowTexelBlocks(cascade);") != std::string::npos,
-            "each cascade must re-read its own texel size before lifting along the normal");
+    // 仍然「看起来对」——两条分支的文字几乎一样。
+    //
+    // RN-47：纹素不再是「按级别查表」，而是**从那一级的矩阵推**。所以钉的换成了
+    // 「每一处都是从矩阵推的，而且推的是那一支正在用的矩阵」——数值那一侧由
+    // checkCascades 逐档比对（推导值必须等于 C++ 造矩阵时用的那个）
+    REQUIRE(sampling.find("sunShadowTexelBlocksOf(tryNear ? lightViewProjNear : lightViewProjFar)")
+                != std::string::npos,
+            "the first attempt must derive its texel from the matrix it is about to project with");
+    REQUIRE(occurrencesIn(sampling, "sunShadowTexelBlocksOf(lightViewProjFar)") == 2U,
+            "both far-cascade paths (the fallback and the blend band) must re-derive the far "
+            "texel; reusing the near one lifts the bias by the ratio between them");
+    REQUIRE(sampling.find("sunShadowTexelBlocks(cascade)") == std::string::npos,
+            "the per-cascade constant table is gone; a lookup by cascade cannot follow a "
+            "player-adjustable near box");
     REQUIRE(sampling.find("float tapReference = reference + sunShadowTapOffsetBlocks(") != std::string::npos &&
             sampling.find("tapReference));") != std::string::npos,
             "PCF must compare each tap against its receiver-plane depth");
@@ -1954,6 +2123,7 @@ int main() {
         checkThinPlaneBias();
         checkDirectWeight();
         checkCascadeBlend();
+        checkNearDistanceOption();
         checkWaterTransmittance();
         checkBouncedLight();
         checkEntityWiring();

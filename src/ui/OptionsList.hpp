@@ -373,9 +373,9 @@ inline constexpr std::array<OptionsGroup, 1> kOptionsHubGroups{{{10U, OptionsGro
     return page == PageId::Options ? 2U : 0U;
 }
 
-// 高级图形：本项目自有页，两项一组。
+// 高级图形：本项目自有页，两项一组。RN-47 之后是四项。
 inline constexpr std::array<OptionsGroup, 1> kAdvancedGraphicsGroups{
-    {{3U, OptionsGroupKind::Small}}};
+    {{4U, OptionsGroupKind::Small}}};
 
 // ★ 分节行**不产生控件**，所以它的 `count` 必须是 0。写成非 0 会让它吞掉一个设置项
 //   序号，而那一项之后的每一个控件都会错位——症状是"少了一个控件，其余全部串行"。

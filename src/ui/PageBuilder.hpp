@@ -604,6 +604,7 @@ inline void buildPageInto(Page& page, PageId id, const MenuBuildContext& ctx,
             detail::OptionCursor add{ctx, id};
             add([&] { addOptionButton(page, ctx, WidgetId::SunShadows, cb); });
             add([&] { addOptionButton(page, ctx, WidgetId::CascadedShadows, cb); });
+            add([&] { addOptionButton(page, ctx, WidgetId::ShadowNearDistance, cb); });
             add([&] { addOptionButton(page, ctx, WidgetId::DynamicLight, cb); });
             addButton(page, ctx, WidgetId::Done, cb.doneOptions);
             break;

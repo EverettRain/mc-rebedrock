@@ -34,14 +34,37 @@ namespace mc::render {
 // 稳定性一点都不用让，也不依赖 TAA。
 inline constexpr std::size_t kSunShadowCascadeCount = 2;
 
-// 每级正交框的半边长（格）。近段 8 ⇒ 全宽 16 格，只覆盖玩家周围——那正是「玩家附近」；
-// 远段 64 ⇒ 全宽 128 格，与 RN-11 以来一致。
-// 框外一律无阴影，最远那一级的框边是一条随视点与太阳移动的硬边界（RN-11 C(c) 的账）。
-inline constexpr std::array<float, kSunShadowCascadeCount> kSunShadowOrthoHalfExtents{8.0F, 64.0F};
+// 远段正交框的半边长（格）：64 ⇒ 全宽 128 格，与 RN-11 以来一致。
+// 框外一律无阴影，它的框边是一条随视点与太阳移动的硬边界（RN-11 C(c) 的账）。
+inline constexpr float kSunShadowOrthoHalfExtent = 64.0F;
 
-// 最远那一级的半边长。光锥深度、实体剔除这些「与级别无关」的量取它。
-inline constexpr float kSunShadowOrthoHalfExtent =
-    kSunShadowOrthoHalfExtents[kSunShadowCascadeCount - 1];
+// RN-47：近段框的半边长（格）成了**玩家可调的一档**，不再是常量。
+//
+// 现场（用户）：8 格的接缝太近，即使 RN-43 加了过渡带也仍旧明显。放大它买到三样东西——
+// 接缝推远、两级的纹素比从 8 倍降到 4 或 2.67 倍（残余跳变因此更小）、过渡带按比例变宽；
+// 代价是近段的纹素变粗，以及阴影 pass 多画一些投射者。
+//
+// 成本按**框的水平面积**走（投射者数正比于它）：近段今天只有远段面积的 1.6%，
+// 16 格是 6.2%，24 格是 14.1%。也就是说最贵的一档也只让阴影 pass 多付一成半，
+// 而**不重建任何 image**——阴影图仍是同一张 2048 两层数组，只有那个正交矩阵变了。
+// 这一档因此不需要重编译帧图，也不需要重建交换链资源；它更像 FOV，不像抗锯齿。
+inline constexpr std::array<int, 3> kSunShadowNearDistances{8, 16, 24};
+inline constexpr int kDefaultSunShadowNearDistance = 8;
+
+// 玩家给的值不在表里时取默认档。存档里的旧值、手改的配置文件都从这里收口。
+[[nodiscard]] constexpr int sanitizedSunShadowNearDistance(int blocks) {
+    for (const int allowed : kSunShadowNearDistances) {
+        if (allowed == blocks) {
+            return blocks;
+        }
+    }
+    return kDefaultSunShadowNearDistance;
+}
+
+[[nodiscard]] constexpr float sunShadowOrthoHalfExtent(std::size_t cascade, int nearBlocks) {
+    return cascade == 0 ? static_cast<float>(sanitizedSunShadowNearDistance(nearBlocks))
+                        : kSunShadowOrthoHalfExtent;
+}
 
 // 光源「相机」放在视点沿太阳方向 96 格处，正交深度范围 0.1..320 格。
 inline constexpr float kSunShadowEyeDistance = 96.0F;
@@ -92,18 +115,23 @@ static_assert(24'000.0 / kSunShadowAngleStepTicks ==
 // ★ 着色器里的偏置、法线抬升、逐 tap 平面修正、半影半径全都以「纹素」表达，而纹素的
 // 世界尺寸现在是级别的函数——那三个函数因此从读全局常量改成收一个参数（RN-35 §1.4）。
 // 漏改的症状是近段的偏置按远段的纹素抬，也就是抬高 8 倍：影子整片从投射者脚下浮起来。
-[[nodiscard]] constexpr float sunShadowTexelSize(std::size_t cascade) {
-    return 2.0F * kSunShadowOrthoHalfExtents[cascade] /
+[[nodiscard]] constexpr float sunShadowTexelSize(std::size_t cascade, int nearBlocks) {
+    return 2.0F * sunShadowOrthoHalfExtent(cascade, nearBlocks) /
            static_cast<float>(kSunShadowMapResolution);
 }
-static_assert(sunShadowTexelSize(0) == 0.0078125F);
-static_assert(sunShadowTexelSize(1) == 0.0625F);
-// 近段的纹素正好是远段的 1/8。这个比值在着色器与测试里都被当成常量读，写成断言
-// 而不是注释——改了框宽却忘了改那一侧的人，在这里先炸
-static_assert(sunShadowTexelSize(1) == sunShadowTexelSize(0) * 8.0F);
+static_assert(sunShadowTexelSize(0, kDefaultSunShadowNearDistance) == 0.0078125F);
+static_assert(sunShadowTexelSize(1, kDefaultSunShadowNearDistance) == 0.0625F);
+// 默认档下近段的纹素正好是远段的 1/8。RN-47 之后这个比值随档位变（8/16/24 ⇒ 8/4/2.67 倍），
+// 所以断言从「等于 8 倍」改成「每一档都必须比远段细」——那才是近段存在的理由
+static_assert(sunShadowTexelSize(1, 8) == sunShadowTexelSize(0, 8) * 8.0F);
+static_assert(sunShadowTexelSize(0, 16) * 4.0F == sunShadowTexelSize(1, 16));
+static_assert(sunShadowTexelSize(0, 24) < sunShadowTexelSize(1, 24));
+// 而远段的纹素与档位无关：换档不该动远处的影子
+static_assert(sunShadowTexelSize(1, 8) == sunShadowTexelSize(1, 24));
 
 // 最远那一级的纹素。与级别无关的旧调用点（阴影调试叠加层等）取它。
-inline constexpr float kSunShadowTexelSize = sunShadowTexelSize(kSunShadowCascadeCount - 1);
+inline constexpr float kSunShadowTexelSize =
+    sunShadowTexelSize(kSunShadowCascadeCount - 1, kDefaultSunShadowNearDistance);
 
 // 预通道每帧最多画多少个 section。视点飞高或光锥覆盖密集区域时候选能涨到数千，
 // 每帧全部重画正是那种可能把设备推向丢失的重负载帧。
@@ -170,8 +198,10 @@ void selectSunShadowEntityCasters(const glm::mat4& lightViewProj, const glm::vec
 // RN-35：`cascade` 选哪一级的正交框与哪一个吸附步长。两级用的是**同一个**旋转与
 // 同一个深度范围，只有横向半边长与吸附步长不同——于是「近段的影子和远段的影子是同一个
 // 太阳投的」这件事是结构性的，不是靠两处常量碰巧相等。
-[[nodiscard]] glm::mat4 sunShadowLightViewProj(const glm::vec3& sunDirection, const glm::vec3& eye,
-                                               std::size_t cascade = kSunShadowCascadeCount - 1);
+[[nodiscard]] glm::mat4 sunShadowLightViewProj(
+    const glm::vec3& sunDirection, const glm::vec3& eye,
+    std::size_t cascade = kSunShadowCascadeCount - 1,
+    int nearBlocks = kDefaultSunShadowNearDistance);
 
 // 投射者的排序键：包围盒沿光行进方向最靠前那个角的光源空间深度，越小越靠近光源。
 //

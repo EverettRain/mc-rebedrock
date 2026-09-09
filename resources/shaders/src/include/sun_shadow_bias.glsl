@@ -17,18 +17,13 @@
 // 深度轴因此只剩一个常数底值，盖住深度图与 16 位打包顶点坐标的量化（一格 3855 档）。
 const float kSunShadowDepthBiasBlocks = 0.005F;
 
-// RN-35：纹素的世界边长（格）**逐级不同**，必须与 SunShadowMap.hpp 的
-// sunShadowTexelSize() 逐位一致。近段的框是 16 格 / 2048 纹素，远段是 128 / 2048。
+// RN-35：纹素的世界边长（格）**逐级不同**。下面几个函数因此都收一个 texelSizeBlocks
+// 参数，而不是读一个全局常量：它们表达的全是「多少个纹素」，而纹素有多大是级别的函数。
+// 漏传就是按远段的纹素去抬近段的偏置，也就是抬高 8 倍——影子整片从投射者脚下浮起来。
 //
-// 下面三个函数因此都收一个 texelSizeBlocks 参数，而不是读一个全局常量：它们表达的
-// 全是「多少个纹素」，而纹素有多大现在是级别的函数。漏传就是按远段的纹素去抬近段的
-// 偏置，也就是抬高 8 倍——影子整片从投射者脚下浮起来。
-const float kSunShadowNearTexelBlocks = 0.0078125F;
-const float kSunShadowFarTexelBlocks = 0.0625F;
-
-float sunShadowTexelBlocks(int cascade) {
-    return cascade == 0 ? kSunShadowNearTexelBlocks : kSunShadowFarTexelBlocks;
-}
+// RN-47：那两个常量已经删了。近段框成了玩家可调的一档，纹素因此从**正在采的那张矩阵**
+// 里推（`sunShadowTexelBlocksOf`，见 sun_shadow.glsl）——C++ 与 GLSL 各存一份常量再靠
+// 测试钉在一起的做法，到这里为止。
 
 const float kSunShadowMinCosTheta = 0.15F;
 

@@ -69,6 +69,11 @@ void GameOptions::sanitize() {
     viewDistance = std::clamp(viewDistance, 2, 36);
     simulationDistance = std::clamp(simulationDistance, 2, 12);
     if (frameRateLimit != 0) frameRateLimit = std::clamp(frameRateLimit, 30, 260);
+    // RN-47：近段框的三档。表在 render/SunShadowMap.hpp，这里只做同样的收口——
+    // 配置层不依赖渲染层，而两处的取值由 sun_shadow_map_test 钉在一起
+    if (shadowNearDistance != 8 && shadowNearDistance != 16 && shadowNearDistance != 24) {
+        shadowNearDistance = 8;
+    }
     if (anisotropy <= 1) anisotropy = 1;
     else if (anisotropy <= 2) anisotropy = 2;
     else if (anisotropy <= 4) anisotropy = 4;
@@ -130,6 +135,8 @@ GameOptions GameOptions::load(const std::filesystem::path& path) {
             static_cast<void>(parseNumber(value, options.simulationDistance));
         } else if (key == "render.fpsLimit") {
             static_cast<void>(parseNumber(value, options.frameRateLimit));
+        } else if (key == "render.shadowNearDistance") {
+            static_cast<void>(parseNumber(value, options.shadowNearDistance));
         } else if (key == "render.anisotropy") {
             static_cast<void>(parseNumber(value, options.anisotropy));
         } else if (key == "render.antiAliasing") {
@@ -238,6 +245,7 @@ void GameOptions::save(const std::filesystem::path& path) const {
            << "render.distance=" << sanitized.viewDistance << '\n'
            << "render.simulationDistance=" << sanitized.simulationDistance << '\n'
            << "render.fpsLimit=" << sanitized.frameRateLimit << '\n'
+           << "render.shadowNearDistance=" << sanitized.shadowNearDistance << '\n'
            << "render.anisotropy=" << sanitized.anisotropy << '\n'
            << "render.antiAliasing=" << static_cast<int>(sanitized.antiAliasing) << '\n'
            << "render.cascadedShadows=" << (sanitized.cascadedShadows ? "true" : "false")

@@ -41,12 +41,12 @@ double sunShadowSunTick(double dayTimeTicks) {
 }
 
 glm::mat4 sunShadowLightViewProj(const glm::vec3& sunDirection, const glm::vec3& eye,
-                                 std::size_t cascade) {
-    const float halfExtent = kSunShadowOrthoHalfExtents[cascade];
+                                 std::size_t cascade, int nearBlocks) {
+    const float halfExtent = sunShadowOrthoHalfExtent(cascade, nearBlocks);
     // ★ 每一级吸附到**自己**的纹素网格。用同一个步长去吸附两级，细的那一级就只在
     // 粗纹素的整数倍上落脚——相机在一个粗纹素内平移时近段整体不动，跨过时跳 8 个细纹素，
     // 那正是 RN-24 要消灭的那种爬行，只是换了个尺度
-    const float texelSize = sunShadowTexelSize(cascade);
+    const float texelSize = sunShadowTexelSize(cascade, nearBlocks);
     const glm::vec3 sun = glm::normalize(sunDirection);
     // 只取旋转：lookAt 的朝向是 normalize(target - position) = -sun，与视点无关。
     // 把旋转与平移拆开，量化才有地方落——平移分量正是要被钉到纹素网格上的那个量。

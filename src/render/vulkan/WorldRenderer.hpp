@@ -1152,7 +1152,10 @@ class WorldRenderer final {
         // 与吸附步长不同——「两级是同一个太阳投的」因此是结构性的
         for (std::size_t cascade = 0; cascade < kSunShadowCascadeCount; ++cascade) {
             shadowLightViewProj[cascade] =
-                sunShadowLightViewProj(shadowSunDirection_, renderEyeState().position, cascade);
+                sunShadowLightViewProj(shadowSunDirection_, renderEyeState().position, cascade,
+                                       // RN-47：玩家可调的那一档。越界的值在
+                                       // sunShadowOrthoHalfExtent 里收口到默认档
+                                       options.shadowNearDistance);
         }
     }
 

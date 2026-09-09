@@ -107,6 +107,13 @@ inline constexpr std::array<OptionValue, 6> kSprintWindowValues{{
 // 与从前那句 anisotropy >= 16 ? 1 : anisotropy * 2 产生的序列相同，现在直接把取值写出来
 inline constexpr std::array<OptionValue, 5> kAnisotropyValues{{{1}, {2}, {4}, {8}, {16}}};
 
+// RN-47：近段级联框的半边长（格），也就是接缝离视点多远。取值必须与
+// render/SunShadowMap.hpp 的 kSunShadowNearDistances 同表——有测试钉着。
+//
+// 成本按框的**水平面积**走：8 格时近段只有远段面积的 1.6%，24 格是 14.1%，
+// 也就是阴影 pass 多付一成半。换档不重建任何 image，只是那个正交矩阵变了。
+inline constexpr std::array<OptionValue, 3> kShadowNearDistanceValues{{{8}, {16}, {24}}};
+
 // 降雨的绘制路径，属实验性内容：贴图雨幕，以及实例化 SSBO 粒子
 inline constexpr std::array<OptionValue, 2> kRainModeValues{{
     {0, "options.rebedrock.rainMode.texture", "Texture Rain"},
@@ -129,7 +136,7 @@ inline constexpr std::array<OptionValue, 4> kParticleLevelValues{{
 // 分辨率读实时窗口尺寸，GUI 缩放读菜单状态，难度读当前打开的存档
 // 这三项仍由渲染器直接处理
 
-inline constexpr std::array<OptionDesc, 23> kCyclingOptions{{
+inline constexpr std::array<OptionDesc, 24> kCyclingOptions{{
     // UI-6c：26.1 §7.6 Controls 的六个设置项（偏差 D3）。四个 Hold/Toggle 的 caption
     // 复用动作名本身，值标签是"按住 / 切换"。
     {WidgetId::ToggleCrouch, "key.sneak", "Sneak", &config::GameOptions::toggleCrouch,
@@ -184,6 +191,10 @@ inline constexpr std::array<OptionDesc, 23> kCyclingOptions{{
     // RN-35：太阳阴影的级联。关掉只画远段那一张 128 格的图，回到 RN-34 的形态
     {WidgetId::CascadedShadows, "options.rebedrock.cascadedShadows", "Cascaded Shadows",
      &config::GameOptions::cascadedShadows, kOnOffValues},
+    // RN-47：接缝离视点多远。8 格时它就在脚边，即使有过渡带也看得出来
+    {WidgetId::ShadowNearDistance, "options.rebedrock.shadowNearDistance",
+     "Near Shadow Distance", &config::GameOptions::shadowNearDistance,
+     kShadowNearDistanceValues},
     {WidgetId::RainCollisionCache, "options.rebedrock.rainCollisionCache",
      "Rain Collision Cache", &config::GameOptions::rainCollisionCache, kOnOffValues},
 }};

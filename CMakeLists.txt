@@ -2136,6 +2136,9 @@ if(BUILD_TESTING)
         src/render/SunShadowMap.cpp
         src/render/Frustum.cpp
         src/world/DayNightCycle.cpp
+        # RN-47：近段框成了玩家可调的一档，取值表因此横跨渲染层、界面层与配置层。
+        # 那条「三张表同源」的断言要问配置层的收口，所以它跟进来了
+        src/config/GameOptions.cpp
     )
     set(SHADER_SOURCE "${CMAKE_CURRENT_SOURCE_DIR}/resources/shaders/src/include/sun_shadow.glsl")
     set(CPP_OUTPUT "${CMAKE_CURRENT_BINARY_DIR}/sun_shadow_glsl_cpp.hpp")
