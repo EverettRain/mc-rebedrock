@@ -817,6 +817,42 @@ inline constexpr std::array<ShapeBox, 4> kFenceGateCollisionByFacing = [] {
 
 // MDL-2: CarpetBlock#getShape — `Block.column(16, 0, 1)`. A Column, so it goes
 // down the same mesh/pick/collision path a pressure plate does.
+// SLP-1: BedBlock's shape — `Shapes.or(column(16, 3, 9), northWestLeg,
+// northEastLeg)` rotated horizontally. The mattress is 3/16..9/16 tall (a bed is
+// not a slab: you step UP onto it), and the two 3x3x3 legs sit at the bed's
+// OUTER end, which is why the rotation key is `getConnectedDirection(state)
+// .getOpposite()` — the foot's outer end is away from the head, the head's is
+// away from the foot.
+inline constexpr ShapeBox kBedMattressBox{0.0F, 3.0F / 16.0F, 0.0F, 1.0F, 9.0F / 16.0F, 1.0F};
+inline constexpr ShapeBox kBedLegNorthWest{0.0F, 0.0F, 0.0F, 3.0F / 16.0F, 3.0F / 16.0F,
+                                           3.0F / 16.0F};
+struct BedBoxSet final {
+    std::array<ShapeBox, 3> boxes{}; // mattress + two legs
+};
+inline constexpr std::array<BedBoxSet, 4> kBedBoxesByDirection = [] {
+    std::array<BedBoxSet, 4> table{};
+    for (std::size_t direction = 0; direction < 4U; ++direction) {
+        ShapeBox west = kBedLegNorthWest;
+        ShapeBox east = rotatedClockwise(kBedLegNorthWest);
+        for (std::size_t turn = 0; turn < direction; ++turn) {
+            west = rotatedClockwise(west);
+            east = rotatedClockwise(east);
+        }
+        table[direction] = BedBoxSet{{kBedMattressBox, west, east}};
+    }
+    return table;
+}();
+
+// `getConnectedDirection(state).getOpposite()`, folded: the foot keys on the
+// opposite of FACING, the head on FACING itself.
+[[nodiscard]] constexpr BlockShape shapeBed(BlockState state) {
+    const auto facing = state.orientation();
+    const auto keyed = state.isBedHead() ? facing : oppositeOrientation(facing);
+    const auto index = static_cast<std::size_t>(keyed);
+    const auto& set = kBedBoxesByDirection[index < 4U ? index : 0U];
+    return {ShapeKind::Boxes, 0.0F, 0.0F, {set.boxes.data(), set.boxes.size()}};
+}
+
 // MDL-3: SnowLayerBlock's `SHAPES[layers]` — `Block.column(16, 0, layers * 2)`.
 // The COLLISION shape reads SHAPES[layers - 1] instead (`collisionShape` below),
 // which is why one layer of snow is walked over without stepping up.
@@ -895,7 +931,7 @@ using BlockShapeFn = BlockShape (*)(BlockState);
 // The per-model shape handlers indexed by BlockModel ordinal — shape dispatch as
 // data. `blockShape` loads the block's model and calls through this, so the shape
 // stays a single source with no switch(block...) to drift.
-inline constexpr std::array<BlockShapeFn, 20> kShapeByModel{{
+inline constexpr std::array<BlockShapeFn, 21> kShapeByModel{{
     &shapeCube,          // BlockModel::Cube
     &shapeCross,         // BlockModel::Cross
     &shapeCrop,          // BlockModel::Crop
@@ -916,6 +952,7 @@ inline constexpr std::array<BlockShapeFn, 20> kShapeByModel{{
     &shapeCrossCollision, // BlockModel::CrossCollision (MDL-1: fence / bars / pane)
     &shapeCarpet,        // BlockModel::Carpet (MDL-2: the 1/16 floor slice)
     &shapeLayered,       // BlockModel::Layered (MDL-3: snow, height = LAYERS)
+    &shapeBed,           // BlockModel::Bed (SLP-1: mattress + two outer legs)
 }};
 static_assert(static_cast<std::size_t>(BlockModel::Cube) == 0U);
 static_assert(static_cast<std::size_t>(BlockModel::Cross) == 1U);
@@ -937,9 +974,10 @@ static_assert(static_cast<std::size_t>(BlockModel::Fire) == 16U);
 static_assert(static_cast<std::size_t>(BlockModel::CrossCollision) == 17U);
 static_assert(static_cast<std::size_t>(BlockModel::Carpet) == 18U);
 static_assert(static_cast<std::size_t>(BlockModel::Layered) == 19U);
+static_assert(static_cast<std::size_t>(BlockModel::Bed) == 20U);
 // Every BlockModel ordinal must have a shape handler; a missing entry is the
 // out-of-bounds function-pointer read (a SIGBUS) that a new model would cause.
-static_assert(kShapeByModel.size() == static_cast<std::size_t>(BlockModel::Layered) + 1U);
+static_assert(kShapeByModel.size() == static_cast<std::size_t>(BlockModel::Bed) + 1U);
 
 } // namespace detail
 

@@ -103,6 +103,14 @@ enum class StateProperty : std::uint8_t {
     // one-layer default without a special case. `BlockState::layers()` adds the
     // one back; nothing else should read the raw value.
     Layers,
+    // SLP-1: BedBlock.PART — which cell of the two-cell bed this is (foot = 0,
+    // head = 1), so the default state is the foot exactly as vanilla's
+    // registerDefaultState says.
+    BedPart,
+    // SLP-1: BedBlock.OCCUPIED — someone is sleeping in this bed. Both cells
+    // carry it and updateShape keeps them agreeing, which is how the far half
+    // knows without asking the near one.
+    Occupied,
     Count,
 };
 
@@ -163,6 +171,10 @@ inline constexpr std::size_t kStatePropertyCount = static_cast<std::size_t>(Stat
         return "in_wall";
     case StateProperty::Locked:
         return "locked";
+    case StateProperty::BedPart:
+        return "part";
+    case StateProperty::Occupied:
+        return "occupied";
     case StateProperty::Layers:
         // Same name and same meaning as vanilla's, but this build's value is
         // one less (0..7 vs 1..8) — the JC bridge's business, registered in

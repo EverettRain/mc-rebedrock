@@ -190,7 +190,8 @@ UiRect keyBindsListBox(const HudLayout& layout) {
 std::size_t countPageButtons(const Page& page) {
     std::size_t buttons = 0;
     for (const Widget& widget : page) {
-        if (!isKeyBindRowWidget(widget) && !isPackRowWidget(widget)) {
+        if (!isKeyBindRowWidget(widget) && !isPackRowWidget(widget) &&
+            !isPackZoneWidget(widget)) {
             ++buttons;
         }
     }
@@ -200,6 +201,10 @@ std::size_t countPageButtons(const Page& page) {
 void layoutPageInto(Page& page, PageId id, const HudLayout& layout,
                     std::size_t keyBindFirstRow, std::size_t optionsFirstRow,
                     CreateWorldTab createWorldTab) {
+    // ★ UI-10 / D24：这里**不需要**两栏的窗口起点。装配只造窗口里的那几行，所以
+    //   页面里第几个同栏的行天然就是屏幕上的第几行；绝对行号只有**回调**用得着
+    //   （它要去索引真正的那个包）。给布局也塞一个 firstRow 参数是"只做有消费者的
+    //   东西"的反面——那两个参数会立刻变成第二份可能与装配不同步的表述。
     // 按钮数从装配结果**数出来**，不是另一张表说的。这就是这两趟拆分的全部意义。
     const std::size_t buttonCount = countPageButtons(page);
     std::size_t buttonIndex = 0;
@@ -210,12 +215,26 @@ void layoutPageInto(Page& page, PageId id, const HudLayout& layout,
         layout.logicalWidth());
     std::size_t availableRow = 0;
     std::size_t selectedRow = 0;
+    // UI-10 / D24：右栏每一行后面跟着三块热区（取消选择 / 上移 / 下移），它们的矩形
+    // 是**那一行**图标位的三块分区。记住上一行的图标位即可——装配保证它们紧跟在
+    // 自己那一行之后（两处次序必须一致，这是护栏 21 那一族）。
+    TransferIconZones rowZones{};
     for (Widget& widget : page) {
         if (isPackRowWidget(widget)) {
             const bool right = isSelectedPackRow(widget);
             const auto& list = right ? lists.selected : lists.available;
-            widget.rect = fbRect(layout, scrollListRow(list, right ? selectedRow++
-                                                                  : availableRow++));
+            const auto row = scrollListRow(list, right ? selectedRow++ : availableRow++);
+            widget.rect = fbRect(layout, row);
+            if (right) {
+                rowZones = transferIconZones(transferIconCell(row));
+            }
+            continue;
+        }
+        if (isPackZoneWidget(widget)) {
+            const auto id = static_cast<WidgetId>(widget.debugId);
+            widget.rect = fbRect(layout, id == WidgetId::PackUnselect  ? rowZones.unselect
+                                         : id == WidgetId::PackMoveUp ? rowZones.moveUp
+                                                                      : rowZones.moveDown);
             continue;
         }
         if (isKeyBindRowWidget(widget)) {

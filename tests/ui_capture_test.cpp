@@ -547,6 +547,21 @@ void testFixtureSourceGuards() {
         CHECK(cursor.find("pinnedCursor") != std::string::npos);
     }
 
+    // ★ UI-10 / D24：**两栏各用各的滚动位置**。共用一个的症状是"滚左边右边跟着动"，
+    //   而它是 Vulkan 头里的一行、无头测试进不去——只能读源码守
+    //   （与 UI-8 那次面板层号完全同形）。
+    {
+        const std::string hudSource = readSource(MC_REBEDROCK_HUD_RENDERER_SRC);
+        const std::string body = functionBody(
+            hudSource, "void fillPackContext(ui::MenuBuildContext&");
+        if (!body.empty()) {
+            CHECK(body.find("packAvailableFirstRow") != std::string::npos);
+            CHECK(body.find("packSelectedFirstRow") != std::string::npos);
+            // 钳制归那个纯函数，这里不再自己算上界。
+            CHECK(body.find("packColumnWindow(") != std::string::npos);
+        }
+    }
+
     const std::string hud = readSource(MC_REBEDROCK_HUD_RENDERER_SRC);
     const std::string drawHud = functionBody(hud, "void drawHud(VkCommandBuffer");
     if (!drawHud.empty()) {
@@ -793,6 +808,25 @@ void testKnobsAreAllPinned() {
     // 提示条与聊天：两者都带时间戳，会随运行时刻淡出
     CHECK(body.find("toastQueue_.clear()") != std::string::npos);
     CHECK(body.find("chatHistory.clear()") != std::string::npos);
+
+    // ★ UI-10：导出也**从不读** options.properties。
+    //
+    //   `applyUiCaptureDeterminism` 钉得住的是**间接**影响画面的开关；它钉不住
+    //   **直接显示在界面上**的那些——视频设置页每一个滑块与循环选项的标签就是选项值
+    //   本身。实测：两棵工作树的 `render.distance` 一个 2 一个 4，同一份代码拍出来的
+    //   `video-settings` 逐字节不同，而那看起来像是"这一轮改坏了什么"。
+    //   一份出厂默认的 options 才让"图只由命令行决定"真正成立。
+    {
+        const std::string application = readSource(MC_REBEDROCK_APPLICATION_SRC);
+        const auto load = application.find("config::GameOptions::load(optionsPath)");
+        check(load != std::string::npos,
+              "Application must still load options for ordinary runs", __LINE__);
+        // 那一处必须是**三元的截图分支**，而不是无条件加载。
+        check(application.find("uiCapture_.has_value()") < load,
+              "the UI capture run must fall back to a default GameOptions", __LINE__);
+        check(application.find("config::GameOptions{}") != std::string::npos,
+              "the UI capture run must use a factory-default GameOptions", __LINE__);
+    }
 
     // ★ 导出**从不写 options.properties**。
     //

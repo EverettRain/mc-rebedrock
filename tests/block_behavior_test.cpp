@@ -147,7 +147,8 @@ void testPrefilterParity() {
                 definition.model == mc::world::BlockModel::Stairs ||
                 definition.model == mc::world::BlockModel::Door ||
                 definition.model == mc::world::BlockModel::Wall ||
-                   definition.model == mc::world::BlockModel::CrossCollision ||
+definition.model == mc::world::BlockModel::CrossCollision ||
+                   definition.model == mc::world::BlockModel::Bed ||
                 definition.model == mc::world::BlockModel::FenceGate ||
                 definition.states.has(mc::world::StateProperty::Locked)));
         assert(runtime.has(BlockBehaviorBit::HasRandomTick) ==
@@ -323,7 +324,8 @@ void testDispatchMechanism() {
         const auto model = definition.model;
         if (model == mc::world::BlockModel::Stairs || model == mc::world::BlockModel::Door ||
             model == mc::world::BlockModel::Wall ||
-            model == mc::world::BlockModel::CrossCollision ||
+model == mc::world::BlockModel::CrossCollision ||
+            model == mc::world::BlockModel::Bed ||
             model == mc::world::BlockModel::FenceGate ||
             definition.states.has(mc::world::StateProperty::Locked)) {
             assert(behavior.updateShape != nullptr);

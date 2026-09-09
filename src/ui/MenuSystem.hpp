@@ -260,6 +260,11 @@ class MenuSystem final {
     // GameTab / WorldTab / MoreTab）。它是**屏幕状态**，不是页面内容——与
     // 绑定列表的滚动位置、创造背包的页签同一类。
     CreateWorldTab createWorldTab = CreateWorldTab::Game;
+    // UI-10 / D24：资源包那两栏各自的滚动位置。
+    // ★ **两栏是两张互相独立的列表**（条目数不同、滚动位置不同），所以是两个字段，
+    //   不是一个。共用一个的后果是滚左边右边跟着动。
+    std::size_t packAvailableFirstRow = 0;
+    std::size_t packSelectedFirstRow = 0;
     std::size_t creativeScrollRow = 0;
 };
 

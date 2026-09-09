@@ -22,6 +22,7 @@
 #include "gameplay/PlayerTickSnapshot.hpp"
 #include "gameplay/PlayerVitals.hpp"
 #include "gameplay/ServerPlayer.hpp"
+#include "gameplay/Sleep.hpp"
 #include "gameplay/ScreenHandler.hpp"
 #include "gameplay/SimulationHostBridge.hpp"
 #include "gameplay/WeatherSystem.hpp"
@@ -238,6 +239,21 @@ class GameSession final {
     // ENCH-3: the open anvil's menu, and the two operations on it. `refresh`
     // re-derives the result after any slot change (ItemCombinerMenu#slotsChanged);
     // `take` is the result-slot click that actually pays.
+    // SLP-2/3/4: the bed right-click. Runs the eight-step chain (Sleep.hpp),
+    // sets the personal spawn point when the dimension's BedRule allows it,
+    // marks both halves OCCUPIED and puts the player to sleep. Returns the
+    // problem — None means the player is now in bed — so the caller can say why
+    // it refused. The night skip itself happens in tick(), once the player has
+    // been asleep long enough.
+    BedSleepProblem trySleepInBed(world::World& world, glm::ivec3 bed);
+    // Player#stopSleeping: clears the OCCUPIED bits and stands the player up.
+    // `skipNight` is what the tick passes when the sleep completed.
+    void wakeUp(world::World& world, bool skipNight);
+    // Writes OCCUPIED on both halves of the bed whose head is `head`.
+    void setBedOccupied(world::World& world, world::BlockPos head, bool occupied);
+    [[nodiscard]] bool playerSleeping() const { return primaryPlayer().sleeping; }
+    [[nodiscard]] int playerSleepTicks() const { return primaryPlayer().sleepTicks; }
+
     void openAnvilContainer(glm::ivec3 anvil);
     [[nodiscard]] AnvilMenu& anvilMenu();
     [[nodiscard]] const AnvilMenu& anvilMenu() const;

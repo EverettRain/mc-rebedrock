@@ -2371,17 +2371,12 @@ struct VulkanRenderer::Impl final : public gameplay::SimulationHost {
     // "包在两栏里同时出现"。
     // 资源包两栏的行数与选中行。**绘制侧与输入侧都调它**——两处各填一遍是
     // UI-6c/6d 已经栽过两次的形状。
+    // ★ UI-10 / D24：这个函数**曾经有两份**——绘制侧（HudRenderer）一份、输入侧
+    //   （这里）一份，而它上面那段注释写的正是"UI-6c/6d 已经栽过两次的形状"。
+    //   两份各自算"这一栏显示哪几行"，滚动一加进来就立刻分岔：画出来的行与点得到的
+    //   行不是同一批，而两边各自都自洽。现在只有 HudRenderer 那一份，这里转发。
     void fillPackContext(ui::MenuBuildContext& ctx, const ui::HudLayout& layout) const {
-        if (menuSystem.pageStack.current() != ui::PageId::ResourcePacks) {
-            return;
-        }
-        const auto lists = ui::dualColumnLists(
-            ui::headerAndFooterLayout(layout.logicalWidth(), layout.logicalHeight()).contentBox(),
-            layout.logicalWidth());
-        const std::size_t capacity = lists.available.visibleRows();
-        ctx.availablePackRowCount = std::min(availablePackIds().size(), capacity);
-        ctx.selectedPackRowCount = std::min(packLibrary->draftOrder().size(), capacity);
-        ctx.selectedPackRow = menuSystem.selectedPackRow;
+        hud_.fillPackContext(ctx, layout);
     }
 
     [[nodiscard]] std::vector<std::string> availablePackIds() const {
@@ -2394,9 +2389,11 @@ struct VulkanRenderer::Impl final : public gameplay::SimulationHost {
         return ids;
     }
 
-    void movePackSelection(bool up) {
+    // UI-10 / D24：上移/下移**那一行**（26.1 的箭头画在行内）。
+    // ★ 从前它是"移动当前选中的那一行"，于是要先点一下选中、再点页脚——而 26.1
+    //   从来没有那两个页脚按钮。行号现在由行内那块热区自己带上。
+    void movePackRow(std::size_t row, bool up) {
         const auto& order = packLibrary->draftOrder();
-        const std::size_t row = menuSystem.selectedPackRow;
         if (row >= order.size()) {
             return;
         }
@@ -2413,6 +2410,42 @@ struct VulkanRenderer::Impl final : public gameplay::SimulationHost {
                 menuSystem.selectedPackRow = index;
                 break;
             }
+        }
+    }
+
+    // UI-10 / D24：滚资源包那两栏中**光标所在的那一栏**。
+    void scrollPackColumn(int direction) {
+        const ui::HudLayout layout{static_cast<float>(swapchainExtent.width),
+                                   static_cast<float>(swapchainExtent.height),
+                                   menuSystem.guiScaleSetting, menuSystem.forceUnicodeFont};
+        const auto lists = ui::dualColumnLists(
+            ui::headerAndFooterLayout(layout.logicalWidth(), layout.logicalHeight()).contentBox(),
+            layout.logicalWidth());
+        const auto cursor = currentFramebufferCursor();
+        const auto inColumn = [&](const ui::ScrollList& list) {
+            const ui::UiRect box{static_cast<float>(list.x) * layout.scale(),
+                                 static_cast<float>(list.y) * layout.scale(),
+                                 static_cast<float>(list.width) * layout.scale(),
+                                 static_cast<float>(list.height) * layout.scale()};
+            return box.contains(cursor.x, cursor.y);
+        };
+        const std::size_t capacity = lists.available.visibleRows();
+        std::size_t available = 0;
+        for (const auto& pack : packLibrary->packs()) {
+            if (!packLibrary->isEnabled(pack.id)) {
+                ++available;
+            }
+        }
+        const auto scrollOne = [&](std::size_t& firstRow, std::size_t total) {
+            const std::size_t maximum = total > capacity ? total - capacity : 0U;
+            const auto requested = static_cast<long long>(firstRow) + direction;
+            firstRow = static_cast<std::size_t>(
+                std::clamp<long long>(requested, 0LL, static_cast<long long>(maximum)));
+        };
+        if (inColumn(lists.available)) {
+            scrollOne(menuSystem.packAvailableFirstRow, available);
+        } else if (inColumn(lists.selected)) {
+            scrollOne(menuSystem.packSelectedFirstRow, packLibrary->draftOrder().size());
         }
     }
 
@@ -3268,10 +3301,13 @@ struct VulkanRenderer::Impl final : public gameplay::SimulationHost {
         case ui::PageId::Death:
         case ui::PageId::Options:
         case ui::PageId::Accessibility:
-        // 资源包那两栏今天不滚：容器里包很少，而两栏各自的滚动位置是两份状态。
-        // 已登记为偏差——包多过一屏时下面的看不到。
-        case ui::PageId::ResourcePacks:
         case ui::PageId::Count:
+            break;
+        // UI-10 / D24：两栏各自滚。★ 滚哪一栏由**光标在哪一栏**决定——26.1 的
+        //   滚轮同样只作用于指针底下那张列表。从前这一页掉在"不滚"那一支里，
+        //   包多过一屏时下面的看不到也点不到。
+        case ui::PageId::ResourcePacks:
+            scrollPackColumn(direction);
             break;
         }
     }
@@ -4206,8 +4242,8 @@ struct VulkanRenderer::Impl final : public gameplay::SimulationHost {
                 menuSystem.selectedPackRow = static_cast<std::size_t>(-1);
             }
         };
-        cb.movePackUp = [this] { movePackSelection(true); };
-        cb.movePackDown = [this] { movePackSelection(false); };
+        cb.movePackUp = [this](std::size_t row) { movePackRow(row, true); };
+        cb.movePackDown = [this](std::size_t row) { movePackRow(row, false); };
         cb.openAdvancedGraphics = [this] {
             menuSystem.pageStack.push(ui::PageId::AdvancedGraphics);
         };

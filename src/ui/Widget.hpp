@@ -51,6 +51,14 @@ enum class WidgetKind : std::uint8_t {
     // ★ **绝不能靠 debugId 分派绘制**——那个字段的约定是"只给测试与日志，绝不用来
     //   分派行为"（WidgetId.hpp 的开篇），破一次这条，下一个人就会再破一次。
     Tab,
+    // UI-10 / D24：**纯命中区**——参与命中与派发，但自己什么都不画。
+    //
+    // ★ 它是为可转移列表的行内箭头而立的：26.1 把三张 32x32 的箭头精灵画在**同一个**
+    //   图标位上（`TransferableSelectionList:164-195` 全是
+    //   `blit(..., getContentX(), getContentY(), 32, 32)`），光标落在左半 / 右上 1/4 /
+    //   右下 1/4 只决定**用哪一张、要不要高亮**。也就是说"热区"与"画在哪"不是一回事：
+    //   画归那一行，热区只管点。
+    IconZone,
     // A0：容器界面的一个槽位。身份是 `slotKind + slotIndex` 两个字段，**不是**
     // 指针——跨帧身份一直就是纯值 `gameplay::SlotRef`（`buildSlotLayout` 刻意把每个
     // storage 置空，好让渲染线程够不着模拟线程拥有的背包内存）。

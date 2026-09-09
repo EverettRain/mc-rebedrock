@@ -111,6 +111,9 @@ enum class BlockInteraction : std::uint8_t {
     OpenChest,
     OpenEnchantingTable,
     OpenAnvil,
+    // SLP-2: BedBlock#useWithoutItem — lying down is a block interaction, not an
+    // item use, so it sits beside the container opens rather than in ItemUse.
+    SleepInBed,
 };
 
 // ServerPlayerGameMode#useItemOn's ordering, as a pure decision:
@@ -129,9 +132,17 @@ struct BlockInteractionDecision final {
 [[nodiscard]] constexpr BlockInteractionDecision decideBlockInteraction(
     world::ContainerType container,
     bool secondaryUseActive,
-    bool holdingItem) {
+    bool holdingItem,
+    // SLP-2: a bed is not a container, but its right-click is the same kind of
+    // "the block answers, the item does not" interaction, and it obeys the same
+    // sneak suppression (sneaking with a block in hand builds on the bed rather
+    // than lying in it).
+    bool bed = false) {
     if (blockInteractionSuppressed(secondaryUseActive, holdingItem)) {
         return {BlockInteraction::UseItem, InteractionResult::tryEmptyHand()};
+    }
+    if (bed) {
+        return {BlockInteraction::SleepInBed, InteractionResult::successWithoutItem()};
     }
     switch (container) {
     case world::ContainerType::CraftingTable:
@@ -190,6 +201,10 @@ enum class ItemUseAction : std::uint8_t {
     // `level.setBlock(pos.above(), ...)` immediately following the lower
     // placement.
     PlaceDoor,
+    // SLP-1: a bed places two cells too, but side by side rather than stacked —
+    // the foot at the clicked cell and the head one step along FACING. Same
+    // atomic two-write treatment as the door.
+    PlaceBed,
     // AR-CX4-b: FlintAndSteelItem#useOn — places Fire in the cell adjacent to
     // the clicked face (result.state names the Fire block, default AGE 0). The
     // caller writes it into placeTarget like PlaceBlock, but this action is

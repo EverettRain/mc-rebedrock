@@ -199,6 +199,36 @@ void GameSession::tick(world::World& world, SimulationHost& host) {
                                                 primaryLevel().weather.rainGradient(),
                                                 primaryLevel().weather.thunderGradient());
     worldSimulation_.setEnvironment(environment_);
+
+    // SLP-3: the sleeping player, once the clock and the sky for this tick are
+    // settled. Vanilla's ServerLevel does the same thing in the same place:
+    // count the sleepers, and if they have been under long enough, move the
+    // clock to daybreak and reset the weather.
+    //
+    // Single-player, so "enough players" is one. The multi-player threshold
+    // (`players_sleeping_percentage`) is deliberately not registered as a
+    // gamerule here: with one connected player it can only ever read 100%, and
+    // a rule that cannot change an answer is the空壳 this project's planning
+    // rules forbid. It belongs with the rest of the multi-player work in S.
+    if (primaryPlayer().sleeping) {
+        ++primaryPlayer().sleepTicks;
+        const glm::ivec3 bed = primaryPlayer().sleepingIn;
+        const bool bedGone = world::blockDefinition(world.block(bed.x, bed.y, bed.z)).model !=
+                             world::BlockModel::Bed;
+        const bool walkedOff = !detail_sleep::reachableBedCell(
+            primaryPlayer().controller.position(), world::BlockPos{bed.x, bed.y, bed.z});
+        if (bedGone || walkedOff) {
+            wakeUp(world, /*skipNight=*/false);
+        } else if (primaryPlayer().sleepTicks >= kSleepTicksBeforeSkip) {
+            // Player#isSleepingLongEnough. The skip itself (clock + weather) is
+            // wakeUp's, so waking for any other reason cannot accidentally skip.
+            wakeUp(world, /*skipNight=*/true);
+        } else if (environment_.ambientDarkness < 4) {
+            // Morning arrived some other way (a command, another sleeper): get
+            // up without skipping anything.
+            wakeUp(world, /*skipNight=*/false);
+        }
+    }
     // Take the published input once, at the top of the tick, so the whole tick
     // sees one consistent keyboard state rather than whatever the main thread
     // happened to be writing partway through.
@@ -1244,6 +1274,120 @@ bool GameSession::purchaseEnchantment(int optionIndex) {
 AnvilMenu& GameSession::anvilMenu() { return primaryPlayer().anvil; }
 
 const AnvilMenu& GameSession::anvilMenu() const { return primaryPlayer().anvil; }
+
+// SLP-2/3/4: the bed right-click, end to end.
+//
+// The decision itself is Sleep.hpp's pure chain; what lives here is everything
+// that needs the session — the dimension's BedRule, how dark it is outside, the
+// creatures near the bed, the OCCUPIED write on both halves, the spawn point and
+// the player's own sleeping flag.
+BedSleepProblem GameSession::trySleepInBed(world::World& world, glm::ivec3 bed) {
+    const auto bedState = world.state(bed.x, bed.y, bed.z);
+    if (world::blockDefinition(bedState.block()).model != world::BlockModel::Bed) {
+        return BedSleepProblem::OtherProblem;
+    }
+    const world::BlockPos bedPos{bed.x, bed.y, bed.z};
+    const auto head = bedHeadCell(bedPos, bedState);
+    const auto backward =
+        world::orientationOffset(world::oppositeOrientation(bedState.orientation()));
+    const world::BlockPos foot{head.x + backward.x, head.y + backward.y, head.z + backward.z};
+
+    SleepConditions conditions;
+    conditions.rule = static_cast<world::attribute::BedRule>(
+        world::dimensionAttributes(primaryDimension())
+            .at(world::attribute::EnvAttr::BedRule)
+            .asEnum());
+    // Level#isDarkOutside is `skyDarken >= 4`, and skyDarken is exactly what
+    // EnvironmentSnapshot::ambientDarkness holds.
+    conditions.darkOutside = environment_.ambientDarkness >= 4;
+    conditions.creative = gameMode() == GameMode::Creative;
+    conditions.alreadySleeping = primaryPlayer().sleeping;
+    conditions.alive = primaryPlayer().vitals.health() > 0.0F;
+    conditions.playerPosition = primaryPlayer().controller.position();
+
+    const glm::vec3 bedCentre{(static_cast<float>(head.x) + static_cast<float>(foot.x)) * 0.5F +
+                                  0.5F,
+                              static_cast<float>(head.y),
+                              (static_cast<float>(head.z) + static_cast<float>(foot.z)) * 0.5F +
+                                  0.5F};
+    for (const auto& entity : primaryLevel().entities.entities()) {
+        if (entity.type == nullptr ||
+            entity.type->category() != entities::MobCategory::Monster) {
+            continue;
+        }
+        if (withinMonsterWakeBox(bedCentre, entity.position)) {
+            conditions.monstersNearby = true;
+            break;
+        }
+    }
+
+    const auto decision = evaluateSleep(world, bedPos, bedState, conditions);
+    // The spawn point moves even when the sleep is refused — vanilla sets it
+    // before the can-sleep gate, which is why a daytime click still re-homes you.
+    if (decision.setsSpawn) {
+        playerSpawnPosition() = glm::vec3{static_cast<float>(foot.x) + 0.5F,
+                                          static_cast<float>(foot.y),
+                                          static_cast<float>(foot.z) + 0.5F};
+        // The spawn yaw keeps whatever it had: the player's own facing is not
+        // exposed on the controller, and vanilla's bed spawn stores the bed's
+        // orientation rather than the player's anyway (registered as a small
+        // deviation rather than reaching through the controller for it).
+        hasPlayerSpawn() = true;
+    }
+    if (decision.problem != BedSleepProblem::None) {
+        return decision.problem;
+    }
+
+    primaryPlayer().sleeping = true;
+    primaryPlayer().sleepTicks = 0;
+    primaryPlayer().sleepingIn = {head.x, head.y, head.z};
+    setBedOccupied(world, head, true);
+    return BedSleepProblem::None;
+}
+
+// Writes OCCUPIED on both halves. The updateShape sync would carry it across on
+// its own, but only if a neighbour notification happens to fire; writing both is
+// what makes the two halves agree at the instant the player lies down.
+void GameSession::setBedOccupied(world::World& world, world::BlockPos head, bool occupied) {
+    const auto headState = world.state(head.x, head.y, head.z);
+    if (world::blockDefinition(headState.block()).model != world::BlockModel::Bed) {
+        return;
+    }
+    const auto backward =
+        world::orientationOffset(world::oppositeOrientation(headState.orientation()));
+    const world::BlockPos foot{head.x + backward.x, head.y + backward.y, head.z + backward.z};
+    GameplayMutationSink sink{world, *this};
+    worldMutations().setBlock(world, head, headState.withOccupied(occupied),
+                              world::MutationFlags::All, world::MutationCause::ScheduledTick, sink);
+    const auto footState = world.state(foot.x, foot.y, foot.z);
+    if (world::blockDefinition(footState.block()).model == world::BlockModel::Bed) {
+        worldMutations().setBlock(world, foot, footState.withOccupied(occupied),
+                                  world::MutationFlags::All, world::MutationCause::ScheduledTick,
+                                  sink);
+    }
+}
+
+// Player#stopSleeping, plus ServerLevel's night skip when the sleep completed.
+void GameSession::wakeUp(world::World& world, bool skipNight) {
+    if (!primaryPlayer().sleeping) {
+        return;
+    }
+    const glm::ivec3 head = primaryPlayer().sleepingIn;
+    primaryPlayer().sleeping = false;
+    primaryPlayer().sleepTicks = 0;
+    setBedOccupied(world, {head.x, head.y, head.z}, false);
+    if (!skipNight) {
+        return;
+    }
+    // ServerLevel#tick's skip: forward to the next daybreak, then reset the
+    // weather if the rules allow it. `resetWeather` has existed since the
+    // weather system landed and had no caller until now — this is the path its
+    // comment names.
+    clocks_.moveToTimeMarker(world::ClockId::Overworld, world::ClockTimeMarker::Day);
+    if (gameRules_.get<bool>(GameRuleId::AdvanceWeather)) {
+        primaryLevel().weather.resetWeather();
+    }
+}
 
 void GameSession::openAnvilContainer(glm::ivec3 anvil) {
     anvilMenu().position = anvil;

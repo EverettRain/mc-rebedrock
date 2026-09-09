@@ -231,6 +231,23 @@ namespace detail {
     return std::nullopt;
 }
 
+// SLP-1: BedBlock.PART — vanilla spells it foot/head, this build stores a bit.
+[[nodiscard]] constexpr std::optional<std::uint8_t> bedPartWord(std::string_view value) {
+    if (value == "foot") return std::uint8_t{0U};
+    if (value == "head") return std::uint8_t{1U};
+    return std::nullopt;
+}
+
+// MDL-3: SnowLayerBlock.LAYERS — vanilla counts 1..8, this build stores 0..7 so
+// that the all-zero default state is one layer (see StateSchema). Same shape of
+// deviation as the repeater's delay: an integer whose origin differs by one.
+[[nodiscard]] constexpr std::optional<std::uint8_t> snowLayersValue(std::string_view value) {
+    if (value.size() != 1U || value[0] < '1' || value[0] > '8') {
+        return std::nullopt;
+    }
+    return static_cast<std::uint8_t>(value[0] - '1');
+}
+
 // ComparatorBlock.MODE -> BlockState::comparatorSubtract's bit: compare is 0.
 [[nodiscard]] constexpr std::optional<std::uint8_t> comparatorModeWord(std::string_view value) {
     if (value == "compare") return std::uint8_t{0U};
@@ -244,7 +261,7 @@ namespace detail {
 // heap, no runtime construction order to reason about. Grows by appending a
 // row, not by restructuring (REGULAR.md rule 5, "override 表 constexpr/静态；
 // 导入是查表+下标，量增再迁 D 数据化").
-inline constexpr std::array<StateOverride, 8> kOverrides{{
+inline constexpr std::array<StateOverride, 10> kOverrides{{
     StateOverride{
         /*vanillaBlock=*/{},
         /*vanillaProperty=*/"waterlogged",
@@ -261,6 +278,10 @@ inline constexpr std::array<StateOverride, 8> kOverrides{{
     StateOverride{{}, "mode", world::StateProperty::ComparatorMode, &detail::comparatorModeWord},
     // Not an enum word — an integer whose origin differs. See repeaterDelayValue.
     StateOverride{{}, "delay", world::StateProperty::Delay, &detail::repeaterDelayValue},
+    // SLP-1 / MDL-3: two more that differ in spelling or in origin, not in
+    // meaning — the bed's PART word and the snow layer's one-based LAYERS.
+    StateOverride{{}, "part", world::StateProperty::BedPart, &detail::bedPartWord},
+    StateOverride{{}, "layers", world::StateProperty::Layers, &detail::snowLayersValue},
 }};
 
 // Finds the override for a vanilla property name (optionally scoped to a

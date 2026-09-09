@@ -393,8 +393,23 @@ class HudRenderer final {
                 ++available;
             }
         }
-        ctx.availablePackRowCount = std::min(available, capacity);
-        ctx.selectedPackRowCount = std::min(packLibrary.draftOrder().size(), capacity);
+        const std::size_t selectedTotal = packLibrary.draftOrder().size();
+        // ★ 钳制与窗口大小都归 `ui::packColumnWindow`（纯函数、有断言）。两栏各调
+        //   一次，**各传各的 firstRow**——共用一个的后果是滚左边右边跟着动。
+        const auto availableWindow =
+            ui::packColumnWindow(available, capacity, menuSystem.packAvailableFirstRow);
+        const auto selectedWindow =
+            ui::packColumnWindow(selectedTotal, capacity, menuSystem.packSelectedFirstRow);
+        // UI-10 / D24：**两栏各自滚动**（偏差的第二半）。从前这里直接把行数截断到
+        // 一屏放得下的数量——包多过一屏时，下面那些**根本画不出来也点不到**。
+        //
+        // ★ 起点在这里钳一次，装配与布局都从 ctx 里取同一个值；钳制只发生在这一处
+        //   （与设置列表的 `optionsWindowFor` 同一条规矩）。
+        ctx.availablePackFirstRow = availableWindow.firstRow;
+        ctx.selectedPackFirstRow = selectedWindow.firstRow;
+        ctx.availablePackRowCount = availableWindow.rowCount;
+        ctx.selectedPackRowCount = selectedWindow.rowCount;
+        ctx.selectedPackTotalRows = selectedTotal;
         ctx.selectedPackRow = menuSystem.selectedPackRow;
     }
 
@@ -1576,6 +1591,7 @@ class HudRenderer final {
         // 之后——它要盖在最上层（26.1 `Screen.render` 把 tooltip 留到最后）。
         // 26.1 的显示条件是"悬停，或键盘聚焦且上次输入来自键盘"，延迟默认为零。
         const std::string* hoveredTooltip = nullptr;
+        std::size_t selectedPackRowsSeen = 0;
         // UI-4：键盘焦点与鼠标悬停共用 highlighted 那张精灵（26.1 `AbstractButton:46`）
         const std::size_t focused = menuSystem.focusFor(menuSystem.pageStack.current());
         for (std::size_t widgetIndex = 0; widgetIndex < widgets.size(); ++widgetIndex) {
@@ -1593,8 +1609,23 @@ class HudRenderer final {
                 drawPageTextField(commandBuffer, widget, scale);
                 continue;
             }
+            // UI-10 / D24：纯命中区，自己什么都不画——箭头由**那一行**画（26.1 的
+            // 三张精灵都落在同一个图标位上，热区只决定用哪张、要不要高亮）。
+            if (widget.kind == ui::WidgetKind::IconZone) {
+                continue;
+            }
             if (widget.kind == ui::WidgetKind::ListRow) {
-                drawSelectionListRow(commandBuffer, widget, cursor.x, cursor.y, scale);
+                // UI-10 / D24：右栏那一行能不能上/下移，取决于它是第几行——与布局
+                // 数行号的方式**同一遍**（第几个同栏的行），不是另起一套。
+                bool canMoveUp = false;
+                bool canMoveDown = false;
+                if (ui::isSelectedPackRow(widget)) {
+                    canMoveUp = selectedPackRowsSeen > 0U;
+                    canMoveDown = selectedPackRowsSeen + 1U < drawContext_.selectedPackRowCount;
+                    ++selectedPackRowsSeen;
+                }
+                drawSelectionListRow(commandBuffer, widget, cursor.x, cursor.y, scale, canMoveUp,
+                                     canMoveDown);
                 continue;
             }
             // UI-6b：一行里的静态文本（按键绑定行的动作名）。左对齐于自己的矩形、
@@ -1786,13 +1817,67 @@ class HudRenderer final {
     // UI-6b 之前按键绑定行也走这里，所以它从前叫 drawKeyBindRow；那一行现在是
     // Label + Button 两个控件，不再经过这条路径。
     void drawSelectionListRow(VkCommandBuffer commandBuffer, const ui::Widget& widget,
-                              float cursorX, float cursorY, float scale) const {
+                              float cursorX, float cursorY, float scale,
+                              bool packMoveUpAvailable = false,
+                              bool packMoveDownAvailable = false) const {
         const bool hovered = widget.rect.contains(cursorX, cursorY);
         drawHudQuad(commandBuffer, widget.rect,
                     hovered ? glm::vec4{0.28F, 0.28F, 0.32F, 0.9F}
                             : glm::vec4{0.0F, 0.0F, 0.0F, 0.55F});
         drawHudText(commandBuffer, widget.label, widget.rect.x + 4.0F * scale,
                     widget.rect.y + 1.5F * scale, scale, {1.0F, 1.0F, 1.0F, 1.0F}, false);
+        if (ui::isPackRowWidget(widget) && hovered) {
+            drawTransferRowIcons(commandBuffer, widget, cursorX, cursorY, scale,
+                                 packMoveUpAvailable, packMoveDownAvailable);
+        }
+    }
+
+    // UI-10 / D24：可转移列表一行里的箭头（26.1 `TransferableSelectionList:153-195`）。
+    //
+    // 悬停时先在 32x32 的图标位上铺一层 `0xA0909090`，再按光标落在**哪一块热区**
+    // 画对应的箭头：可用那一栏整格是 select；已选那一栏左半是 unselect、右上 1/4
+    // 是 move_up、右下 1/4 是 move_down。
+    //
+    // ★ 三张箭头精灵**都画在整个图标位上**（源码里全是
+    //   `blit(..., getContentX(), getContentY(), 32, 32)`），热区只决定用哪一张、
+    //   要不要用 highlighted 那一版。把箭头画进各自的热区矩形里是错的——那样
+    //   move_up 的箭头会被压扁到 16x16。
+    void drawTransferRowIcons(VkCommandBuffer commandBuffer, const ui::Widget& row,
+                              float cursorX, float cursorY, float scale, bool canMoveUp,
+                              bool canMoveDown) const {
+        const ui::UiRect logicalRow{row.rect.x / scale, row.rect.y / scale,
+                                    row.rect.width / scale, row.rect.height / scale};
+        const auto iconCell = ui::transferIconCell(logicalRow);
+        const ui::UiRect icon{iconCell.x * scale, iconCell.y * scale, iconCell.width * scale,
+                              iconCell.height * scale};
+        drawHudQuad(commandBuffer, icon, {0.565F, 0.565F, 0.565F, 0.627F});
+
+        const auto sprite = [&](GuiWidgetSprite which) {
+            drawScaledGuiSprite(commandBuffer, icon, kTabWidgetLayer,
+                                guiWidgetSprite(guiWidgetSprites, which), scale,
+                                glm::vec4{1.0F});
+        };
+        const auto zones = ui::transferIconZones(iconCell);
+        const auto over = [&](const ui::UiRect& zone) {
+            return ui::UiRect{zone.x * scale, zone.y * scale, zone.width * scale,
+                              zone.height * scale}
+                .contains(cursorX, cursorY);
+        };
+        if (!ui::isSelectedPackRow(row)) {
+            sprite(over(ui::UiRect{iconCell}) ? GuiWidgetSprite::TransferSelectHighlighted
+                                              : GuiWidgetSprite::TransferSelect);
+            return;
+        }
+        sprite(over(zones.unselect) ? GuiWidgetSprite::TransferUnselectHighlighted
+                                    : GuiWidgetSprite::TransferUnselect);
+        if (canMoveUp) {
+            sprite(over(zones.moveUp) ? GuiWidgetSprite::TransferMoveUpHighlighted
+                                      : GuiWidgetSprite::TransferMoveUp);
+        }
+        if (canMoveDown) {
+            sprite(over(zones.moveDown) ? GuiWidgetSprite::TransferMoveDownHighlighted
+                                        : GuiWidgetSprite::TransferMoveDown);
+        }
     }
 
     // 按键设置列表的滚动条：仅当动作数多于可见窗口时绘制
@@ -1964,6 +2049,22 @@ class HudRenderer final {
         };
         columnTitle(lists.available, "pack.available.title", "Available");
         columnTitle(lists.selected, "pack.selected.title", "Selected");
+        // UI-10 / D24：两栏各自的滚动条。★ 只有真的滚得动才画（26.1 的
+        //   `AbstractScrollArea` 同样是 `scrollable()` 才画），否则一屏装得下的
+        //   列表旁边会挂一条永远满格的假滚动条。
+        std::size_t availableTotal = 0;
+        for (const auto& pack : packLibrary.packs()) {
+            if (!packLibrary.isEnabled(pack.id)) {
+                ++availableTotal;
+            }
+        }
+        const ui::HudLayout hudLayout{static_cast<float>(swapchainExtent.width),
+                                      static_cast<float>(swapchainExtent.height),
+                                      menuSystem.guiScaleSetting, menuSystem.forceUnicodeFont};
+        drawScrollbar(commandBuffer, hudLayout, lists.available, availableTotal,
+                      drawContext_.availablePackFirstRow);
+        drawScrollbar(commandBuffer, hudLayout, lists.selected,
+                      packLibrary.draftOrder().size(), drawContext_.selectedPackFirstRow);
 
         // 每一行的包名与描述。行矩形取自已经布局好的 Widget。
         const auto& page = buildDrawPage();

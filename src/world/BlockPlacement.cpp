@@ -50,28 +50,33 @@ constexpr std::array<BlockOrientation, 4> kClockwiseHorizontals{
 // case — it names the support it needs and the table routes it (the R1 audit
 // flagged the switch as one of the six parallel lists). `facing` is only read by
 // the wall rule, whose support sits behind the block's FACING state.
-using SupportRuleFn = bool (*)(const World&, glm::ivec3, BlockOrientation);
+// SLP-1: the rule is handed the block it is judging as well as the cell and the
+// FACING. The bed needs it — a red bed's partner is a RED bed, and a rule that
+// only knew "some bed is next door" would let a blue one hold it up. Every other
+// rule ignores the parameter; `canBlockSurvive`'s own signature is unchanged, so
+// no caller moved.
+using SupportRuleFn = bool (*)(const World&, glm::ivec3, Block, BlockOrientation);
 
-[[nodiscard]] bool supportAlways(const World&, glm::ivec3, BlockOrientation) {
+[[nodiscard]] bool supportAlways(const World&, glm::ivec3, Block, BlockOrientation) {
     return true;
 }
-[[nodiscard]] bool supportGround(const World& world, glm::ivec3 position, BlockOrientation) {
+[[nodiscard]] bool supportGround(const World& world, glm::ivec3 position, Block, BlockOrientation) {
     return isFaceSturdy(world.block(position.x, position.y - 1, position.z));
 }
-[[nodiscard]] bool supportWall(const World& world, glm::ivec3 position, BlockOrientation facing) {
+[[nodiscard]] bool supportWall(const World& world, glm::ivec3 position, Block, BlockOrientation facing) {
     // A wall block's support is behind its FACING, which is state rather than
     // identity now, so the caller supplies it.
     const auto support = position + orientationOffset(wallTorchSupportSide(facing));
     return isFaceSturdy(world.block(support.x, support.y, support.z));
 }
-[[nodiscard]] bool supportSoil(const World& world, glm::ivec3 position, BlockOrientation) {
+[[nodiscard]] bool supportSoil(const World& world, glm::ivec3 position, Block, BlockOrientation) {
     return isSoil(world.block(position.x, position.y - 1, position.z));
 }
-[[nodiscard]] bool supportFarmland(const World& world, glm::ivec3 position, BlockOrientation) {
+[[nodiscard]] bool supportFarmland(const World& world, glm::ivec3 position, Block, BlockOrientation) {
     // CropsBlock#canSurvive: only farmland (tilled soil) holds a crop.
     return isFarmland(world.block(position.x, position.y - 1, position.z));
 }
-[[nodiscard]] bool supportSugarCane(const World& world, glm::ivec3 position, BlockOrientation) {
+[[nodiscard]] bool supportSugarCane(const World& world, glm::ivec3 position, Block, BlockOrientation) {
     // SugarCaneBlock#canSurvive. Another sugar cane directly below is always
     // enough (it inherits the base cane's own valid footing), so a stack keeps
     // itself up.
@@ -96,7 +101,7 @@ using SupportRuleFn = bool (*)(const World&, glm::ivec3, BlockOrientation);
     return false;
 }
 
-[[nodiscard]] bool supportFire(const World& world, glm::ivec3 position, BlockOrientation) {
+[[nodiscard]] bool supportFire(const World& world, glm::ivec3 position, Block, BlockOrientation) {
     // FireBlock#canSurvive: fire stays when the block below can hold it (a sturdy
     // top face — the ordinary "lit on top of a solid block" case) or when any of
     // its six neighbours is flammable (fire clinging to a wooden wall). This
@@ -116,11 +121,28 @@ using SupportRuleFn = bool (*)(const World&, glm::ivec3, BlockOrientation);
     return false;
 }
 
+// SLP-1: a bed half stands only while its partner is there. The partner is on
+// one of the two cells along FACING — the foot's head is toward FACING, the
+// head's foot is away from it — and this asks about both rather than about
+// PART, because the support slot is handed the cell's FACING and not its whole
+// state. Two feet laid nose to nose would prop each other up; vanilla's PART
+// check is stricter, and the difference needs a malformed bed to observe.
+[[nodiscard]] bool supportBedOtherHalf(const World& world, glm::ivec3 position, Block self,
+                                        BlockOrientation facing) {
+    const auto partnerAt = [&](BlockOrientation direction) {
+        const auto offset = orientationOffset(direction);
+        const BlockState neighbour =
+            world.state(position.x + offset.x, position.y + offset.y, position.z + offset.z);
+        return neighbour.block() == self && neighbour.orientation() == facing;
+    };
+    return partnerAt(facing) || partnerAt(oppositeOrientation(facing));
+}
+
 // MDL-3: SnowLayerBlock#canSurvive — a full upward collision face below, or a
 // snow layer below that is already at its full eight. The second clause is why
 // this is not supportGround: it reads the block below's STATE, which no other
 // support rule does.
-[[nodiscard]] bool supportSnowLayer(const World& world, glm::ivec3 position, BlockOrientation) {
+[[nodiscard]] bool supportSnowLayer(const World& world, glm::ivec3 position, Block, BlockOrientation) {
     const BlockState below = world.state(position.x, position.y - 1, position.z);
     if (below.block() == Block::Snow) {
         return below.layers() == 8;
@@ -131,7 +153,7 @@ using SupportRuleFn = bool (*)(const World&, glm::ivec3, BlockOrientation);
 // MDL-2: CarpetBlock#canSurvive — `!belowState.isAir()`. Any non-air cell will
 // hold a carpet, sturdy or not: it lies on a slab, a fence post or another
 // carpet just as happily as on stone. Weaker than supportGround on purpose.
-[[nodiscard]] bool supportAnyBelow(const World& world, glm::ivec3 position, BlockOrientation) {
+[[nodiscard]] bool supportAnyBelow(const World& world, glm::ivec3 position, Block, BlockOrientation) {
     return world.block(position.x, position.y - 1, position.z) != Block::Air;
 }
 
@@ -164,7 +186,7 @@ static_assert(static_cast<std::size_t>(HorizontalPlacement::TowardPlayer) == 0U)
 static_assert(static_cast<std::size_t>(HorizontalPlacement::AwayFromPlayer) == 1U);
 static_assert(static_cast<std::size_t>(HorizontalPlacement::Clockwise) == 2U);
 
-inline constexpr std::array<SupportRuleFn, 9> kSupportRules{{
+inline constexpr std::array<SupportRuleFn, 10> kSupportRules{{
     &supportAlways,    // BlockSupport::None
     &supportGround,    // BlockSupport::Ground
     &supportWall,      // BlockSupport::Wall
@@ -172,6 +194,7 @@ inline constexpr std::array<SupportRuleFn, 9> kSupportRules{{
     &supportFarmland,  // BlockSupport::Farmland
     &supportSugarCane, // BlockSupport::SugarCane
     &supportAnyBelow,  // BlockSupport::AnyBelow (MDL-2: carpet)
+    &supportBedOtherHalf, // BlockSupport::BedOtherHalf (SLP-1)
     &supportSnowLayer, // BlockSupport::SnowLayer (MDL-3)
     &supportFire,      // BlockSupport::Fire
 }};
@@ -182,8 +205,9 @@ static_assert(static_cast<std::size_t>(BlockSupport::Soil) == 3U);
 static_assert(static_cast<std::size_t>(BlockSupport::Farmland) == 4U);
 static_assert(static_cast<std::size_t>(BlockSupport::SugarCane) == 5U);
 static_assert(static_cast<std::size_t>(BlockSupport::AnyBelow) == 6U);
-static_assert(static_cast<std::size_t>(BlockSupport::SnowLayer) == 7U);
-static_assert(static_cast<std::size_t>(BlockSupport::Fire) == 8U);
+static_assert(static_cast<std::size_t>(BlockSupport::BedOtherHalf) == 7U);
+static_assert(static_cast<std::size_t>(BlockSupport::SnowLayer) == 8U);
+static_assert(static_cast<std::size_t>(BlockSupport::Fire) == 9U);
 static_assert(kSupportRules.size() == static_cast<std::size_t>(BlockSupport::Fire) + 1U,
               "every BlockSupport must have a rule — a missing entry is an "
               "out-of-bounds function-pointer read");
@@ -245,7 +269,8 @@ BlockOrientation nearestLookingDirection(glm::vec3 lookDirection) {
 
 bool canBlockSurvive(const World& world, glm::ivec3 position, Block block,
                      BlockOrientation facing) {
-    return kSupportRules[static_cast<std::size_t>(blockSupport(block))](world, position, facing);
+    return kSupportRules[static_cast<std::size_t>(blockSupport(block))](world, position, block,
+                                                                              facing);
 }
 
 std::optional<BlockState> standingAndWallPlacement(

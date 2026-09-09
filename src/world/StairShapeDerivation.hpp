@@ -115,6 +115,32 @@ namespace detail {
 // A3b's contract still holds if a future edit ever touches one half alone
 // (a command, a structure paste) — the *other* half self-heals to match on its
 // own next shape pass rather than silently drifting.
+// SLP-1: BedBlock#updateShape's property half. Vanilla's slot ALSO returns AIR
+// when the partner is gone; this build cannot (updateShape may not change the
+// block — the A3b contract in BlockBehavior.hpp), so the orphan is removed by
+// the support sweep instead (BlockSupport::BedOtherHalf) and this slot carries
+// only the OCCUPIED sync: both halves must agree on whether someone is asleep,
+// so whichever half is asked copies the other's value.
+[[nodiscard]] inline BlockState bedUpdateShape(BlockState state, BlockPos fromOffset,
+                                               BlockState neighborState) {
+    const glm::ivec3 offset{fromOffset.x, fromOffset.y, fromOffset.z};
+    const auto direction = orientationFromOffset(offset);
+    if (!isHorizontal(direction)) {
+        return state;
+    }
+    // The partner lies toward FACING for the foot and away from it for the head.
+    const auto towardPartner =
+        state.isBedHead() ? oppositeOrientation(state.orientation()) : state.orientation();
+    if (direction != towardPartner) {
+        return state;
+    }
+    if (neighborState.block() != state.block() ||
+        neighborState.isBedHead() == state.isBedHead()) {
+        return state; // no partner there: the support sweep deals with it
+    }
+    return state.withOccupied(neighborState.occupied());
+}
+
 [[nodiscard]] inline BlockState doorUpdateShape(BlockState state, BlockPos fromOffset,
                                                 BlockState neighborState) {
     const glm::ivec3 offset{fromOffset.x, fromOffset.y, fromOffset.z};

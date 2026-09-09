@@ -890,7 +890,8 @@ void PlayerInteraction::performUse(GameSession& session, world::World& world,
     // hand builds against the block, an untouched container opens.
     const auto decision = decideBlockInteraction(
         world::blockDefinition(interactedBlock).container, session.player().sneaking(),
-        !session.inventory().selectedStack().empty());
+        !session.inventory().selectedStack().empty(),
+        world::blockDefinition(interactedBlock).model == world::BlockModel::Bed);
     switch (decision.interaction) {
     case BlockInteraction::OpenCraftingTable:
         session.openContainer(ContainerScreen::CraftingTable);
@@ -917,6 +918,13 @@ void PlayerInteraction::performUse(GameSession& session, world::World& world,
         session.events().publish(ClientActionEvent{ClientActionEventKind::OpenContainer,
                                                    ContainerScreen::EnchantingTable, use.block,
                                                    true});
+        break;
+    case BlockInteraction::SleepInBed:
+        // SLP-2: BedBlock#useWithoutItem. The whole eight-step chain, the spawn
+        // point and the OCCUPIED write live in the session, which is what owns
+        // the clock, the entity list and the player.
+        session.trySleepInBed(world, {use.block.x, use.block.y, use.block.z});
+        session.playerActions().swingHand(InteractionHand::Main, SwingAnimation::Use, 6U);
         break;
     case BlockInteraction::OpenAnvil:
         session.openAnvilContainer(use.block);
@@ -1145,47 +1153,55 @@ void PlayerInteraction::performUse(GameSession& session, world::World& world,
             }
             break;
         }
-        case ItemUseAction::PlaceDoor: {
-            // AR-B2: DoorBlock#setPlacedBy — the lower half (already resolved:
-            // facing/hinge decided) writes first, then the upper half
-            // immediately after at pos+Up, sharing every axis except Half. Both
-            // cells are checked for entity occupancy the same way PlaceBlock
-            // does (a door's thin box still occupies real space), and the
-            // second write is what makes this "atomic" in the sense the task
-            // card asks for: nothing observes a lower half with no upper half,
-            // because no tick boundary falls between the two setBlock calls —
-            // this function runs to completion before the session is read
-            // again (single-threaded gameplay tick, no yield point here).
-            const auto lower = placeTarget;
-            const glm::ivec3 upperCell{lower.x, lower.y + 1, lower.z};
-            const auto upperState = itemUse.state.withDoorUpperHalf(true);
-            const auto lowerSpan = world::collisionSpan(itemUse.state);
-            const auto upperSpan = world::collisionSpan(upperState);
+        case ItemUseAction::PlaceDoor:
+        case ItemUseAction::PlaceBed: {
+            // AR-B2 / SLP-1: a door and a bed both write two cells at once. The
+            // door's second cell is above (sharing every axis but HALF); the
+            // bed's is one step along FACING (sharing every axis but PART). The
+            // rest — both cells replaceable, neither occupied by the player or a
+            // creature, then two setBlock calls with no tick boundary between
+            // them — is identical, so it is written once here rather than twice.
+            //
+            // "Atomic" in the sense the task cards ask for: nothing observes a
+            // lower half with no upper half, because this function runs to
+            // completion before the session is read again (single-threaded
+            // gameplay tick, no yield point).
+            const auto first = placeTarget;
+            const bool isBed = itemUse.action == ItemUseAction::PlaceBed;
+            const glm::ivec3 secondOffset =
+                isBed ? world::orientationOffset(itemUse.state.orientation())
+                      : glm::ivec3{0, 1, 0};
+            const glm::ivec3 secondCell{first.x + secondOffset.x, first.y + secondOffset.y,
+                                        first.z + secondOffset.z};
+            const auto secondState = isBed ? itemUse.state.withBedHead(true)
+                                           : itemUse.state.withDoorUpperHalf(true);
+            const auto firstSpan = world::collisionSpan(itemUse.state);
+            const auto secondSpan = world::collisionSpan(secondState);
             const world::Block placedBlock = itemUse.state.block();
             const bool spaceFree =
-                world::isReplaceable(world.block(lower.x, lower.y, lower.z)) &&
-                world::isReplaceable(world.block(upperCell.x, upperCell.y, upperCell.z)) &&
-                !session.player().intersectsBlock(lower.x, lower.y, lower.z, lowerSpan.bottom,
-                                                   lowerSpan.top) &&
-                !session.player().intersectsBlock(upperCell.x, upperCell.y, upperCell.z,
-                                                   upperSpan.bottom, upperSpan.top) &&
-                !session.worldEntities().intersectsBlock(lower.x, lower.y, lower.z,
-                                                          lowerSpan.bottom, lowerSpan.top) &&
-                !session.worldEntities().intersectsBlock(upperCell.x, upperCell.y, upperCell.z,
-                                                          upperSpan.bottom, upperSpan.top);
+                world::isReplaceable(world.block(first.x, first.y, first.z)) &&
+                world::isReplaceable(world.block(secondCell.x, secondCell.y, secondCell.z)) &&
+                !session.player().intersectsBlock(first.x, first.y, first.z, firstSpan.bottom,
+                                                   firstSpan.top) &&
+                !session.player().intersectsBlock(secondCell.x, secondCell.y, secondCell.z,
+                                                   secondSpan.bottom, secondSpan.top) &&
+                !session.worldEntities().intersectsBlock(first.x, first.y, first.z,
+                                                          firstSpan.bottom, firstSpan.top) &&
+                !session.worldEntities().intersectsBlock(secondCell.x, secondCell.y, secondCell.z,
+                                                          secondSpan.bottom, secondSpan.top);
             if (world::isRenderable(placedBlock) && spaceFree) {
                 GameplayMutationSink sink{world, session};
-                const bool lowerPlaced =
+                const bool firstPlaced =
                     session.worldMutations()
-                        .setBlock(world, {lower.x, lower.y, lower.z}, itemUse.state,
+                        .setBlock(world, {first.x, first.y, first.z}, itemUse.state,
                                   world::MutationFlags::All, world::MutationCause::PlayerPlace, sink)
                         .changed;
-                if (lowerPlaced) {
+                if (firstPlaced) {
                     session.worldMutations().setBlock(
-                        world, {upperCell.x, upperCell.y, upperCell.z}, upperState,
+                        world, {secondCell.x, secondCell.y, secondCell.z}, secondState,
                         world::MutationFlags::All, world::MutationCause::PlayerPlace, sink);
                     session.events().publish(SoundEvent{SoundEventKind::BlockPlace,
-                                                        glm::vec3{lower} + glm::vec3{0.5F},
+                                                        glm::vec3{first} + glm::vec3{0.5F},
                                                         placedBlock});
                     session.playerActions().swingHand(InteractionHand::Main, SwingAnimation::Use,
                                                       6U);

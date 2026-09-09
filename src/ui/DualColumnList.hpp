@@ -101,6 +101,38 @@ struct DualColumnLists final {
             static_cast<float>(kTransferIconSize), static_cast<float>(kTransferIconSize)};
 }
 
+// UI-10 / D24：已选那一栏的图标位被切成**三个热区**（26.1 `SelectableEntry`
+// 的 `mouseOverLeftHalf` / `mouseOverTopRightQuarter` / `mouseOverBottomRightQuarter`）：
+//
+//     +--------+--------+
+//     |        | 上移   |   左半 = 取消选择（转回左栏）
+//     | 取消   +--------+   右上 1/4 = 上移
+//     |        | 下移   |   右下 1/4 = 下移
+//     +--------+--------+
+//
+// 可用那一栏不切：整格都是"选择"（`mouseOverIcon`）。
+//
+// ★ 分界是 `size / 2` 的**整数除法**（32/2 = 16），照抄不化简。
+// ★ 本作此前把上移/下移放在**页脚**、作用于右栏选中的那一行（偏差 D24）——
+//   26.1 从来没有那两个页脚按钮。
+struct TransferIconZones final {
+    UiRect unselect{};
+    UiRect moveUp{};
+    UiRect moveDown{};
+
+    [[nodiscard]] constexpr bool operator==(const TransferIconZones&) const = default;
+};
+
+[[nodiscard]] constexpr TransferIconZones transferIconZones(const UiRect& icon) {
+    const int size = kTransferIconSize;
+    const float half = static_cast<float>(size / 2);
+    return TransferIconZones{
+        {icon.x, icon.y, half, static_cast<float>(size)},
+        {icon.x + half, icon.y, half, half},
+        {icon.x + half, icon.y + half, half, half},
+    };
+}
+
 // 名称与描述那一块：图标右侧，到行右缘。
 [[nodiscard]] constexpr UiRect transferTextCell(const UiRect& row) {
     const float left = row.x + static_cast<float>(kTransferEntryPadding * 2 + kTransferIconSize);
@@ -118,8 +150,36 @@ struct DualColumnLists final {
            widget.debugId == static_cast<std::uint16_t>(WidgetId::PackRowSelected);
 }
 
+// UI-10 / D24：行内那三块热区之一。**靠 debugId 认**，理由与上面那条相同：
+// 布局唯一读得到的就是它。
+[[nodiscard]] inline bool isPackZoneWidget(const Widget& widget) {
+    return widget.debugId == static_cast<std::uint16_t>(WidgetId::PackUnselect) ||
+           widget.debugId == static_cast<std::uint16_t>(WidgetId::PackMoveUp) ||
+           widget.debugId == static_cast<std::uint16_t>(WidgetId::PackMoveDown);
+}
+
 [[nodiscard]] inline bool isSelectedPackRow(const Widget& widget) {
     return widget.debugId == static_cast<std::uint16_t>(WidgetId::PackRowSelected);
+}
+
+// UI-10 / D24：一栏的滚动窗口。
+//
+// ★ 与设置列表的 `optionsWindowFor` 同一条规矩：**钳制只发生在一处**。
+//   两栏各调用一次、各传各的 firstRow——共用一个的后果是滚左边右边跟着动。
+struct PackColumnWindow final {
+    std::size_t firstRow = 0;
+    std::size_t rowCount = 0;
+
+    [[nodiscard]] constexpr bool operator==(const PackColumnWindow&) const = default;
+};
+
+[[nodiscard]] constexpr PackColumnWindow packColumnWindow(std::size_t total,
+                                                          std::size_t capacity,
+                                                          std::size_t firstRow) {
+    const std::size_t maximumFirst = total > capacity ? total - capacity : 0U;
+    const std::size_t clamped = firstRow < maximumFirst ? firstRow : maximumFirst;
+    const std::size_t remaining = total - clamped;
+    return PackColumnWindow{clamped, remaining < capacity ? remaining : capacity};
 }
 
 // 一栏里放得下几行。

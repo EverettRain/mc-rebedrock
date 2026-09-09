@@ -254,9 +254,13 @@ int main() {
             // StairBlock:103 / DoorBlock:151 / FenceGateBlock:135 — one rule for
             // the whole family, so it is keyed on the model rather than on
             // eighty-odd wood variants.
+            // SLP-1: BedBlock:198 takes `context.getHorizontalDirection()` bare
+            // as well — the head lands away from the player — so the bed joins
+            // the same model-keyed family rather than sixteen colour entries.
             const bool walkThrough = model == mc::world::BlockModel::Stairs ||
                                      model == mc::world::BlockModel::Door ||
-                                     model == mc::world::BlockModel::FenceGate;
+                                     model == mc::world::BlockModel::FenceGate ||
+                                     model == mc::world::BlockModel::Bed;
             if (walkThrough) {
                 ++away;
                 assert(rule == HorizontalPlacement::AwayFromPlayer);

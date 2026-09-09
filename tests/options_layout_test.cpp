@@ -1454,6 +1454,227 @@ void testCreateWorldForm() {
     }
 }
 
+// --- 21b. UI-10 / D24：行内那三个热区 ----------------------------------------
+//
+// ★ 断言钉的是 26.1 `SelectableEntry` 那四条式子算出来的数，不是本作实现的抄本。
+void testTransferIconZones() {
+    const mc::ui::UiRect icon{100.0F, 200.0F, 32.0F, 32.0F};
+    const auto zones = mc::ui::transferIconZones(icon);
+    // 左半：整高、半宽（32/2 = 16 的**整数除法**）。
+    CHECK(zones.unselect.x == 100.0F && zones.unselect.y == 200.0F);
+    CHECK(zones.unselect.width == 16.0F && zones.unselect.height == 32.0F);
+    // 右上 1/4。
+    CHECK(zones.moveUp.x == 116.0F && zones.moveUp.y == 200.0F);
+    CHECK(zones.moveUp.width == 16.0F && zones.moveUp.height == 16.0F);
+    // 右下 1/4。
+    CHECK(zones.moveDown.x == 116.0F && zones.moveDown.y == 216.0F);
+    CHECK(zones.moveDown.width == 16.0F && zones.moveDown.height == 16.0F);
+
+    // ★ 三块**互不重叠**且**正好铺满**那 32x32：重叠会让"点上移变成取消选择"，
+    //   而留缝会让某一列像素点不动——两种都只有真机点得出来。
+    const float area = zones.unselect.width * zones.unselect.height +
+                       zones.moveUp.width * zones.moveUp.height +
+                       zones.moveDown.width * zones.moveDown.height;
+    CHECK(area == icon.width * icon.height);
+    CHECK(zones.moveUp.x >= zones.unselect.x + zones.unselect.width);
+    CHECK(zones.moveDown.y >= zones.moveUp.y + zones.moveUp.height);
+    // 三块都在图标位之内。
+    for (const auto& zone : {zones.unselect, zones.moveUp, zones.moveDown}) {
+        check(zone.x >= icon.x && zone.y >= icon.y &&
+                  zone.x + zone.width <= icon.x + icon.width &&
+                  zone.y + zone.height <= icon.y + icon.height,
+              "a zone escaped the icon cell", __LINE__);
+    }
+}
+
+// --- 21c. UI-10 / D24：两栏各自滚动 ------------------------------------------
+//
+// ★ 这一条**截图证不了**：容器里只有一个资源包，滚不动。而"滚下去之后点第一行却
+//   移动了别的包"正是这种改动最容易出的错——只能靠断言。
+void testPackColumnScrolling() {
+    const mc::ui::HudLayout layout{1280.0F, 720.0F, 3};
+    const auto build = [&](std::size_t availableFirst, std::size_t availableCount,
+                           std::size_t selectedFirst, std::size_t selectedCount,
+                           std::size_t selectedTotal) {
+        mc::ui::MenuBuildContext ctx;
+        ctx.availablePackFirstRow = availableFirst;
+        ctx.availablePackRowCount = availableCount;
+        ctx.selectedPackFirstRow = selectedFirst;
+        ctx.selectedPackRowCount = selectedCount;
+        ctx.selectedPackTotalRows = selectedTotal;
+        const mc::ui::MenuCallbacks cb;
+        mc::ui::Page page;
+        mc::ui::buildPageInto(page, mc::ui::PageId::ResourcePacks, ctx, cb);
+        mc::ui::layoutPageInto(page, mc::ui::PageId::ResourcePacks, layout);
+        return page;
+    };
+
+    // 不滚：窗口从 0 起，两栏各三行。
+    const auto flat = build(0U, 3U, 0U, 3U, 3U);
+    std::size_t availableRows = 0;
+    std::size_t selectedRows = 0;
+    std::size_t zones = 0;
+    for (const auto& widget : flat) {
+        if (widget.kind == mc::ui::WidgetKind::ListRow) {
+            (mc::ui::isSelectedPackRow(widget) ? selectedRows : availableRows) += 1U;
+        }
+        if (widget.kind == mc::ui::WidgetKind::IconZone) {
+            ++zones;
+        }
+    }
+    CHECK(availableRows == 3U);
+    CHECK(selectedRows == 3U);
+    // ★ 右栏每一行三块热区（取消选择 / 上移 / 下移），左栏一块都没有。
+    CHECK(zones == 3U * 3U);
+
+    // 滚到第 2 行：装配的行数不变，但**屏幕上的位置**从列表顶开始——绝对行号只归
+    // 回调用。两栏各自滚，互不牵连。
+    const auto scrolled = build(2U, 3U, 0U, 3U, 3U);
+    std::vector<float> flatTops;
+    std::vector<float> scrolledTops;
+    for (const auto& widget : flat) {
+        if (widget.kind == mc::ui::WidgetKind::ListRow && !mc::ui::isSelectedPackRow(widget)) {
+            flatTops.push_back(widget.rect.y);
+        }
+    }
+    for (const auto& widget : scrolled) {
+        if (widget.kind == mc::ui::WidgetKind::ListRow && !mc::ui::isSelectedPackRow(widget)) {
+            scrolledTops.push_back(widget.rect.y);
+        }
+    }
+    check(flatTops == scrolledTops,
+          "scrolling must not move the rows down the screen — the window slides, not the rows",
+          __LINE__);
+
+    // ★ 每一块热区都落在**它那一行**的图标位里。错开一行的症状是"点第二行的上移，
+    //   动的是第一行"，而两边各自都自洽。
+    const mc::ui::Widget* row = nullptr;
+    std::size_t zoneOfRow = 0;
+    for (const auto& widget : flat) {
+        if (widget.kind == mc::ui::WidgetKind::ListRow && mc::ui::isSelectedPackRow(widget)) {
+            row = &widget;
+            zoneOfRow = 0;
+            continue;
+        }
+        if (widget.kind != mc::ui::WidgetKind::IconZone) {
+            continue;
+        }
+        check(row != nullptr, "a zone must follow a selected row", __LINE__);
+        if (row == nullptr) continue;
+        const auto icon = mc::ui::transferIconCell(
+            {row->rect.x / 3.0F, row->rect.y / 3.0F, row->rect.width / 3.0F,
+             row->rect.height / 3.0F});
+        const auto expected = mc::ui::transferIconZones(icon);
+        const auto& want = zoneOfRow == 0U   ? expected.unselect
+                           : zoneOfRow == 1U ? expected.moveUp
+                                             : expected.moveDown;
+        check(widget.rect.x == want.x * 3.0F && widget.rect.y == want.y * 3.0F &&
+                  widget.rect.width == want.width * 3.0F,
+              "a zone must land on its own row's icon cell", __LINE__);
+        ++zoneOfRow;
+    }
+
+    // ★★ 回调带的是**绝对行号**，不是屏幕上的第几行。
+    //
+    //   这条是这一族最容易错、也最难发现的一处：滚下去之后点第一行，动的必须是
+    //   第 firstRow 个包。矩形断言完全抓不住它——两种实现画出来一模一样，
+    //   只有"点了之后动的是哪个包"不同（实测：第一版 sabotage 就这么溜过去了）。
+    {
+        std::vector<std::size_t> toggled;
+        std::vector<std::size_t> movedUp;
+        mc::ui::MenuCallbacks cb;
+        cb.togglePackSelected = [&toggled](std::size_t row) { toggled.push_back(row); };
+        cb.movePackUp = [&movedUp](std::size_t row) { movedUp.push_back(row); };
+        mc::ui::MenuBuildContext ctx;
+        ctx.selectedPackFirstRow = 2U;      // 窗口从第 2 行起
+        ctx.selectedPackRowCount = 3U;      // 屏幕上三行
+        ctx.selectedPackTotalRows = 7U;
+        mc::ui::Page page;
+        mc::ui::buildPageInto(page, mc::ui::PageId::ResourcePacks, ctx, cb);
+
+        std::vector<const mc::ui::Widget*> rows;
+        std::vector<const mc::ui::Widget*> ups;
+        std::size_t zoneIndex = 0;
+        for (const auto& widget : page) {
+            if (widget.kind == mc::ui::WidgetKind::ListRow &&
+                mc::ui::isSelectedPackRow(widget)) {
+                rows.push_back(&widget);
+                zoneIndex = 0;
+                continue;
+            }
+            if (widget.kind == mc::ui::WidgetKind::IconZone) {
+                if (zoneIndex == 1U) ups.push_back(&widget);
+                ++zoneIndex;
+            }
+        }
+        check(rows.size() == 3U && ups.size() == 3U, "three windowed rows with their zones",
+              __LINE__);
+        if (rows.size() == 3U && ups.size() == 3U) {
+            // 点屏幕上的第一行 → 动的是第 2 个包（窗口起点），不是第 0 个。
+            rows[0]->onActivate();
+            check(toggled.size() == 1U && toggled[0] == 2U,
+                  "the first visible row must act on the absolute row at the window start",
+                  __LINE__);
+            rows[2]->onActivate();
+            check(toggled.size() == 2U && toggled[1] == 4U,
+                  "the third visible row must act on absolute row 4", __LINE__);
+            // 上移那块热区同样带绝对行号。
+            ups[0]->onActivate();
+            check(movedUp.size() == 1U && movedUp[0] == 2U,
+                  "the move-up zone must carry the absolute row too", __LINE__);
+        }
+        // ★ 窗口起点 > 0 时**第一行是能上移的**（它上面还有包），而
+        //   `firstRow == 0` 那一版才不能——把可用性算在可见序号上就会错。
+        check(ups.empty() || ups[0]->enabled,
+              "a scrolled-to row is not the first pack, so it can move up", __LINE__);
+    }
+
+    // 首行不能上移、末行不能下移（26.1 的 canMoveUp/canMoveDown）。
+    std::vector<bool> upEnabled;
+    std::vector<bool> downEnabled;
+    std::size_t zoneIndex = 0;
+    for (const auto& widget : flat) {
+        if (widget.kind != mc::ui::WidgetKind::IconZone) continue;
+        if (zoneIndex % 3U == 1U) upEnabled.push_back(widget.enabled);
+        if (zoneIndex % 3U == 2U) downEnabled.push_back(widget.enabled);
+        ++zoneIndex;
+    }
+    CHECK(upEnabled.size() == 3U && downEnabled.size() == 3U);
+    if (upEnabled.size() == 3U) {
+        CHECK(!upEnabled[0]);           // 第一行不能上移
+        CHECK(upEnabled[1] && upEnabled[2]);
+        CHECK(downEnabled[0] && downEnabled[1]);
+        CHECK(!downEnabled[2]);         // 最后一行不能下移
+    }
+}
+
+// --- 21d. UI-10 / D24：一栏的滚动窗口 ----------------------------------------
+void testPackColumnWindow() {
+    // 装得下：不滚，全显示。
+    CHECK(mc::ui::packColumnWindow(3U, 6U, 0U) == (mc::ui::PackColumnWindow{0U, 3U}));
+    // 装不下：窗口 = 容量。
+    CHECK(mc::ui::packColumnWindow(10U, 6U, 0U) == (mc::ui::PackColumnWindow{0U, 6U}));
+    CHECK(mc::ui::packColumnWindow(10U, 6U, 2U) == (mc::ui::PackColumnWindow{2U, 6U}));
+    // ★ 滚到底就停住：再往下只会露出列表末尾之后的空白（10 - 6 = 4）。
+    CHECK(mc::ui::packColumnWindow(10U, 6U, 4U) == (mc::ui::PackColumnWindow{4U, 6U}));
+    CHECK(mc::ui::packColumnWindow(10U, 6U, 99U) == (mc::ui::PackColumnWindow{4U, 6U}));
+    // 空列表与零容量都不能越界。
+    CHECK(mc::ui::packColumnWindow(0U, 6U, 3U) == (mc::ui::PackColumnWindow{0U, 0U}));
+    CHECK(mc::ui::packColumnWindow(5U, 0U, 3U).rowCount == 0U);
+    // 性质：窗口永远不会伸出列表末尾。
+    for (std::size_t total = 0; total <= 12U; ++total) {
+        for (std::size_t capacity = 0; capacity <= 8U; ++capacity) {
+            for (std::size_t first = 0; first <= 15U; ++first) {
+                const auto window = mc::ui::packColumnWindow(total, capacity, first);
+                check(window.firstRow + window.rowCount <= total,
+                      "a column window may never run past the end of the list", __LINE__);
+                check(window.rowCount <= capacity, "a window never exceeds the capacity",
+                      __LINE__);
+            }
+        }
+    }
+}
+
 // --- 22. 音乐与声音（UI-6e ②，26.1 §7.4）------------------------------------
 void testSoundSettingsPage() {
     const mc::ui::HudLayout layout{1280.0F, 720.0F, 3};
@@ -1887,6 +2108,9 @@ int main() {
     testDualColumnLists();
     testNoWidgetEscapesTheCanvas();
     testCreateWorldForm();
+    testTransferIconZones();
+    testPackColumnScrolling();
+    testPackColumnWindow();
     testSoundSettingsPage();
     testRuntimeLabelsAreActuallyComputed();
     testPageDispatchHasNoDefault();

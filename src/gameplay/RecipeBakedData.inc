@@ -172,6 +172,25 @@ inline constexpr BakedIngredient kCraftIng_109[] = {{IngredientDefKind::Block, "
 inline constexpr BakedIngredient kCraftIng_110[] = {{IngredientDefKind::Item, "rebedrock:snowball"}, {IngredientDefKind::Item, "rebedrock:snowball"}, {IngredientDefKind::Item, "rebedrock:snowball"}, {IngredientDefKind::Item, "rebedrock:snowball"}};
 inline constexpr BakedIngredient kCraftIng_111[] = {{IngredientDefKind::Block, "rebedrock:snow_block"}, {IngredientDefKind::Block, "rebedrock:snow_block"}, {IngredientDefKind::Block, "rebedrock:snow_block"}, {IngredientDefKind::Block, "rebedrock:snow_block"}, {IngredientDefKind::Block, "rebedrock:snow_block"}, {IngredientDefKind::Block, "rebedrock:snow_block"}};
 
+// SLP-1: the 16 beds. 3 wool of the colour over 3 planks of any wood, the
+// shape vanilla ships. Without it a bed is only obtainable from a village.
+inline constexpr BakedIngredient kCraftIng_112[] = {{IngredientDefKind::Block, "rebedrock:white_wool"}, {IngredientDefKind::Block, "rebedrock:white_wool"}, {IngredientDefKind::Block, "rebedrock:white_wool"}, {IngredientDefKind::Planks, ""}, {IngredientDefKind::Planks, ""}, {IngredientDefKind::Planks, ""}};
+inline constexpr BakedIngredient kCraftIng_113[] = {{IngredientDefKind::Block, "rebedrock:orange_wool"}, {IngredientDefKind::Block, "rebedrock:orange_wool"}, {IngredientDefKind::Block, "rebedrock:orange_wool"}, {IngredientDefKind::Planks, ""}, {IngredientDefKind::Planks, ""}, {IngredientDefKind::Planks, ""}};
+inline constexpr BakedIngredient kCraftIng_114[] = {{IngredientDefKind::Block, "rebedrock:magenta_wool"}, {IngredientDefKind::Block, "rebedrock:magenta_wool"}, {IngredientDefKind::Block, "rebedrock:magenta_wool"}, {IngredientDefKind::Planks, ""}, {IngredientDefKind::Planks, ""}, {IngredientDefKind::Planks, ""}};
+inline constexpr BakedIngredient kCraftIng_115[] = {{IngredientDefKind::Block, "rebedrock:light_blue_wool"}, {IngredientDefKind::Block, "rebedrock:light_blue_wool"}, {IngredientDefKind::Block, "rebedrock:light_blue_wool"}, {IngredientDefKind::Planks, ""}, {IngredientDefKind::Planks, ""}, {IngredientDefKind::Planks, ""}};
+inline constexpr BakedIngredient kCraftIng_116[] = {{IngredientDefKind::Block, "rebedrock:yellow_wool"}, {IngredientDefKind::Block, "rebedrock:yellow_wool"}, {IngredientDefKind::Block, "rebedrock:yellow_wool"}, {IngredientDefKind::Planks, ""}, {IngredientDefKind::Planks, ""}, {IngredientDefKind::Planks, ""}};
+inline constexpr BakedIngredient kCraftIng_117[] = {{IngredientDefKind::Block, "rebedrock:lime_wool"}, {IngredientDefKind::Block, "rebedrock:lime_wool"}, {IngredientDefKind::Block, "rebedrock:lime_wool"}, {IngredientDefKind::Planks, ""}, {IngredientDefKind::Planks, ""}, {IngredientDefKind::Planks, ""}};
+inline constexpr BakedIngredient kCraftIng_118[] = {{IngredientDefKind::Block, "rebedrock:pink_wool"}, {IngredientDefKind::Block, "rebedrock:pink_wool"}, {IngredientDefKind::Block, "rebedrock:pink_wool"}, {IngredientDefKind::Planks, ""}, {IngredientDefKind::Planks, ""}, {IngredientDefKind::Planks, ""}};
+inline constexpr BakedIngredient kCraftIng_119[] = {{IngredientDefKind::Block, "rebedrock:gray_wool"}, {IngredientDefKind::Block, "rebedrock:gray_wool"}, {IngredientDefKind::Block, "rebedrock:gray_wool"}, {IngredientDefKind::Planks, ""}, {IngredientDefKind::Planks, ""}, {IngredientDefKind::Planks, ""}};
+inline constexpr BakedIngredient kCraftIng_120[] = {{IngredientDefKind::Block, "rebedrock:light_gray_wool"}, {IngredientDefKind::Block, "rebedrock:light_gray_wool"}, {IngredientDefKind::Block, "rebedrock:light_gray_wool"}, {IngredientDefKind::Planks, ""}, {IngredientDefKind::Planks, ""}, {IngredientDefKind::Planks, ""}};
+inline constexpr BakedIngredient kCraftIng_121[] = {{IngredientDefKind::Block, "rebedrock:cyan_wool"}, {IngredientDefKind::Block, "rebedrock:cyan_wool"}, {IngredientDefKind::Block, "rebedrock:cyan_wool"}, {IngredientDefKind::Planks, ""}, {IngredientDefKind::Planks, ""}, {IngredientDefKind::Planks, ""}};
+inline constexpr BakedIngredient kCraftIng_122[] = {{IngredientDefKind::Block, "rebedrock:purple_wool"}, {IngredientDefKind::Block, "rebedrock:purple_wool"}, {IngredientDefKind::Block, "rebedrock:purple_wool"}, {IngredientDefKind::Planks, ""}, {IngredientDefKind::Planks, ""}, {IngredientDefKind::Planks, ""}};
+inline constexpr BakedIngredient kCraftIng_123[] = {{IngredientDefKind::Block, "rebedrock:blue_wool"}, {IngredientDefKind::Block, "rebedrock:blue_wool"}, {IngredientDefKind::Block, "rebedrock:blue_wool"}, {IngredientDefKind::Planks, ""}, {IngredientDefKind::Planks, ""}, {IngredientDefKind::Planks, ""}};
+inline constexpr BakedIngredient kCraftIng_124[] = {{IngredientDefKind::Block, "rebedrock:brown_wool"}, {IngredientDefKind::Block, "rebedrock:brown_wool"}, {IngredientDefKind::Block, "rebedrock:brown_wool"}, {IngredientDefKind::Planks, ""}, {IngredientDefKind::Planks, ""}, {IngredientDefKind::Planks, ""}};
+inline constexpr BakedIngredient kCraftIng_125[] = {{IngredientDefKind::Block, "rebedrock:green_wool"}, {IngredientDefKind::Block, "rebedrock:green_wool"}, {IngredientDefKind::Block, "rebedrock:green_wool"}, {IngredientDefKind::Planks, ""}, {IngredientDefKind::Planks, ""}, {IngredientDefKind::Planks, ""}};
+inline constexpr BakedIngredient kCraftIng_126[] = {{IngredientDefKind::Block, "rebedrock:red_wool"}, {IngredientDefKind::Block, "rebedrock:red_wool"}, {IngredientDefKind::Block, "rebedrock:red_wool"}, {IngredientDefKind::Planks, ""}, {IngredientDefKind::Planks, ""}, {IngredientDefKind::Planks, ""}};
+inline constexpr BakedIngredient kCraftIng_127[] = {{IngredientDefKind::Block, "rebedrock:black_wool"}, {IngredientDefKind::Block, "rebedrock:black_wool"}, {IngredientDefKind::Block, "rebedrock:black_wool"}, {IngredientDefKind::Planks, ""}, {IngredientDefKind::Planks, ""}, {IngredientDefKind::Planks, ""}};
+
 inline constexpr BakedCraftingRecipe kBakedCraftingRecipes[] = {
     {"minecraft:oak_planks", 1, 1, false, false, kCraftIng_0, "rebedrock:oak_planks", 4},
     {"minecraft:spruce_planks", 1, 1, false, false, kCraftIng_1, "rebedrock:spruce_planks", 4},
@@ -292,6 +311,22 @@ inline constexpr BakedCraftingRecipe kBakedCraftingRecipes[] = {
     {"minecraft:black_carpet", 2, 1, false, false, kCraftIng_109, "rebedrock:black_carpet", 3},
     {"minecraft:snow_block", 2, 2, false, false, kCraftIng_110, "rebedrock:snow_block", 1},
     {"minecraft:snow", 3, 2, false, false, kCraftIng_111, "rebedrock:snow", 6},
+    {"minecraft:white_bed", 3, 2, false, false, kCraftIng_112, "rebedrock:white_bed", 1},
+    {"minecraft:orange_bed", 3, 2, false, false, kCraftIng_113, "rebedrock:orange_bed", 1},
+    {"minecraft:magenta_bed", 3, 2, false, false, kCraftIng_114, "rebedrock:magenta_bed", 1},
+    {"minecraft:light_blue_bed", 3, 2, false, false, kCraftIng_115, "rebedrock:light_blue_bed", 1},
+    {"minecraft:yellow_bed", 3, 2, false, false, kCraftIng_116, "rebedrock:yellow_bed", 1},
+    {"minecraft:lime_bed", 3, 2, false, false, kCraftIng_117, "rebedrock:lime_bed", 1},
+    {"minecraft:pink_bed", 3, 2, false, false, kCraftIng_118, "rebedrock:pink_bed", 1},
+    {"minecraft:gray_bed", 3, 2, false, false, kCraftIng_119, "rebedrock:gray_bed", 1},
+    {"minecraft:light_gray_bed", 3, 2, false, false, kCraftIng_120, "rebedrock:light_gray_bed", 1},
+    {"minecraft:cyan_bed", 3, 2, false, false, kCraftIng_121, "rebedrock:cyan_bed", 1},
+    {"minecraft:purple_bed", 3, 2, false, false, kCraftIng_122, "rebedrock:purple_bed", 1},
+    {"minecraft:blue_bed", 3, 2, false, false, kCraftIng_123, "rebedrock:blue_bed", 1},
+    {"minecraft:brown_bed", 3, 2, false, false, kCraftIng_124, "rebedrock:brown_bed", 1},
+    {"minecraft:green_bed", 3, 2, false, false, kCraftIng_125, "rebedrock:green_bed", 1},
+    {"minecraft:red_bed", 3, 2, false, false, kCraftIng_126, "rebedrock:red_bed", 1},
+    {"minecraft:black_bed", 3, 2, false, false, kCraftIng_127, "rebedrock:black_bed", 1},
 };
 
 inline constexpr BakedFurnaceRecipe kBakedFurnaceRecipes[] = {
