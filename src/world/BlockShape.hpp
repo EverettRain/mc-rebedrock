@@ -396,9 +396,10 @@ struct CrossCollisionParams final {
     float wallHeight = 16.0F;
     float collisionHeight = 24.0F;
 };
-inline constexpr std::array<CrossCollisionParams, 2> kCrossCollisionParams{{
+inline constexpr std::array<CrossCollisionParams, 3> kCrossCollisionParams{{
     {4.0F, 16.0F, 4.0F, 16.0F, 24.0F}, // CrossCollisionFamily::Fence
-    {2.0F, 16.0F, 2.0F, 16.0F, 16.0F}, // CrossCollisionFamily::PaneOrBars
+    {2.0F, 16.0F, 2.0F, 16.0F, 16.0F}, // CrossCollisionFamily::Pane
+    {2.0F, 16.0F, 2.0F, 16.0F, 16.0F}, // CrossCollisionFamily::Bars — same shape
 }};
 
 // `Block.column(width, 0, height)` — the centre post.
@@ -441,9 +442,9 @@ struct CrossBoxSet final {
     }
     return set;
 }
-[[nodiscard]] constexpr std::array<std::array<CrossBoxSet, 16>, 2> buildCrossBoxTable(
+[[nodiscard]] constexpr std::array<std::array<CrossBoxSet, 16>, 3> buildCrossBoxTable(
     bool collision) {
-    std::array<std::array<CrossBoxSet, 16>, 2> table{};
+    std::array<std::array<CrossBoxSet, 16>, 3> table{};
     for (std::size_t family = 0; family < kCrossCollisionParams.size(); ++family) {
         for (unsigned mask = 0; mask < 16U; ++mask) {
             table[family][mask] = buildCrossBoxSet(kCrossCollisionParams[family], mask, collision);
@@ -454,62 +455,137 @@ struct CrossBoxSet final {
 inline constexpr auto kCrossVisualBoxTable = buildCrossBoxTable(false);
 inline constexpr auto kCrossCollisionBoxTable = buildCrossBoxTable(true);
 
-// MDL-1: the MESH boxes, which are not the shape boxes.
+// MDL-1: the MESH boxes, which are neither the shape boxes nor merely boxes.
 //
-// 26.1 draws a fence from `block/fence_post` + one `block/fence_side` per
-// connection, and a fence_side is TWO BARS — [7,12,0]..[9,15,9] and
-// [7,6,0]..[9,9,9] — while the VoxelShape's arm is a solid full-height slab.
-// The shape is right for collision and occlusion and wrong for the eye: meshing
-// a fence from it draws a solid wooden wall, which is exactly what the first
-// preview export of this family showed. So the mesh reads its own table.
+// Two things separate what a CrossCollision block LOOKS like from what its
+// VoxelShape is, and both were found by exporting a picture rather than by any
+// headless assertion:
 //
-// The panes are nearly the shape (`template_glass_pane_post` [7,0,7]..[9,16,9],
-// `template_glass_pane_side` [7,0,0]..[9,16,7]) — a pane really is a full-height
-// sheet — but they go through the same table so there is one answer to "what
-// does a CrossCollision block look like", not two mechanisms.
+//  1. 26.1 draws a fence from `block/fence_post` + one `block/fence_side` per
+//     connection, and a fence_side is TWO BARS — [7,12,0]..[9,15,9] and
+//     [7,6,0]..[9,9,9] — while the shape's arm is a solid full-height slab.
+//     Meshing from the shape draws a solid wooden wall.
+//  2. Vanilla's elements declare WHICH FACES they draw, and for this family that
+//     is not "all six". `template_glass_pane_post` is [7,0,7]..[9,16,9] with
+//     `down` and `up` ONLY: a connected pane must not show a post at all, and
+//     drawing its four sides puts a visible square column through the middle of
+//     every pane. `template_glass_pane_side` likewise omits the face pointing at
+//     the cell centre, and an unconnected pane draws the post's north and east
+//     faces (vanilla's `noside` / `noside_alt`) so it is a sheet, not a stick.
+//
+// So a mesh box carries a face mask. The mask rotates with the box.
 [[nodiscard]] constexpr ShapeBox box16(float x0, float y0, float z0, float x1, float y1,
                                        float z1) {
     return {x0 / 16.0F, y0 / 16.0F, z0 / 16.0F, x1 / 16.0F, y1 / 16.0F, z1 / 16.0F};
 }
+[[nodiscard]] constexpr std::uint8_t faceBit(Face face) {
+    return static_cast<std::uint8_t>(1U << static_cast<unsigned>(face));
+}
+inline constexpr std::uint8_t kAllFaces = 0x3FU;
+inline constexpr std::uint8_t kUpDownFaces = static_cast<std::uint8_t>(
+    faceBit(Face::PositiveY) | faceBit(Face::NegativeY));
+// north is -Z and east is +X, so a clockwise quarter turn sends
+// -Z -> +X -> +Z -> -X -> -Z. Vertical faces are untouched, exactly as
+// `rotatedClockwise` leaves y alone.
+[[nodiscard]] constexpr std::uint8_t rotateFaceMaskClockwise(std::uint8_t mask) {
+    std::uint8_t turned = static_cast<std::uint8_t>(mask & kUpDownFaces);
+    constexpr std::array<Face, 4> ring{Face::NegativeZ, Face::PositiveX, Face::PositiveZ,
+                                       Face::NegativeX};
+    for (std::size_t index = 0; index < ring.size(); ++index) {
+        if ((mask & faceBit(ring[index])) != 0U) {
+            turned = static_cast<std::uint8_t>(turned | faceBit(ring[(index + 1U) % ring.size()]));
+        }
+    }
+    return turned;
+}
+struct CrossMeshBox final {
+    ShapeBox box{};
+    std::uint8_t faces = kAllFaces;
+};
 struct CrossMeshTemplate final {
-    ShapeBox post{};
-    std::array<ShapeBox, 2> side{};
+    // Up to two post boxes: one for a fence or a pane, two crossed planes for
+    // iron bars.
+    std::array<CrossMeshBox, 2> post{};
+    std::uint8_t postCount = 0U;
+    // The face(s) the FIRST post box gains when NOTHING is connected — vanilla's
+    // `noside`/`noside_alt` pair for a pane, and nothing for a fence or bars
+    // (whose posts already draw what they need).
+    std::uint8_t lonePostFaces = 0U;
+    std::array<CrossMeshBox, 2> side{};
     std::uint8_t sideCount = 0U;
 };
-inline constexpr std::array<CrossMeshTemplate, 2> kCrossMeshTemplates{{
-    // Fence: block/fence_post + block/fence_side (top bar, lower bar).
-    {box16(6.0F, 0.0F, 6.0F, 10.0F, 16.0F, 10.0F),
-     {box16(7.0F, 12.0F, 0.0F, 9.0F, 15.0F, 9.0F), box16(7.0F, 6.0F, 0.0F, 9.0F, 9.0F, 9.0F)},
+inline constexpr std::array<CrossMeshTemplate, 3> kCrossMeshTemplates{{
+    // Fence: block/fence_post (all six faces) + block/fence_side's two bars.
+    // A bar omits the face pointing at the cell centre (+Z for the north arm),
+    // which is buried in the post anyway.
+    {{CrossMeshBox{box16(6.0F, 0.0F, 6.0F, 10.0F, 16.0F, 10.0F), kAllFaces}, CrossMeshBox{}},
+     1U,
+     0U,
+     {CrossMeshBox{box16(7.0F, 12.0F, 0.0F, 9.0F, 15.0F, 9.0F),
+                   static_cast<std::uint8_t>(kAllFaces & ~faceBit(Face::PositiveZ))},
+      CrossMeshBox{box16(7.0F, 6.0F, 0.0F, 9.0F, 9.0F, 9.0F),
+                   static_cast<std::uint8_t>(kAllFaces & ~faceBit(Face::PositiveZ))}},
      2U},
-    // Panes and bars: template_glass_pane_post + template_glass_pane_side.
-    {box16(7.0F, 0.0F, 7.0F, 9.0F, 16.0F, 9.0F),
-     {box16(7.0F, 0.0F, 0.0F, 9.0F, 16.0F, 7.0F), ShapeBox{}},
+    // Glass panes: template_glass_pane_post is up/down ONLY (drawing its sides
+    // puts a square column through the middle of every connected pane); an
+    // unconnected pane adds the north and east faces (noside + noside_alt); a
+    // side omits the face pointing at the centre.
+    {{CrossMeshBox{box16(7.0F, 0.0F, 7.0F, 9.0F, 16.0F, 9.0F), kUpDownFaces}, CrossMeshBox{}},
+     1U,
+     static_cast<std::uint8_t>(faceBit(Face::NegativeZ) | faceBit(Face::PositiveX)),
+     {CrossMeshBox{box16(7.0F, 0.0F, 0.0F, 9.0F, 16.0F, 7.0F),
+                   static_cast<std::uint8_t>(kAllFaces & ~faceBit(Face::PositiveZ))},
+      CrossMeshBox{}},
      1U},
+    // Iron bars: `template_bars_post` is two ZERO-THICKNESS planes — x = 8
+    // showing east/west, z = 8 showing north/south — and `template_bars_side` is
+    // the same idea, a plane at x = 8 running out to the cell edge plus the
+    // north face of the 2/16 slab. A degenerate box (from == to on one axis) is
+    // a double-sided sheet here: neither of its two opposing faces reaches a
+    // cell wall, so both are drawn, which is exactly what a bar is.
+    {{CrossMeshBox{box16(8.0F, 0.0F, 7.0F, 8.0F, 16.0F, 9.0F),
+                   static_cast<std::uint8_t>(faceBit(Face::PositiveX) | faceBit(Face::NegativeX))},
+      CrossMeshBox{box16(7.0F, 0.0F, 8.0F, 9.0F, 16.0F, 8.0F),
+                   static_cast<std::uint8_t>(faceBit(Face::PositiveZ) | faceBit(Face::NegativeZ))}},
+     2U,
+     0U,
+     {CrossMeshBox{box16(8.0F, 0.0F, 0.0F, 8.0F, 16.0F, 8.0F),
+                   static_cast<std::uint8_t>(faceBit(Face::PositiveX) | faceBit(Face::NegativeX))},
+      CrossMeshBox{box16(7.0F, 0.0F, 0.0F, 9.0F, 16.0F, 7.0F),
+                   static_cast<std::uint8_t>(faceBit(Face::NegativeZ))}},
+     2U},
 }};
 struct CrossMeshBoxSet final {
-    std::array<ShapeBox, 9> boxes{}; // post + up to 4 sides x 2 bars
+    std::array<CrossMeshBox, 10> boxes{}; // up to 2 posts + 4 sides x 2 boxes
     std::uint8_t count = 0U;
 };
 [[nodiscard]] constexpr CrossMeshBoxSet buildCrossMeshBoxSet(const CrossMeshTemplate& tmpl,
                                                              unsigned mask) {
     CrossMeshBoxSet set;
-    set.boxes[set.count++] = tmpl.post;
+    for (std::uint8_t index = 0; index < tmpl.postCount; ++index) {
+        CrossMeshBox post = tmpl.post[index];
+        if (index == 0U && mask == 0U) {
+            post.faces = static_cast<std::uint8_t>(post.faces | tmpl.lonePostFaces);
+        }
+        set.boxes[set.count++] = post;
+    }
     for (unsigned side = 0; side < 4U; ++side) {
         if ((mask & (1U << side)) == 0U) {
             continue;
         }
         for (std::uint8_t bar = 0; bar < tmpl.sideCount; ++bar) {
-            ShapeBox box = tmpl.side[bar];
+            CrossMeshBox entry = tmpl.side[bar];
             for (unsigned turn = 0; turn < side; ++turn) {
-                box = rotatedClockwise(box);
+                entry.box = rotatedClockwise(entry.box);
+                entry.faces = rotateFaceMaskClockwise(entry.faces);
             }
-            set.boxes[set.count++] = box;
+            set.boxes[set.count++] = entry;
         }
     }
     return set;
 }
-inline constexpr std::array<std::array<CrossMeshBoxSet, 16>, 2> kCrossMeshBoxTable = [] {
-    std::array<std::array<CrossMeshBoxSet, 16>, 2> table{};
+inline constexpr std::array<std::array<CrossMeshBoxSet, 16>, 3> kCrossMeshBoxTable = [] {
+    std::array<std::array<CrossMeshBoxSet, 16>, 3> table{};
     for (std::size_t family = 0; family < kCrossMeshTemplates.size(); ++family) {
         for (unsigned mask = 0; mask < 16U; ++mask) {
             table[family][mask] = buildCrossMeshBoxSet(kCrossMeshTemplates[family], mask);
@@ -826,7 +902,8 @@ static_assert(kShapeByModel.size() == static_cast<std::size_t>(BlockModel::Carpe
 // MDL-1: the boxes the MESHER draws a CrossCollision block from — vanilla's
 // model, not its VoxelShape (see detail::kCrossMeshBoxTable for why they differ).
 // Pick, outline and collision all keep reading `blockShape`/`collisionShape`.
-[[nodiscard]] constexpr BlockShape crossCollisionMeshShape(BlockState state) {
+[[nodiscard]] constexpr std::span<const detail::CrossMeshBox> crossCollisionMeshBoxes(
+    BlockState state) {
     const auto family = static_cast<std::size_t>(blockDefinition(state.block()).crossFamily);
     const auto mask = detail::wallConnectionMask(state.wallConnected(BlockOrientation::North),
                                                  state.wallConnected(BlockOrientation::East),
@@ -834,7 +911,7 @@ static_assert(kShapeByModel.size() == static_cast<std::size_t>(BlockModel::Carpe
                                                  state.wallConnected(BlockOrientation::West));
     const auto& set =
         detail::kCrossMeshBoxTable[family < detail::kCrossMeshTemplates.size() ? family : 0U][mask];
-    return {ShapeKind::Boxes, 0.0F, 0.0F, {set.boxes.data(), set.count}};
+    return {set.boxes.data(), set.count};
 }
 
 [[nodiscard]] constexpr BlockShape blockShape(BlockState state) {

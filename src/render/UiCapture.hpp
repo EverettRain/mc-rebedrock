@@ -84,6 +84,23 @@ struct UiCaptureOptions final {
     std::vector<int> guiScales{2, 3};
     std::uint32_t width = 1280U;
     std::uint32_t height = 720U;
+    // 光标钉在哪（帧缓冲像素）。默认是画布外的那个点，也就是"没有任何控件处于悬停态"。
+    //
+    // ★ 它是**参数**而不是常量，因为悬停态本身是一大块绘制路径：槽位高亮、物品提示框、
+    //   以及"手上拖着东西时不显示提示框"那条规则。把光标永远钉在画布外，这三样在
+    //   任何一张截图里都不会出现——A1 有一次 sabotage 正是这么溜过去的（把提示框的
+    //   `cursorStack.empty()` 判断改成恒真，全套图逐字节不变）。
+    //   ★ 那次的修法是**改夹具**，不是换一个更好抓的 sabotage：两种实现在"光标在画布外
+    //     且手上没东西"这个夹具下本来就同解，再多断言也分不开它们。
+    float cursorX = kUiCaptureCursorX;
+    float cursorY = kUiCaptureCursorY;
+    // 手上拿不拿着一堆东西（26.1 的 `getCarried()`）。默认不拿。
+    //
+    // ★ 它与 `--ui-cursor` 是**两根正交的轴**，因为它们各自开的是不同的绘制路径：
+    //   光标位置开的是"悬停高亮 + 提示框"，手上那一堆开的是"光标上画一格物品，
+    //   并且**抑制**提示框"。合成一个开关就再也拍不到"悬停且手上是空的"那一档，
+    //   而那正是二十张常规基线图的那一档。
+    bool carryStack = false;
     std::filesystem::path root{"export/ui-preview"};
 
     [[nodiscard]] bool operator==(const UiCaptureOptions&) const = default;
@@ -137,6 +154,8 @@ struct UiCaptureOptions final {
 //   --ui-shot <页名>[,<页名>...]   可重复，累加
 //   --ui-scale <档>[,<档>...]      默认 2,3；0 = Auto
 //   --ui-size  <宽>x<高>           默认 1280x720
+//   --ui-cursor <x>,<y>            光标钉在哪（帧缓冲像素，可为负）；默认画布外
+//   --ui-carry                     光标上拿着一堆东西（容器目标才有意义）
 //   --ui-out   <目录>              默认 export/ui-preview
 // 没有 --ui-shot 时返回 nullopt。参数写错直接抛，免得自动化跑着跑着悄悄拍了别的屏幕
 // 还当成功——这与 parseTestSceneArguments 的理由是同一条。

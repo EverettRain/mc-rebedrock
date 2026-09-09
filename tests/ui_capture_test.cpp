@@ -488,6 +488,32 @@ void testFixtureSourceGuards() {
         CHECK(publish.find("target.creative") == std::string::npos);
     }
 
+    // ★ A1 抓到的一条：**绘制侧只准有一处读光标**。
+    //
+    //   生存背包屏此前自抄了一份 `glfwGetCursorPos + windowToFramebuffer`（十三行），
+    //   而那一份**不认 `pinnedCursor`**——截图通道钉光标那颗钉子对整个背包屏不生效，
+    //   于是基线图里有一格槽位被 Xvfb 的屏幕中心指针 (640,512) 常年点亮。
+    //
+    //   ★ 两遍比对**发现不了它**：两遍读到的是同一个真实指针位置，图当然一样。
+    //     这正是"两遍比对证不了每个 knob 都还在"那句话的实证，不是它的理论。
+    //   护栏写成"整个文件里 glfwGetCursorPos 只出现一次"，因为那一次必须是
+    //   `currentFramebufferCursor`——它是唯一认钉子的那一处。
+    {
+        const std::string hudSource = readSource(MC_REBEDROCK_HUD_RENDERER_SRC);
+        std::size_t reads = 0;
+        for (std::size_t at = hudSource.find("glfwGetCursorPos"); at != std::string::npos;
+             at = hudSource.find("glfwGetCursorPos", at + 1U)) {
+            ++reads;
+        }
+        check(reads == 1U,
+              "the HUD must read the cursor in exactly one place (currentFramebufferCursor)",
+              __LINE__);
+        const std::string cursor =
+            functionBody(hudSource, "ui::UiPoint currentFramebufferCursor(");
+        CHECK(cursor.find("glfwGetCursorPos") != std::string::npos);
+        CHECK(cursor.find("pinnedCursor") != std::string::npos);
+    }
+
     const std::string hud = readSource(MC_REBEDROCK_HUD_RENDERER_SRC);
     const std::string drawHud = functionBody(hud, "void drawHud(VkCommandBuffer");
     if (!drawHud.empty()) {
@@ -544,6 +570,56 @@ void testSize() {
     EXPECT_THROWS({"--ui-shot", "title", "--ui-size", "x480"});
     EXPECT_THROWS({"--ui-shot", "title", "--ui-size", "854x480x2"});
     EXPECT_THROWS({"--ui-shot", "title", "--ui-size"});
+}
+
+// --- 5b. A1：光标钉在哪 ------------------------------------------------------
+//
+// ★ 它存在的理由是一次没抓住的 sabotage：把"手上拖着东西时不画提示框"那条判断改成
+//   恒真，全套截图**逐字节不变**——因为夹具里光标在画布外、手上也没东西，两种实现
+//   在这个夹具下同解。规矩是"没抓住就补测试或补夹具，不要换一个更好抓的 sabotage"，
+//   而这一次差的是**夹具**：再多断言也分不开两个同解的实现。
+void testCursorPin() {
+    // 默认仍是画布外那个点：既有基线因此不受影响。
+    const auto byDefault = parse({"--ui-shot", "title"});
+    CHECK(byDefault.has_value());
+    CHECK(byDefault->cursorX == mc::render::kUiCaptureCursorX);
+    CHECK(byDefault->cursorY == mc::render::kUiCaptureCursorY);
+
+    const auto pinned = parse({"--ui-shot", "chest", "--ui-cursor", "640,360"});
+    CHECK(pinned.has_value());
+    CHECK(pinned->cursorX == 640.0F);
+    CHECK(pinned->cursorY == 360.0F);
+    // ★ 负数要收得下：默认值本身就是 -1，而"画布外"正是它最重要的一个取值。
+    const auto negative = parse({"--ui-shot", "title", "--ui-cursor", "-8,-9"});
+    CHECK(negative.has_value() && negative->cursorX == -8.0F && negative->cursorY == -9.0F);
+
+    EXPECT_THROWS({"--ui-shot", "title", "--ui-cursor", "640"});
+    EXPECT_THROWS({"--ui-shot", "title", "--ui-cursor", "640x360"});
+    EXPECT_THROWS({"--ui-shot", "title", "--ui-cursor", "a,b"});
+    EXPECT_THROWS({"--ui-shot", "title", "--ui-cursor"});
+    EXPECT_THROWS({"--ui-cursor", "1,1"});   // 只给参数不说拍什么
+
+    // ★ `--ui-carry` 与 `--ui-cursor` 是两根**正交**的轴：前者开"光标上那一堆 +
+    //   抑制提示框"，后者开"悬停高亮 + 提示框"。合成一个开关，"悬停且手上是空的"
+    //   那一档——也就是二十张常规基线的那一档——就再也拍不到了。
+    CHECK(byDefault.has_value() && !byDefault->carryStack);
+    const auto carrying = parse({"--ui-shot", "chest", "--ui-carry"});
+    CHECK(carrying.has_value() && carrying->carryStack);
+    CHECK(carrying->cursorX == mc::render::kUiCaptureCursorX);   // 两根轴互不牵连
+    const auto both = parse({"--ui-shot", "chest", "--ui-cursor", "10,20", "--ui-carry"});
+    CHECK(both.has_value() && both->carryStack && both->cursorX == 10.0F);
+    EXPECT_THROWS({"--ui-carry"});   // 只给参数不说拍什么
+
+    // 夹具：不拿的时候手上是空的，拿的时候不是——而且拿的那一堆要**带附魔**，
+    // 好让"提示框被抑制"这件事在图上看得出区别（多行提示框 vs 一格物品）。
+    const auto chest = containerTarget(mc::gameplay::ContainerScreen::Chest);
+    CHECK(mc::render::uiCaptureWorldSnapshot(chest, false).cursorStack.empty());
+    const auto carried = mc::render::uiCaptureWorldSnapshot(chest, true).cursorStack;
+    CHECK(!carried.empty());
+    CHECK(carried.enchantmentCount > 0U);
+    // 前端目标不受影响：它拿到的仍是一份默认快照（既有十八屏基线的构造性保证）。
+    CHECK(mc::render::uiCaptureWorldSnapshot(pageTarget(mc::ui::PageId::Title), true) ==
+          mc::gameplay::WorldSnapshot{});
 }
 
 // --- 6. 输出路径只是命令行的函数 ---------------------------------------------
@@ -656,9 +732,15 @@ void testKnobsAreAllPinned() {
     // 每一条都写清它不钉会怎样，删掉哪一条这里就红哪一条。
     // UI 时钟：全景相机的偏航与俯仰、文本光标的闪烁相位都是它的函数
     CHECK(body.find("uiTimeSeconds = kUiCaptureClockSeconds") != std::string::npos);
-    // 光标：按钮的悬停高亮读它
-    CHECK(body.find("pinnedCursor = ui::UiPoint{kUiCaptureCursorX, kUiCaptureCursorY}") !=
-          std::string::npos);
+    // 光标：按钮的悬停高亮与槽位提示框都读它。
+    // ★ A1 之后它是**命令行的函数**（`--ui-cursor`，默认仍是画布外那个点），
+    //   所以护栏钉的是"它被显式赋值、且赋的是拍摄参数里的那个点"——而**不是**
+    //   钉住某一个字面量：钉字面量会把"可以拍悬停态"这件事一并禁掉。
+    CHECK(body.find("pinnedCursor =") != std::string::npos);
+    CHECK(body.find("uiCapture->cursorX") != std::string::npos);
+    CHECK(body.find("kUiCaptureCursorX") != std::string::npos);
+    // 而它绝不能来自运行期读数——那正是这一整条护栏要挡的东西。
+    CHECK(body.find("glfwGetCursorPos") == std::string::npos);
     // 按下态：上一次输入留下的按下按钮会被画成按下的样子
     CHECK(body.find("pressedMenuButton = ui::WidgetId::None") != std::string::npos);
     // 天气与视角摇晃：两者都经 HUD 通道影响画面
@@ -729,6 +811,7 @@ int main() {
     testFixtureSourceGuards();
     testScales();
     testSize();
+    testCursorPin();
     testPaths();
     testDeterminismKnobs();
     testKnobsAreAllPinned();

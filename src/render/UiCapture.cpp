@@ -130,6 +130,16 @@ static_assert(everyNameIsUnique(), "capture target names must be unique");
     return parts;
 }
 
+[[nodiscard]] float parseCoordinate(std::string_view value, std::string_view what) {
+    int parsed = 0;
+    const auto [end, error] =
+        std::from_chars(value.data(), value.data() + value.size(), parsed);
+    if (error != std::errc{} || end != value.data() + value.size()) {
+        throw std::invalid_argument("--ui-cursor " + std::string{what} + " must be an integer");
+    }
+    return static_cast<float>(parsed);
+}
+
 [[nodiscard]] std::uint32_t parseExtent(std::string_view value, std::string_view what) {
     std::uint32_t parsed = 0U;
     const auto [end, error] =
@@ -275,6 +285,27 @@ std::optional<UiCaptureOptions> parseUiCaptureArguments(
                     std::to_string(kMinUiCaptureHeight) + " and at most " +
                     std::to_string(kMaxUiCaptureExtent) + " on each axis");
             }
+        } else if (arguments[index] == "--ui-cursor") {
+            if (++index >= arguments.size()) {
+                throw std::invalid_argument("--ui-cursor requires <x>,<y>");
+            }
+            if (!result.has_value()) {
+                result = UiCaptureOptions{};
+            }
+            const std::string_view value = arguments[index];
+            const std::size_t comma = value.find(',');
+            if (comma == std::string_view::npos) {
+                throw std::invalid_argument("--ui-cursor requires <x>,<y>, got: " +
+                                            std::string{value});
+            }
+            // 逗号分隔而不是 `x`：坐标可以是负数，而负号会把 `x` 那种写法读歪。
+            result->cursorX = parseCoordinate(value.substr(0U, comma), "x");
+            result->cursorY = parseCoordinate(value.substr(comma + 1U), "y");
+        } else if (arguments[index] == "--ui-carry") {
+            if (!result.has_value()) {
+                result = UiCaptureOptions{};
+            }
+            result->carryStack = true;
         } else if (arguments[index] == "--ui-out") {
             if (++index >= arguments.size()) {
                 throw std::invalid_argument("--ui-out requires a directory");
@@ -286,7 +317,7 @@ std::optional<UiCaptureOptions> parseUiCaptureArguments(
         }
     }
 
-    // --ui-scale / --ui-size / --ui-out 单独出现是没有意义的：它们描述一次拍摄的
+    // --ui-scale / --ui-size / --ui-out / --ui-cursor 单独出现是没有意义的：它们描述一次拍摄的
     // 参数，而拍什么由 --ui-shot 说了算。给了参数却没给页面，报错而不是默默不拍。
     if (result.has_value() && !requestedTargets) {
         throw std::invalid_argument("--ui-scale, --ui-size and --ui-out require --ui-shot");

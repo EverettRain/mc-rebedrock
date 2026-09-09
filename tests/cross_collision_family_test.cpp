@@ -288,6 +288,65 @@ int main() {
                                           BlockOrientation::North));
     }
 
+    // ---------------------------------------------------------------------
+    // 9) The MESH boxes are not the shape boxes, and each mesh box declares
+    //    which faces it draws. Both were found by exporting a picture, so both
+    //    get an assertion here — the first version meshed a fence from its
+    //    VoxelShape (a solid wooden wall) and the second drew a pane's post on
+    //    all six faces (a square column through the middle of every pane).
+    // ---------------------------------------------------------------------
+    {
+        constexpr std::uint8_t upDown =
+            static_cast<std::uint8_t>((1U << static_cast<unsigned>(mc::world::Face::PositiveY)) |
+                                      (1U << static_cast<unsigned>(mc::world::Face::NegativeY)));
+
+        // A fence's mesh is the post plus TWO bars per connection (26.1's
+        // block/fence_side), never the shape's single full-height arm.
+        const BlockState fenceNorth =
+            BlockState{Block::OakFence}.withWallConnected(BlockOrientation::North, true);
+        const auto fenceBoxes = mc::world::crossCollisionMeshBoxes(fenceNorth);
+        assert(fenceBoxes.size() == 3U); // post + two bars
+        assert(near(fenceBoxes[1].box.minY, 12.0F / 16.0F));
+        assert(near(fenceBoxes[2].box.minY, 6.0F / 16.0F));
+        // The shape, by contrast, has post + ONE arm that spans the full height.
+        const auto fenceShape = blockShape(fenceNorth);
+        assert(boxCount(fenceShape) == 2U);
+        assert(near(fenceShape.boxes[1].maxY, 1.0F));
+
+        // A connected pane's post draws up/down only.
+        const BlockState paneNorth =
+            BlockState{Block::GlassPane}.withWallConnected(BlockOrientation::North, true);
+        const auto paneBoxes = mc::world::crossCollisionMeshBoxes(paneNorth);
+        assert(paneBoxes.size() == 2U); // post + one side
+        assert(paneBoxes[0].faces == upDown);
+        // An unconnected pane's post gains the north and east faces
+        // (vanilla's noside + noside_alt), so it is a sheet rather than nothing.
+        const auto lonePane = mc::world::crossCollisionMeshBoxes(BlockState{Block::GlassPane});
+        assert(lonePane.size() == 1U);
+        assert(lonePane[0].faces ==
+               static_cast<std::uint8_t>(
+                   upDown | (1U << static_cast<unsigned>(mc::world::Face::NegativeZ)) |
+                   (1U << static_cast<unsigned>(mc::world::Face::PositiveX))));
+
+        // The face mask rotates with the box: the north side omits +Z (the face
+        // buried in the post), so the EAST side must omit -X, not +Z.
+        const BlockState paneEast =
+            BlockState{Block::GlassPane}.withWallConnected(BlockOrientation::East, true);
+        const auto eastBoxes = mc::world::crossCollisionMeshBoxes(paneEast);
+        assert(eastBoxes.size() == 2U);
+        const std::uint8_t omitted = static_cast<std::uint8_t>(0x3FU & ~eastBoxes[1].faces);
+        assert(omitted == static_cast<std::uint8_t>(
+                              1U << static_cast<unsigned>(mc::world::Face::NegativeX)));
+
+        // Iron bars share the pane's SHAPE row but not its MODEL: two
+        // zero-thickness crossed planes, not one box.
+        assert(near(blockShape(BlockState{Block::IronBars}).boxes[0].minX, 7.0F / 16.0F));
+        const auto barBoxes = mc::world::crossCollisionMeshBoxes(BlockState{Block::IronBars});
+        assert(barBoxes.size() == 2U); // the crossed post planes
+        assert(near(barBoxes[0].box.minX, barBoxes[0].box.maxX)); // zero thickness in X
+        assert(near(barBoxes[1].box.minZ, barBoxes[1].box.maxZ)); // zero thickness in Z
+    }
+
     std::cout << "cross_collision_family_test passed\n";
     return 0;
 }

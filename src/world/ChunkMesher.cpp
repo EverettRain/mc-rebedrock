@@ -1644,7 +1644,13 @@ void appendBox(
     int z,
     const Sampler& lighting,
     const glm::vec3& sectionOrigin,
-    BiomeTintCache& tints) {
+    BiomeTintCache& tints,
+    // MDL-1: which of the six faces this box draws. Vanilla's model elements
+    // declare their faces one by one and this family needs that: a connected
+    // glass pane's post draws `down` and `up` only, and drawing its four sides
+    // puts a visible square column through the middle of the pane. Defaults to
+    // all six, so every existing caller is unchanged.
+    std::uint8_t faceMask = 0x3FU) {
     const glm::vec3 origin{
         static_cast<float>(x), static_cast<float>(y), static_cast<float>(z)};
     const glm::vec3 boxMin{box.minX, box.minY, box.minZ};
@@ -1659,6 +1665,9 @@ void appendBox(
     // RN-46a：见 appendFace 的同名量。异形方块（台阶、栅栏）也在水下，也要衰减
     const int submergedBlocks = fluidColumnAbove(world, x, y, z);
     for (const auto& face : kFaces) {
+        if ((faceMask & static_cast<std::uint8_t>(1U << static_cast<unsigned>(face.face))) == 0U) {
+            continue;
+        }
         const float faceCoordinate = boxFaceCoordinate(box, face);
         const bool positive = face.dx + face.dy + face.dz > 0;
         // The face touches the cell wall only when it reaches 0 (min side) or 1
@@ -2668,9 +2677,11 @@ bool buildSectionImpl(
                 // block/fence_side is two bars — meshing from the shape draws a
                 // solid wooden wall. Pick, outline and collision are untouched.
                 if (definition.model == BlockModel::CrossCollision) {
-                    appendBoxes(targetMesh, world, cull,
-                                crossCollisionMeshShape(chunk->state(localX, worldY, localZ)),
-                                worldX, worldY, worldZ, lighting, sectionOrigin, tints);
+                    for (const auto& entry :
+                         crossCollisionMeshBoxes(chunk->state(localX, worldY, localZ))) {
+                        appendBox(targetMesh, world, cull, entry.box, worldX, worldY, worldZ,
+                                  lighting, sectionOrigin, tints, entry.faces);
+                    }
                     continue;
                 }
                 if (isShapedBlockModel(definition.model)) {

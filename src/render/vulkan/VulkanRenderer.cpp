@@ -16,6 +16,7 @@
 
 #include "render/BlockPreviewCamera.hpp"
 #include "render/UiCaptureFixture.hpp"
+#include "gameplay/SnapshotSlots.hpp"
 #include "ui/ContainerPage.hpp"
 #include "net/LoopbackTransport.hpp"
 
@@ -1445,7 +1446,11 @@ struct VulkanRenderer::Impl final : public gameplay::SimulationHost {
         uiTimeSeconds = kUiCaptureClockSeconds;
         // 2. 鼠标。按钮的悬停高亮读光标位置，而隐藏窗口下指针停在哪儿不由我们决定。
         //    钉到画布外的一个点，于是没有任何控件处于悬停态（ui_capture_test 断言这条性质）。
-        pinnedCursor = ui::UiPoint{kUiCaptureCursorX, kUiCaptureCursorY};
+        // 光标：按钮的悬停高亮与槽位提示框都读它。默认钉在画布外（没有任何东西悬停），
+        // `--ui-cursor` 可以把它钉到画布内的某一点——那是拍"悬停态"的唯一办法。
+        pinnedCursor = uiCapture.has_value()
+                           ? ui::UiPoint{uiCapture->cursorX, uiCapture->cursorY}
+                           : ui::UiPoint{kUiCaptureCursorX, kUiCaptureCursorY};
         // 3. 按下态。上一次输入留下的 pressedMenuButton 会让某个按钮画成按下的样子。
         pressedMenuButton = ui::WidgetId::None;
         // 4. 世界。前端页面本来就没有世界，但显式设而不是靠"碰巧"——天气、雨幕与
@@ -1606,7 +1611,8 @@ struct VulkanRenderer::Impl final : public gameplay::SimulationHost {
     void publishUiCaptureSnapshots(const UiCaptureTarget& target) {
         auto channel = net::makeLoopbackPair();
         net::sendMessage(*channel.server,
-                         gameplay::PublishedSnapshot{uiCaptureWorldSnapshot(target)});
+                         gameplay::PublishedSnapshot{
+                             uiCaptureWorldSnapshot(target, uiCapture->carryStack)});
         net::sendMessage(*channel.server,
                          gameplay::PublishedSnapshot{uiCapturePlayerSnapshot(target)});
         static_cast<void>(clientMirror_.pump(*channel.client, *this));
@@ -4945,57 +4951,14 @@ struct VulkanRenderer::Impl final : public gameplay::SimulationHost {
 
     // 从快照取某个槽位当前的物品堆
     // 拖拽预览与落位数量因此读的是 HUD 正在画的同一份已发布显示状态
+    //
+    // ★ A1：这里从前是一段 15 分支的 switch，与绘制侧那五段循环各答一遍"这个槽里
+    //   是什么"。现在两边共用 `gameplay::snapshotSlotStack` 那一个纯函数——
+    //   "拖拽预览显示的东西"与"槽位画出来的东西"因此不可能在某一格上不一致。
     [[nodiscard]] gameplay::ItemStack
     snapshotStackAt(gameplay::SlotKind kind, std::uint16_t index) const {
         // 世界快照是按值拷贝，因此这里按值返回物品堆，而不是返回指向那份拷贝的引用
-        const auto snap = clientMirror_.world();
-        switch (kind) {
-        case gameplay::SlotKind::PlayerInventory:
-            return snap.inventorySlots[index];
-        case gameplay::SlotKind::ChestStorage:
-            return snap.chestItems[index];
-        case gameplay::SlotKind::TableCraftingGrid:
-            return snap.tableCraftingGrid[index];
-        case gameplay::SlotKind::PlayerCraftingGrid:
-            return snap.playerCraftingGrid[index];
-        case gameplay::SlotKind::FurnaceInput:
-            return snap.furnaceInput;
-        case gameplay::SlotKind::FurnaceFuel:
-            return snap.furnaceFuel;
-        case gameplay::SlotKind::FurnaceOutput:
-            return snap.furnaceOutput;
-        case gameplay::SlotKind::EnchantingItem:
-            return snap.enchantingItem;
-        case gameplay::SlotKind::EnchantingLapis:
-            return snap.enchantingLapis;
-        case gameplay::SlotKind::AnvilLeft:
-            return snap.anvilLeft;
-        case gameplay::SlotKind::AnvilRight:
-            return snap.anvilRight;
-        case gameplay::SlotKind::AnvilOutput:
-            return snap.anvilResult;
-        case gameplay::SlotKind::Equipment:
-            // 存储侧每 tick 发布的四个护甲槽加副手，即 WorldSnapshot::equipmentSlots
-            // 该数组按 EquipmentSlot 的底层值索引
-            // 而这里的 `index` 是界面自己的绘制顺序，头、胸、腿、脚、副手对应枚举值 4、3、2、1、0
-            // 因此要经 equipmentSlotAt() 转换，而不是拿绘制序号直接索引按枚举排列的数组
-            // 点击路由 ScreenHandler::resolveSlotStorage 用的也是这个转换
-            return snap.equipmentSlots[static_cast<std::size_t>(
-                gameplay::equipmentSlotAt(index))];
-        case gameplay::SlotKind::PlayerCraftingOutput:
-        case gameplay::SlotKind::TableCraftingOutput:
-            // 输出槽不是拖拽目标，acceptsItems 为假，预览不会来问它
-            // 这里仍返回一个共享的空物品堆兜底
-            break;
-        case gameplay::SlotKind::CreativeCatalog:
-            // A0：目录格的内容来自 gameplay::creativeCatalog 那张只读清单，不在世界
-            // 快照里；而它也不是拖拽目标（拖拽目标只来自 buildSlotLayout）
-            break;
-        case gameplay::SlotKind::Count:
-            break;   // 哨兵，不是一种槽
-        }
-        static const gameplay::ItemStack kEmptyPreviewStack;
-        return kEmptyPreviewStack;
+        return gameplay::snapshotSlotStack(clientMirror_.world(), kind, index);
     }
 
     // 当前拖拽会往每个已收集槽位放多少，与 Inventory::dragDistribute 完全一致
@@ -9177,6 +9140,7 @@ struct VulkanRenderer::Impl final : public gameplay::SimulationHost {
             .drawHeldItem = [this](VkCommandBuffer c,
                                    VkDescriptorSet d) { world_.drawHeldItem(c, d); },
             .currentFrameDescriptorSet = [this] { return frames[currentFrame].descriptorSet; },
+            .screenContext = [this] { return screenContext(); },
             .activeCreativeCatalog = [this] { return activeCreativeCatalog(); },
             .creativeScrollPosition = [this] { return creativeScrollPosition(); },
             .creativeMaximumScrollRow = [this] { return creativeMaximumScrollRow(); },
