@@ -890,7 +890,8 @@ void PlayerInteraction::performUse(GameSession& session, world::World& world,
     // hand builds against the block, an untouched container opens.
     const auto decision = decideBlockInteraction(
         world::blockDefinition(interactedBlock).container, session.player().sneaking(),
-        !session.inventory().selectedStack().empty());
+        !session.inventory().selectedStack().empty(),
+        world::blockDefinition(interactedBlock).model == world::BlockModel::Bed);
     switch (decision.interaction) {
     case BlockInteraction::OpenCraftingTable:
         session.openContainer(ContainerScreen::CraftingTable);
@@ -917,6 +918,13 @@ void PlayerInteraction::performUse(GameSession& session, world::World& world,
         session.events().publish(ClientActionEvent{ClientActionEventKind::OpenContainer,
                                                    ContainerScreen::EnchantingTable, use.block,
                                                    true});
+        break;
+    case BlockInteraction::SleepInBed:
+        // SLP-2: BedBlock#useWithoutItem. The whole eight-step chain, the spawn
+        // point and the OCCUPIED write live in the session, which is what owns
+        // the clock, the entity list and the player.
+        session.trySleepInBed(world, {use.block.x, use.block.y, use.block.z});
+        session.playerActions().swingHand(InteractionHand::Main, SwingAnimation::Use, 6U);
         break;
     case BlockInteraction::OpenAnvil:
         session.openAnvilContainer(use.block);

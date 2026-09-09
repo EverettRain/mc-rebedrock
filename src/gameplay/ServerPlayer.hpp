@@ -85,6 +85,13 @@ struct ServerPlayer final {
     bool previousInWater = false;
 
     // The vanilla 32-tick meal (N1's ItemUseState mirrors it for the animation).
+    // SLP-2: Player#isSleeping / #sleepCounter. The bed cell is kept so waking
+    // can clear OCCUPIED on the right block, and the counter is what
+    // isSleepingLongEnough (100 ticks) reads.
+    bool sleeping = false;
+    glm::ivec3 sleepingIn{0};
+    int sleepTicks = 0;
+
     bool eating = false;
     const Item* eatingKind = nullptr;
     int eatTicks = 0;

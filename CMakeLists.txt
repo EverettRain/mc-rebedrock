@@ -2172,6 +2172,17 @@ if(BUILD_TESTING)
     )
     add_test(NAME bed COMMAND mc_rebedrock_bed_test)
 
+    # SLP-2/3/4: the sleep chain, the night skip and the bed spawn point.
+    add_executable(mc_rebedrock_sleep_test
+        tests/sleep_test.cpp
+    )
+    target_link_libraries(mc_rebedrock_sleep_test PRIVATE mc_rebedrock_runtime)
+    target_include_directories(mc_rebedrock_sleep_test PRIVATE
+        src
+        "${glm_SOURCE_DIR}"
+    )
+    add_test(NAME sleep COMMAND mc_rebedrock_sleep_test)
+
     add_executable(mc_rebedrock_face_occlusion_test
         tests/face_occlusion_test.cpp
     )
