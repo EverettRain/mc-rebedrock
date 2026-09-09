@@ -511,6 +511,44 @@ void testRecipeUnlockedTriggerAndTheCycleBreak() {
     assert(second.book.known().size() == 1U); // 只有一条，没有重复
 }
 
+// ★★ 回路断点的**分辨性**测试。
+//
+// 上一条测的是「跑得完、不重复发」，但那两点在断点被去掉之后**照样成立**
+// （onRecipeUnlocked 自己还有一层 completed 保护，递归也会终止）——夹具分不出
+// 两个实现。真正的差别在这里：
+//
+//   `ServerRecipeBook.addRecipes`（:61-80）把 `CriteriaTriggers.RECIPE_UNLOCKED`
+//   放在 `if (!this.known.contains(id) …)` **里面**。所以一条**早就认识**的配方
+//   被再发一次时，vanilla **不**触发 recipe_unlocked；把那一句挪到 if 外面，
+//   就会有一条本不该完成的 `has_the_recipe` 被完成。
+//
+// 夹具：先用别的路子（相当于 `/recipe give`）把 oak_planks 塞进配方书，此时它的
+// 解锁成就一点进度都没有；再让另一条（数据包的、tick 触发的）成就去奖励同一条
+// 配方。发不出去 -> 不该触发 -> `recipes/oak_planks` 的 has_the_recipe 不该完成。
+void testAlreadyKnownRecipeDoesNotRefireTheTrigger() {
+    MemoryProvider pack;
+    pack.add("advancement/test/gives_planks.json",
+             R"({"criteria":{"unlock_right_away":{"trigger":"minecraft:tick"}},
+                 "requirements":[["unlock_right_away"]],
+                 "rewards":{"recipes":["minecraft:oak_planks"]}})");
+    AdvancementTable table;
+    table.load(pack, recipeTable());
+    PlayerAdvancements progress;
+    RecipeBook book;
+
+    // `/recipe give` 那条小路：进配方书，但不留任何成就进度。
+    assert(book.addRecipe("rebedrock:oak_planks") == 1);
+    assert(!progress.completed("rebedrock:recipes/oak_planks", "has_the_recipe"));
+
+    // tick -> 那条数据包成就完成 -> 奖励 oak_planks -> 已经认识，一条也发不出去。
+    static_cast<void>(progress.onTick(table, book));
+    assert(progress.done(table, "rebedrock:test/gives_planks"));
+    assert(book.known().size() == 1U);
+    // ★ 这一条就是断点：发不出去就不触发，所以这个 criterion 必须还没完成。
+    assert(!progress.completed("rebedrock:recipes/oak_planks", "has_the_recipe"));
+    assert(!progress.done(table, "rebedrock:recipes/oak_planks"));
+}
+
 void testUnsupportedCriterionNeverCompletes() {
     // 认不出的触发器 / 认不出的条件键 -> 那条 criterion 永不满足。
     // 本作生成的 `recipes/root` 就是这样一条（对着 vanilla 的
@@ -721,11 +759,14 @@ int main() {
     testMissingRequirementsMeansAllOf();
     testGeneratedFloorMatchesVanillaShape();
     testUnlockMaterialsMatchVanilla();
-    testInventoryChangedUnlocksItsRecipe();
+    // ★ 「单谓词只测这次变的那一堆」这条先跑：它是分得出 vanilla 那个分支的那
+    // 一条，让它先说话，别被后面更粗的断言抢先。
     testInventoryChangedTestsOnlyTheChangedStackWhenSinglePredicate();
+    testInventoryChangedUnlocksItsRecipe();
     testTickTriggerFiresUnconditionally();
     testInventoryChangedScansInventoryWhenSeveralPredicates();
     testRecipeUnlockedTriggerAndTheCycleBreak();
+    testAlreadyKnownRecipeDoesNotRefireTheTrigger();
     testUnsupportedCriterionNeverCompletes();
     testTickDrivesInventoryChangedFromSlotDiff();
     testDataPackOverlayLoadsVanillaFiles();
