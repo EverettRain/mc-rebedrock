@@ -1275,21 +1275,111 @@ AnvilMenu& GameSession::anvilMenu() { return primaryPlayer().anvil; }
 
 const AnvilMenu& GameSession::anvilMenu() const { return primaryPlayer().anvil; }
 
+// EXP-1: one blast, start to finish.
+//
+// The order is vanilla's: find the blocks first (so the ray cast sees the world
+// as it was), hurt the entities, then break the blocks. Doing the breaking first
+// would let a blast tunnel through its own hole and reach further than it should.
+std::size_t GameSession::explode(world::World& world, SimulationHost& host,
+                                 const ExplosionSpec& spec) {
+    const auto broken = explodedPositions(world, spec, lootRandomState_);
+
+    // --- entities and the player, before anything is removed --------------
+    const float doubleRadius = spec.radius * 2.0F;
+    if (doubleRadius > 0.0F) {
+        // The player. Exposure is sampled against the real collision world, so
+        // a wall between the player and the blast genuinely shelters them.
+        const glm::vec3 feet = primaryPlayer().controller.position();
+        const glm::vec3 boxMin{feet.x - 0.3F, feet.y, feet.z - 0.3F};
+        const glm::vec3 boxMax{feet.x + 0.3F, feet.y + 1.8F, feet.z + 0.3F};
+        const glm::vec3 eye{feet.x, feet.y + primaryPlayer().controller.eyeHeight(), feet.z};
+        const glm::vec3 delta = eye - spec.center;
+        const float distance = std::sqrt(glm::dot(delta, delta));
+        if (distance <= doubleRadius && primaryPlayer().vitals.health() > 0.0F) {
+            const float exposure = seenPercent(world, spec.center, boxMin, boxMax);
+            if (exposure > 0.0F) {
+                // Through hurtPlayer, not vitals directly: that is the path
+                // that applies worn armor AND the enchantment protection factor,
+                // which is what finally lets Blast Protection do something.
+                static_cast<void>(hurtPlayer(kPrimaryPlayerId, DamageType::Explosion,
+                                             explosionDamage(spec.radius, distance, exposure),
+                                             host, /*causedByLivingNonPlayer=*/false));
+                const float push = explosionKnockback(spec.radius, distance, exposure);
+                if (push > 0.0F && distance > 1.0e-4F) {
+                    primaryPlayer().controller.applyExternalPush(delta / distance * push);
+                }
+            }
+        }
+        // Creatures. EntitySystem::hurt already does the knockback from an
+        // origin point, so the blast centre is handed to it directly.
+        for (const auto& entity : primaryLevel().entities.entities()) {
+            const glm::vec3 entityDelta = entity.position - spec.center;
+            const float entityDistance = std::sqrt(glm::dot(entityDelta, entityDelta));
+            if (entityDistance > doubleRadius) {
+                continue;
+            }
+            const float width = entity.type != nullptr ? entity.type->dimensions().width : 0.6F;
+            const float height = entity.type != nullptr ? entity.type->dimensions().height : 1.8F;
+            const glm::vec3 boxMinEntity{entity.position.x - width * 0.5F, entity.position.y,
+                                         entity.position.z - width * 0.5F};
+            const glm::vec3 boxMaxEntity{entity.position.x + width * 0.5F,
+                                         entity.position.y + height,
+                                         entity.position.z + width * 0.5F};
+            const float exposure = seenPercent(world, spec.center, boxMinEntity, boxMaxEntity);
+            if (exposure <= 0.0F) {
+                continue;
+            }
+            static_cast<void>(primaryLevel().entities.hurt(
+                entity.id, explosionDamage(spec.radius, entityDistance, exposure), spec.center,
+                ActorReference{}, DamageType::Explosion));
+        }
+    }
+
+    // --- the blocks -------------------------------------------------------
+    GameplayMutationSink sink{world, *this};
+    for (const auto& cell : broken) {
+        const auto previous = world.state(cell.x, cell.y, cell.z);
+        if (previous.block() == world::Block::Air) {
+            continue;
+        }
+        const auto result = worldMutations().setBlock(world, cell, world::BlockState{},
+                                                      world::MutationFlags::All,
+                                                      world::MutationCause::Explosion, sink);
+        if (!result.changed) {
+            continue;
+        }
+        // Vanilla's explosion_decay loot function: each stack survives with
+        // probability 1/radius, which is why a big blast leaves less behind.
+        if (!world::blockDefinition(previous.block()).dropsItem) {
+            continue;
+        }
+        const float roll = mc::rng::nextFloat(lootRandomState_);
+        if (roll * spec.radius > 1.0F) {
+            continue;
+        }
+        spawnBlockDrops({cell.x, cell.y, cell.z}, previous, ItemStack{});
+    }
+
+    events().publish(SoundEvent{SoundEventKind::Explode, spec.center, world::Block::Air});
+    return broken.size();
+}
+
 // SLP-2/3/4: the bed right-click, end to end.
 //
 // The decision itself is Sleep.hpp's pure chain; what lives here is everything
 // that needs the session — the dimension's BedRule, how dark it is outside, the
 // creatures near the bed, the OCCUPIED write on both halves, the spawn point and
 // the player's own sleeping flag.
-BedSleepProblem GameSession::trySleepInBed(world::World& world, glm::ivec3 bed) {
+BedSleepProblem GameSession::trySleepInBed(world::World& world, SimulationHost& host,
+                                           glm::ivec3 bed) {
     const auto bedState = world.state(bed.x, bed.y, bed.z);
     if (world::blockDefinition(bedState.block()).model != world::BlockModel::Bed) {
         return BedSleepProblem::OtherProblem;
     }
     const world::BlockPos bedPos{bed.x, bed.y, bed.z};
     const auto head = bedHeadCell(bedPos, bedState);
-    const auto backward =
-        world::orientationOffset(world::oppositeOrientation(bedState.orientation()));
+    const auto facing = bedState.orientation();
+    const auto backward = world::orientationOffset(world::oppositeOrientation(facing));
     const world::BlockPos foot{head.x + backward.x, head.y + backward.y, head.z + backward.z};
 
     SleepConditions conditions;
@@ -1322,6 +1412,27 @@ BedSleepProblem GameSession::trySleepInBed(world::World& world, glm::ivec3 bed) 
     }
 
     const auto decision = evaluateSleep(world, bedPos, bedState, conditions);
+
+    // EXP-2: a bed where the dimension says it explodes does exactly that —
+    // vanilla removes the block first and then blasts from the cell beyond the
+    // head, radius 5. The refusal used to be a registered deviation ("cannot
+    // rest here"); now the nether answers the way it should.
+    if (conditions.rule == world::attribute::BedRule::Explodes &&
+        decision.problem == BedSleepProblem::NotPossibleHere) {
+        GameplayMutationSink sink{world, *this};
+        worldMutations().setBlock(world, head, world::BlockState{}, world::MutationFlags::All,
+                                  world::MutationCause::Explosion, sink);
+        worldMutations().setBlock(world, foot, world::BlockState{}, world::MutationFlags::All,
+                                  world::MutationCause::Explosion, sink);
+        // `pos.relative(FACING.getOpposite())` from the head — the cell on the
+        // far side of the bed from where the player is standing.
+        const auto away = world::orientationOffset(world::oppositeOrientation(facing));
+        const glm::vec3 centre{static_cast<float>(head.x + away.x) + 0.5F,
+                               static_cast<float>(head.y + away.y) + 0.5F,
+                               static_cast<float>(head.z + away.z) + 0.5F};
+        static_cast<void>(explode(world, host, ExplosionSpec{centre, 5.0F, true}));
+        return BedSleepProblem::NotPossibleHere;
+    }
     // The spawn point moves even when the sleep is refused — vanilla sets it
     // before the can-sleep gate, which is why a daytime click still re-homes you.
     if (decision.setsSpawn) {

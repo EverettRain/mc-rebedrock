@@ -669,7 +669,7 @@ void PlayerInteraction::tick(GameSession& session, world::World& world, Simulati
     const bool heldEntity = latestUse_.has_value() && latestUse_->entity;
     if (using_ && latestUse_.has_value() && !heldEntity && session.serverTick() >= nextUseTick_ &&
         !session.eating() && !drawingBow) {
-        performUse(session, world, *latestUse_);
+        performUse(session, world, host, *latestUse_);
         nextUseTick_ = session.serverTick() + 4U;
     }
 }
@@ -853,7 +853,7 @@ void PlayerInteraction::applyBreak(GameSession& session, world::World& world,
 }
 
 void PlayerInteraction::performUse(GameSession& session, world::World& world,
-                                   const UseItemOn& use) {
+                                   SimulationHost& host, const UseItemOn& use) {
     if (session.eating()) {
         return;
     }
@@ -923,7 +923,7 @@ void PlayerInteraction::performUse(GameSession& session, world::World& world,
         // SLP-2: BedBlock#useWithoutItem. The whole eight-step chain, the spawn
         // point and the OCCUPIED write live in the session, which is what owns
         // the clock, the entity list and the player.
-        session.trySleepInBed(world, {use.block.x, use.block.y, use.block.z});
+        session.trySleepInBed(world, host, {use.block.x, use.block.y, use.block.z});
         session.playerActions().swingHand(InteractionHand::Main, SwingAnimation::Use, 6U);
         break;
     case BlockInteraction::OpenAnvil:

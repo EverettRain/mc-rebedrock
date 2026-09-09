@@ -22,6 +22,7 @@
 #include "gameplay/PlayerTickSnapshot.hpp"
 #include "gameplay/PlayerVitals.hpp"
 #include "gameplay/ServerPlayer.hpp"
+#include "gameplay/Explosion.hpp"
 #include "gameplay/Sleep.hpp"
 #include "gameplay/ScreenHandler.hpp"
 #include "gameplay/SimulationHostBridge.hpp"
@@ -81,6 +82,8 @@ struct SimulationHost {
     virtual void playPlayerHurt(glm::vec3 position) = 0;
     virtual void playPlayerFall(glm::vec3 position, bool heavy) = 0;
     virtual void playBurp(glm::vec3 position) = 0;
+    // EXP-1: entity.generic.explode.
+    virtual void playExplode(glm::vec3 position) = 0;
     // A creature sound event. `type` is the species that owns the clip, so the
     // host plays the right hurt/death/ambient/step sound per species.
     virtual void playCreatureHurt(const entities::EntityType& type, glm::vec3 position) = 0;
@@ -245,7 +248,15 @@ class GameSession final {
     // problem — None means the player is now in bed — so the caller can say why
     // it refused. The night skip itself happens in tick(), once the player has
     // been asleep long enough.
-    BedSleepProblem trySleepInBed(world::World& world, glm::ivec3 bed);
+    // EXP-1: set off a blast. Runs the ray cast (Explosion.hpp), breaks what
+    // gives way, rolls each broken block's loot at 1/radius, then hurts and
+    // shoves everything the blast can see. Returns how many blocks it broke.
+    std::size_t explode(world::World& world, SimulationHost& host,
+                        const ExplosionSpec& spec);
+
+    // `host` is needed because a bed in a dimension whose BedRule explodes does
+    // exactly that, and an explosion hurts the player through hurtPlayer.
+    BedSleepProblem trySleepInBed(world::World& world, SimulationHost& host, glm::ivec3 bed);
     // Player#stopSleeping: clears the OCCUPIED bits and stands the player up.
     // `skipNight` is what the tick passes when the sleep completed.
     void wakeUp(world::World& world, bool skipNight);

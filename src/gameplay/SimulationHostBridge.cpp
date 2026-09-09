@@ -91,6 +91,9 @@ void applyTo(SimulationHost& target, const SoundEvent& event) {
     case SoundEventKind::BlockClick:
         target.playBlockClick(event.block, event.position, event.heavy);
         break;
+    case SoundEventKind::Explode:
+        target.playExplode(event.position);
+        break;
     case SoundEventKind::FlintAndSteelUse:
         target.playFlintAndSteelUse(event.position);
         break;

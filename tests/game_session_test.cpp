@@ -67,6 +67,7 @@ struct TestHost final : mc::gameplay::SimulationHost {
     void playPlayerHurt(glm::vec3) override { ++playerHurts; }
     void playPlayerFall(glm::vec3, bool) override {}
     void playBurp(glm::vec3) override {}
+    void playExplode(glm::vec3) override {}
     void playCreatureHurt(const mc::gameplay::entities::EntityType&, glm::vec3) override {}
     void playCreatureDeath(const mc::gameplay::entities::EntityType&, glm::vec3) override {}
     void playCreatureAmbient(const mc::gameplay::entities::EntityType&, glm::vec3) override {}

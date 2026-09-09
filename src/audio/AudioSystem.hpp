@@ -130,6 +130,8 @@ class AudioSystem final {
     void playBlockClick(world::Block block, const glm::vec3& position, bool on);
     // Tool-use sounds: flint and steel igniting, shears shearing a sheep.
     void playFlintAndSteelUse(const glm::vec3& position);
+    // EXP-1: SoundEvents.GENERIC_EXPLODE on BLOCKS.
+    void playExplode(const glm::vec3& position);
     void playShear(const glm::vec3& position);
     // `ui.button.click`, the sound every vanilla button plays when pressed.
     // Positioned at the listener so attenuation cannot hide it.
