@@ -601,6 +601,55 @@ int main() {
                "water under water is full height, and that face is culled as before");
     }
 
+    // RN-48 的一个现场追问（用户）：一格水四面被耕地（15/16 高，缝里看得见）围住，
+    // 头顶再盖一整块方块——这格水怎么渲染？
+    //
+    // 两件事要分清：顶面在不在（RN-48），以及**液面塌不塌**。后者是
+    // vanilla `FluidRenderer.getHeight` 的平均规则：水邻居按高度加权（>= 0.8 权重 10），
+    // **非固体**的邻居（空气）按零高度、权重 1 计入，而**固体**邻居整个跳过。
+    const auto cappedWaterSurface = [](bool diagonalsAreFarmland) {
+        mc::world::World tilledWorld;
+        mc::world::Chunk tilled;
+        tilled.setBlock(6, mc::world::kMinY + 0, 6, mc::world::Block::Water);
+        for (int dz = -1; dz <= 1; ++dz) {
+            for (int dx = -1; dx <= 1; ++dx) {
+                if (dx == 0 && dz == 0) continue;
+                const bool diagonal = dx != 0 && dz != 0;
+                if (diagonal && !diagonalsAreFarmland) continue;
+                tilled.setBlock(6 + dx, mc::world::kMinY + 0, 6 + dz,
+                                mc::world::Block::Farmland);
+            }
+        }
+        tilled.setBlock(6, mc::world::kMinY + 1, 6, mc::world::Block::Stone);
+        tilledWorld.setChunk({0, 0}, std::move(tilled));
+        const auto tilledMesh = mc::world::ChunkMesher::buildSection(tilledWorld, {0, 0}, 0);
+        int topFaces = 0;
+        float surfaceY = -1.0F;
+        for (const auto& vertex : tilledMesh.translucentMesh.vertices) {
+            if (mc::render::decodeNormal(vertex) != glm::vec3(0.0F, 1.0F, 0.0F)) {
+                continue;
+            }
+            ++topFaces;
+            surfaceY = worldPos(vertex).y;
+        }
+        return std::pair{topFaces, surfaceY};
+    };
+    {
+        // ① 顶面必须在：石头封顶挡不住比它低 1/9 格的液面（RN-48）
+        const auto [walled, walledY] = cappedWaterSurface(true);
+        assert(walled == 8 && "the capped water must still draw its surface");
+        // ② 八面都是耕地（固体）时液面**不塌**：四个角都只有这一格水在算
+        assert(std::fabs(walledY - 8.0F / 9.0F) < 0.01F &&
+               "solid neighbours must be skipped, not counted as zero-height: farmland is solid");
+        // ③ 对角留空气时**该塌**——空气是零高度样本，vanilla 也塌。
+        //    一格水（权重 10）配一个空气角（权重 1）⇒ (8/9 x 10) / 11 = 0.808
+        const auto [open, openY] = cappedWaterSurface(false);
+        assert(open == 8);
+        assert(std::fabs(openY - 8.0F / 9.0F * 10.0F / 11.0F) < 0.01F &&
+               "an air diagonal is a zero-height sample; the corner must dip exactly that much");
+        assert(openY < walledY && "and the two cases must not be the same number");
+    }
+
     // ★ 反面：实心方块的顶面**不能**是薄片。给方块顶面加那一格偏置会吃掉一格以内的
     // 全部接触阴影——一个方块压在另一个方块上，上面那个不再投影
     {
