@@ -1,6 +1,7 @@
 #include "gameplay/LootTable.hpp"
 
 #include "core/Json.hpp"
+#include "data/DataPackPaths.hpp"
 #include "data/LootFile.hpp"
 #include "gameplay/Item.hpp"
 #include "gameplay/ItemRegistry.hpp"
@@ -53,7 +54,7 @@ namespace {
     return true;
 }
 
-// `loot_tables/blocks/oak_planks.json` -> `oak_planks`, the block name half.
+// `loot_table/blocks/oak_planks.json` -> `oak_planks`, the block name half.
 [[nodiscard]] std::string_view blockNameFromPath(std::string_view path, std::string_view prefix) {
     if (path.size() >= prefix.size() && path.substr(0, prefix.size()) == prefix) {
         path.remove_prefix(prefix.size());
@@ -100,14 +101,15 @@ void LootTable::applyOverlay(const assets::ResourceProvider& resources) {
     // Loot tables live under a pack's `data/` half, never `assets/` — same
     // list()-root fix as RecipeTable::applyOverlay (see its comment).
     for (const auto& location :
-        resources.list("minecraft", "loot_tables/blocks", assets::PackType::ServerData)) {
+        resources.list("minecraft", data::pack::kBlockLootDir, assets::PackType::ServerData)) {
         const auto bytes = resources.readBytes(location);
         if (bytes.empty()) {
             continue;
         }
         // The block a file drops for comes from its path, the way vanilla names a
-        // block's loot table `loot_tables/blocks/<block>.json`.
-        const std::string_view name = blockNameFromPath(location.path, "loot_tables/blocks");
+        // block's loot table `loot_table/blocks/<block>.json` (singular `loot_table`:
+        // this call site read "loot_tables/blocks" until ADV-0 and matched nothing).
+        const std::string_view name = blockNameFromPath(location.path, data::pack::kBlockLootDir);
         const std::string identifier = location.space + ":" + std::string{name};
         const auto block = world::blockFromIdentifier(identifier);
         if (!block.has_value()) {

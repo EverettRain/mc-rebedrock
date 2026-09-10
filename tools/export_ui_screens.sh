@@ -47,6 +47,10 @@ SCALE=""
 SIZE=""
 OUT=""
 PACKS=()
+# UI-12：四根正交轴（光标 / 手持 / 标签页 / 焦点）此前只能直接调二进制才用得上，
+# 脚本一个都不转发——于是"拍一张悬停态/焦点态"要绕过这条唯一的出图入口。
+# 原样透传，语义与取值范围归 src/render/UiCapture.cpp 的解析。
+AXES=()
 
 while [[ $# -gt 0 ]]; do
     case "$1" in
@@ -55,6 +59,10 @@ while [[ $# -gt 0 ]]; do
         --size)   SIZE="$2"; shift 2 ;;
         --out)    OUT="$2"; shift 2 ;;
         --pack)   PACKS+=(--pack "$2"); shift 2 ;;
+        --ui-cursor|--ui-tab|--ui-focus)
+                  AXES+=("$1" "$2"); shift 2 ;;
+        --ui-carry)
+                  AXES+=("$1"); shift ;;
         -*)       echo "未知参数：$1" >&2; exit 2 ;;
         *)        if [[ -n "$PAGES" ]]; then echo "只能给一份页名列表" >&2; exit 2; fi
                   PAGES="$1"; shift ;;
@@ -63,13 +71,15 @@ done
 
 if [[ -z "$PAGES" ]]; then
     echo "用法：$0 [--verify] <页名>[,<页名>...] [--scale 2,3] [--size 1280x720] [--out 目录]" >&2
+    echo "      [--ui-cursor x,y] [--ui-carry] [--ui-tab n] [--ui-focus n]  # 四根正交轴" >&2
     echo "  前端页：title / world-list / create-world / edit-world / confirm-delete /" >&2
     echo "          options / video-settings / controls / language / advanced-graphics /" >&2
     echo "          key-binds / accessibility / sound-settings / resource-packs /" >&2
     echo "          game / pause / death / loading" >&2
     echo "  容器屏：inventory / inventory-creative / creative-catalog / chest /" >&2
     echo "          crafting-table / furnace / enchanting-table / anvil" >&2
-    echo "  （这份清单的单一来源是 src/render/UiCapture.cpp 的 kTargetNames）" >&2
+    echo "  （这份清单的单一来源是 src/render/UiCapture.cpp 的 kTargetNames；" >&2
+    echo "    `mc_rebedrock --ui-list` 会把它原样打印出来，别再手抄）" >&2
     exit 2
 fi
 
@@ -108,6 +118,7 @@ run_capture() {  # $1 = 输出根目录
     local args=(--ui-shot "$PAGES" --ui-out "$1")
     if [[ -n "$SCALE" ]]; then args+=(--ui-scale "$SCALE"); fi
     if [[ -n "$SIZE"  ]]; then args+=(--ui-size  "$SIZE");  fi
+    if [[ "${#AXES[@]}" -gt 0 ]]; then args+=("${AXES[@]}"); fi
     # `${PACKS[@]+"${PACKS[@]}"}` 而不是 `"${PACKS[@]}"`：macOS 自带 bash 3.2，
     # 在 `set -u` 下展开一个空数组会报 unbound variable
     "$BINARY" "${args[@]}" ${PACKS[@]+"${PACKS[@]}"}

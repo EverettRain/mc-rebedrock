@@ -142,6 +142,8 @@ struct BlockBehaviorPrefilter final {
                       definition.model == world::BlockModel::Wall ||
                       definition.model == world::BlockModel::CrossCollision ||
                       definition.model == world::BlockModel::Bed ||
+                      // EXP-2: TNT reacts to a redstone signal by priming.
+                      block == world::Block::Tnt ||
                       definition.model == world::BlockModel::FenceGate ||
                       definition.states.has(world::StateProperty::Locked));
     prefilter.set(BlockBehaviorBit::HasRandomTick, WorldSimulation::isRandomlyTicking(block));

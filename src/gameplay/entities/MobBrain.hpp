@@ -325,8 +325,32 @@ class MobBrain final {
     // into EntityTickResult, and GameSession performs the actual setBlock
     // (mirroring how block-drop events already cross from EntitySystem to
     // GameSession's mutation sink).
+    // EXP-3: SwellGoal's output. Unlike the other requests this is a *level*
+    // rather than an event — the goal says "swelling" or "not" every tick and
+    // EntitySystem integrates it into the fuse — so it is read, not taken.
+    void setSwelling(bool swelling) { swelling_ = swelling; }
+    [[nodiscard]] bool swelling() const { return swelling_; }
+
     void requestEatGrass(glm::ivec3 grassBlock);
     [[nodiscard]] std::optional<glm::ivec3> takeEatGrassRequest();
+
+    // AR-M5: the villager's work goal emits the cell it wants acted on, for the
+    // same reason EatGrassGoal does — the AI pass holds a `const World&`, and a
+    // block edit has to go through WorldMutationService so neighbour and light
+    // updates fire. GameSession drains it and performs the write.
+    struct VillagerWorkRequest final {
+        enum class Kind : std::uint8_t {
+            // A mature crop the villager is standing next to: it is harvested
+            // and immediately replanted, which is what HarvestFarmland does.
+            Harvest,
+            // The villager's own job site: what it is carrying goes in.
+            Compost,
+        };
+        glm::ivec3 cell{0};
+        Kind kind = Kind::Harvest;
+    };
+    void requestVillagerWork(glm::ivec3 cell, VillagerWorkRequest::Kind kind);
+    [[nodiscard]] std::optional<VillagerWorkRequest> takeVillagerWorkRequest();
 
     void tick(SimpleEntity& self, MobAiContext& context);
     void stop(SimpleEntity& self, MobAiContext& context);
@@ -339,6 +363,8 @@ class MobBrain final {
     std::optional<AttackRequest> attackRequest_;
     std::optional<std::uint64_t> breedRequest_;
     std::optional<glm::ivec3> eatGrassRequest_;
+    std::optional<VillagerWorkRequest> villagerWorkRequest_;
+    bool swelling_ = false;
 };
 
 // ActiveTargetGoal<PlayerEntity>: acquires a living non-creative player inside
@@ -388,6 +414,76 @@ class MeleeAttackGoal final : public MobGoal {
     int attackCooldownTicks_ = 0;
     int repathCooldownTicks_ = 0;
     glm::vec3 lastTargetPosition_{0.0F};
+};
+
+// EXP-3: vanilla's SwellGoal. The one goal in this roster whose output is not a
+// movement but a *state*: it says, every tick, whether the creature should be
+// swelling toward its detonation, and EntitySystem integrates that into the
+// fuse. Vanilla's own logic, in its own words:
+//
+//     canUse()  : swellDir > 0 || (target != null && distanceSqr(target) < 9)
+//     tick()    : no target, or further than 49, or no line of sight -> -1
+//                 otherwise -> +1, and hold still while swelling
+//
+// The 3-block start radius and the 7-block give-up radius are why a creeper you
+// back away from stops hissing and follows you again.
+// AR-M5: the farmer villager's whole working day, as one goal.
+//
+// 26.1 splits this across an Activity and half a dozen behaviours — AcquirePoi
+// claims the job site, WorkAtComposter empties the inventory into it,
+// HarvestFarmland reaps and replants — coordinated through shared memories. This
+// build has a GoalSelector, so the three are one goal that decides what to do
+// from the villager's own fields rather than from a memory map. That is a
+// registered simplification, not a claim of parity: the memory layer is a
+// separate task (see the AR-M evaluation).
+//
+// The order is vanilla's own priority: with nothing carried, go reap; with
+// something carried, go compost it. Claiming a job site comes first because
+// nothing else can happen without one.
+class VillagerWorkGoal final : public MobGoal {
+  public:
+    [[nodiscard]] std::string_view name() const override { return "villager_work"; }
+    [[nodiscard]] GoalControls controls() const override {
+        return entities::controls(GoalControl::Move, GoalControl::Look);
+    }
+    [[nodiscard]] bool canStart(SimpleEntity& self, MobAiContext& context,
+                                MobBrain& brain) override;
+    [[nodiscard]] bool shouldContinue(SimpleEntity& self, MobAiContext& context,
+                                      MobBrain& brain) override;
+    void tick(SimpleEntity& self, MobAiContext& context, MobBrain& brain) override;
+
+  private:
+    // AcquirePoi's search is a 48-block sphere over the POI index. There is no
+    // POI index here, so this scans the world directly and the radius is the
+    // cost: 8 blocks is what a villager placed beside its composter needs, and
+    // it keeps the scan to a few thousand cells on the throttled tick rather
+    // than a few hundred thousand every tick. Registered as a deviation.
+    static constexpr int kJobSiteSearchRadius = 8;
+    static constexpr int kCropSearchRadius = 8;
+    // How close the villager must be before it can act on a cell. Vanilla's
+    // behaviours use a 1-block reach from the villager's own position; this is
+    // squared, and generous enough that a villager standing beside a composter
+    // is never stuck one pixel short.
+    static constexpr float kWorkReachSquared = 4.0F;
+    // The scan is the expensive part, so it runs on a cadence rather than every
+    // tick. Vanilla throttles AcquirePoi the same way (its own cooldown).
+    static constexpr int kScanIntervalTicks = 20;
+    int scanCooldown_ = 0;
+};
+
+class SwellGoal final : public MobGoal {
+  public:
+    [[nodiscard]] std::string_view name() const override { return "swell"; }
+    [[nodiscard]] GoalControls controls() const override {
+        return entities::controls(GoalControl::Move, GoalControl::Look);
+    }
+    [[nodiscard]] bool canStart(SimpleEntity& self, MobAiContext& context,
+                                MobBrain& brain) override;
+    [[nodiscard]] bool shouldContinue(SimpleEntity& self, MobAiContext& context,
+                                      MobBrain& brain) override;
+    void start(SimpleEntity& self, MobAiContext& context, MobBrain& brain) override;
+    void stop(SimpleEntity& self, MobAiContext& context, MobBrain& brain) override;
+    void tick(SimpleEntity& self, MobAiContext& context, MobBrain& brain) override;
 };
 
 class SwimGoal final : public MobGoal {

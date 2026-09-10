@@ -298,7 +298,13 @@ set(MC_REBEDROCK_RUNTIME_SOURCES
     src/gameplay/CustomNames.cpp
     src/gameplay/CraftingSystem.cpp
     src/gameplay/RecipeTable.cpp
+    src/gameplay/AdvancementTable.cpp
+    src/gameplay/PlayerAdvancements.cpp
+    src/gameplay/RecipeBook.cpp
+    src/gameplay/RecipeBookCategory.cpp
+    src/gameplay/StackedItemContents.cpp
     src/gameplay/EntitySystem.cpp
+    src/gameplay/Explosion.cpp
     src/gameplay/EntityRenderSnapshot.cpp
     src/gameplay/GameRules.cpp
     src/gameplay/GameSession.cpp
@@ -390,6 +396,9 @@ set(MC_REBEDROCK_RUNTIME_SOURCES
     # about Vulkan, so it belongs here where its test links the library instead of
     # re-listing sources -- the same trade ParticleSystem took just above.
     src/render/EntityShadowDecal.cpp
+    # 世界图标那段「帧缓冲 -> 64x64」的纯算术。同样不碰 Vulkan、不碰文件系统，
+    # 放进运行时库，它的测试就能链库而不是再列一遍源文件。
+    src/render/WorldIcon.cpp
     # RN-20a: the baked frame graph. It is the orchestration layer — it knows Vulkan
     # handles and descriptions, nothing about WorldRenderer or VulkanRenderer::Impl —
     # so it belongs in the runtime library where its test can link the library instead
@@ -1830,6 +1839,39 @@ if(BUILD_TESTING)
     add_test(NAME container_interaction COMMAND mc_rebedrock_container_interaction_test)
 
     # UI-9：标签页导航栏（spec §5 的 L5）的几何。纯 constexpr，无依赖。
+    # UI-11 / A5：全屏提示屏与复选框的几何（26.1 WarningScreen / SafetyScreen /
+    # Checkbox）。装配 + 布局两趟都要，所以链 MenuGeometry。
+    add_executable(mc_rebedrock_notice_screen_test
+        tests/notice_screen_test.cpp
+        src/ui/MenuGeometry.cpp
+        src/ui/TitleScreenLayout.cpp
+        src/ui/HudLayout.cpp
+        src/ui/PageStack.cpp
+    )
+    target_include_directories(mc_rebedrock_notice_screen_test PRIVATE src)
+    target_link_libraries(mc_rebedrock_notice_screen_test PRIVATE glm::glm)
+    # 「提示屏的标题由页面自己的 Label 画、绘制侧不再另画一行」住在渲染器的翻译单元里，
+    # 没有测试链接得到它；而截图夹具也分辨不出（多出来的那行落在画布外被裁掉）。
+    target_compile_definitions(mc_rebedrock_notice_screen_test PRIVATE
+        MC_REBEDROCK_HUD_RENDERER_SRC="${CMAKE_CURRENT_SOURCE_DIR}/src/render/vulkan/HudRenderer.hpp")
+    add_test(NAME notice_screen COMMAND mc_rebedrock_notice_screen_test)
+
+    # UI-11 / A6：世界列表一行的几何与内容（26.1 WorldSelectionList.WorldListEntry）。
+    add_executable(mc_rebedrock_world_list_row_test
+        tests/world_list_row_test.cpp
+        src/ui/MenuGeometry.cpp
+        src/ui/TitleScreenLayout.cpp
+        src/ui/HudLayout.cpp
+        src/ui/PageStack.cpp
+    )
+    target_include_directories(mc_rebedrock_world_list_row_test PRIVATE src)
+    target_link_libraries(mc_rebedrock_world_list_row_test PRIVATE glm::glm)
+    # 存档缩略图的**时机**（照 26.1 在游戏内抓、暂停时不抓、已有就不覆盖）住在渲染器的
+    # 翻译单元里，没有测试链接得到它——只能读源码守。
+    target_compile_definitions(mc_rebedrock_world_list_row_test PRIVATE
+        MC_REBEDROCK_RENDERER_SRC="${CMAKE_CURRENT_SOURCE_DIR}/src/render/vulkan/VulkanRenderer.cpp")
+    add_test(NAME world_list_row COMMAND mc_rebedrock_world_list_row_test)
+
     add_executable(mc_rebedrock_tab_bar_test tests/tab_bar_test.cpp)
     target_include_directories(mc_rebedrock_tab_bar_test PRIVATE src)
     target_link_libraries(mc_rebedrock_tab_bar_test PRIVATE glm::glm)
@@ -1871,6 +1913,8 @@ if(BUILD_TESTING)
         tests/ui_capture_test.cpp
         src/render/UiCapture.cpp
         src/render/UiCaptureFixture.cpp
+        # UI-11 / A6：世界列表夹具那张缩略图过一遍生产的缩放函数。
+        src/render/WorldIcon.cpp
         src/ui/PageStack.cpp
         src/ui/MenuGeometry.cpp
         src/ui/TitleScreenLayout.cpp
@@ -2182,6 +2226,64 @@ if(BUILD_TESTING)
         "${glm_SOURCE_DIR}"
     )
     add_test(NAME sleep COMMAND mc_rebedrock_sleep_test)
+
+    # EXP-1/EXP-2: the explosion ray cast, its occlusion, the damage curve and
+    # the nether bed.
+    add_executable(mc_rebedrock_explosion_test
+        tests/explosion_test.cpp
+    )
+    target_link_libraries(mc_rebedrock_explosion_test PRIVATE mc_rebedrock_runtime)
+    target_include_directories(mc_rebedrock_explosion_test PRIVATE
+        src
+        "${glm_SOURCE_DIR}"
+    )
+    add_test(NAME explosion COMMAND mc_rebedrock_explosion_test)
+
+    # EXP-3: the creeper — the integrated fuse, the feet-height blast centre,
+    # the discard-not-death removal, and the mob_griefing gate.
+    add_executable(mc_rebedrock_creeper_test
+        tests/creeper_test.cpp
+    )
+    target_link_libraries(mc_rebedrock_creeper_test PRIVATE mc_rebedrock_runtime)
+    target_include_directories(mc_rebedrock_creeper_test PRIVATE
+        src
+        "${glm_SOURCE_DIR}"
+    )
+    add_test(NAME creeper COMMAND mc_rebedrock_creeper_test)
+
+    # AR-M4: the composter — the bowl that rises with the fill, vanilla's
+    # first-item-is-free rule, the twenty-tick ripen and the bone meal.
+    add_executable(mc_rebedrock_composter_test
+        tests/composter_test.cpp
+    )
+    target_link_libraries(mc_rebedrock_composter_test PRIVATE mc_rebedrock_runtime)
+    target_include_directories(mc_rebedrock_composter_test PRIVATE
+        src
+        "${glm_SOURCE_DIR}"
+    )
+    add_test(NAME composter COMMAND mc_rebedrock_composter_test)
+
+    # AR-M5: the villager — job-site claim, farming, composting and trading.
+    add_executable(mc_rebedrock_villager_test
+        tests/villager_test.cpp
+    )
+    target_link_libraries(mc_rebedrock_villager_test PRIVATE mc_rebedrock_runtime)
+    target_include_directories(mc_rebedrock_villager_test PRIVATE
+        src
+        "${glm_SOURCE_DIR}"
+    )
+    add_test(NAME villager COMMAND mc_rebedrock_villager_test)
+
+    # AR-M6: the trade screen's backend contract — the interface a UI plugs into.
+    add_executable(mc_rebedrock_trading_backend_test
+        tests/trading_backend_test.cpp
+    )
+    target_link_libraries(mc_rebedrock_trading_backend_test PRIVATE mc_rebedrock_runtime)
+    target_include_directories(mc_rebedrock_trading_backend_test PRIVATE
+        src
+        "${glm_SOURCE_DIR}"
+    )
+    add_test(NAME trading_backend COMMAND mc_rebedrock_trading_backend_test)
 
     add_executable(mc_rebedrock_face_occlusion_test
         tests/face_occlusion_test.cpp
@@ -3295,6 +3397,33 @@ if(BUILD_TESTING)
     )
     add_test(NAME save_repository COMMAND mc_rebedrock_save_repository_test)
 
+    # The save thumbnail's storage layer (icon.png). It reads its own output back
+    # through the game's decoder, so it needs ImageData and the stb translation
+    # unit behind it — the same way image_data_test names them (they live in the
+    # executable target, not the runtime library).
+    add_executable(mc_rebedrock_save_icon_test
+        tests/save_icon_test.cpp
+        src/assets/ImageData.cpp
+        src/assets/StbImageImplementation.cpp
+    )
+    target_link_libraries(mc_rebedrock_save_icon_test PRIVATE mc_rebedrock_runtime)
+    target_include_directories(mc_rebedrock_save_icon_test PRIVATE
+        src
+        "${glm_SOURCE_DIR}"
+        "${stb_SOURCE_DIR}"
+    )
+    add_test(NAME save_icon COMMAND mc_rebedrock_save_icon_test)
+
+    # 世界图标那段「帧缓冲 -> 64x64」的纯算术。WorldIcon.cpp 已在运行时库里，
+    # 所以这里只列测试自己那一个源文件，不重复列被测源码。
+    add_executable(mc_rebedrock_world_icon_test tests/world_icon_test.cpp)
+    target_link_libraries(mc_rebedrock_world_icon_test PRIVATE mc_rebedrock_runtime)
+    target_include_directories(mc_rebedrock_world_icon_test PRIVATE
+        src
+        "${glm_SOURCE_DIR}"
+    )
+    add_test(NAME world_icon COMMAND mc_rebedrock_world_icon_test)
+
     if(MC_REBEDROCK_BUILD_TOOLS)
         # migration_diag <world-dir> loads a real old-format world, saves it
         # (rewriting to the current format) and reloads to prove the migration lost
@@ -3367,6 +3496,23 @@ if(BUILD_TESTING)
     target_link_libraries(mc_rebedrock_data_codec_test PRIVATE mc_rebedrock_runtime)
     target_include_directories(mc_rebedrock_data_codec_test PRIVATE src tests "${glm_SOURCE_DIR}")
     add_test(NAME data_codec COMMAND mc_rebedrock_data_codec_test)
+
+    # ADV-1: 最小成就链（配方解锁）。
+    add_executable(mc_rebedrock_advancement_test
+        tests/advancement_test.cpp
+    )
+    target_link_libraries(mc_rebedrock_advancement_test PRIVATE mc_rebedrock_runtime)
+    target_include_directories(mc_rebedrock_advancement_test PRIVATE src "${glm_SOURCE_DIR}")
+    add_test(NAME advancement COMMAND mc_rebedrock_advancement_test)
+
+    # ADV-0a: 数据包目录名必须逐字对上真 26.1 的布局（单数 recipe/loot_table/
+    # function/advancement）。用错名字时 list() 只是返回空表，静默失效。
+    add_executable(mc_rebedrock_datapack_paths_test
+        tests/datapack_paths_test.cpp
+    )
+    target_link_libraries(mc_rebedrock_datapack_paths_test PRIVATE mc_rebedrock_runtime)
+    target_include_directories(mc_rebedrock_datapack_paths_test PRIVATE src "${glm_SOURCE_DIR}")
+    add_test(NAME datapack_paths COMMAND mc_rebedrock_datapack_paths_test)
 
     # D-3: recipes resolved from the baked floor + datapack overlay.
     add_executable(mc_rebedrock_recipe_data_test
@@ -3796,6 +3942,16 @@ if(BUILD_TESTING)
         "${glm_SOURCE_DIR}"
     )
     add_test(NAME anvil COMMAND mc_rebedrock_anvil_test)
+
+    add_executable(mc_rebedrock_recipe_book_test
+        tests/recipe_book_test.cpp
+    )
+    target_link_libraries(mc_rebedrock_recipe_book_test PRIVATE mc_rebedrock_runtime)
+    target_include_directories(mc_rebedrock_recipe_book_test PRIVATE
+        src
+        "${glm_SOURCE_DIR}"
+    )
+    add_test(NAME recipe_book COMMAND mc_rebedrock_recipe_book_test)
 
     # RN-11b 的双配置验收暴露：RelWithDebInfo 的 NDEBUG 会删掉 assert 内的夹具操作，
     # block_entity_store/ticker 因此崩溃，其他 assert 测试则可能空跑。仅测试目标保留断言，

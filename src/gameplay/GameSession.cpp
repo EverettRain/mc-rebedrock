@@ -1,5 +1,8 @@
 #include "gameplay/GameSession.hpp"
 
+#include "gameplay/Composter.hpp"  // AR-M5: the villager composts through the player's own rule
+
+#include "gameplay/AdvancementTable.hpp"
 #include "gameplay/ArmorEnchantment.hpp"
 #include "gameplay/BlockEntityTicker.hpp"
 #include "gameplay/Enchantment.hpp"
@@ -200,6 +203,14 @@ void GameSession::tick(world::World& world, SimulationHost& host) {
                                                 primaryLevel().weather.thunderGradient());
     worldSimulation_.setEnvironment(environment_);
 
+    // EXP-2: the blasts whose fuses ran out this tick. Drained before the sleep
+    // check so a TNT going off beside a sleeping player wakes them the ordinary
+    // way (the damage does it) rather than a tick late.
+    for (const auto& pending : worldSimulation_.takePendingExplosions()) {
+        static_cast<void>(explode(world, host, ExplosionSpec{pending.center, pending.radius,
+                                                             true}));
+    }
+
     // SLP-3: the sleeping player, once the clock and the sky for this tick are
     // settled. Vanilla's ServerLevel does the same thing in the same place:
     // count the sleepers, and if they have been under long enough, move the
@@ -356,9 +367,27 @@ void GameSession::tick(world::World& world, SimulationHost& host) {
     // self-guarding: it returns immediately unless the enchanting screen is
     // open, and re-derives only when (seed, shelf count, item) actually moved.
     refreshEnchantingOffers(world);
+    // AR-M6: MerchantMenu#slotsChanged, on the tick — the villager's level and
+    // use counts can change from under the screen (it earns experience from
+    // this very trade, and its composting goes on regardless), and a villager
+    // that dies or unloads has to close the screen and hand the payments back.
+    refreshTradingOffers();
     if (primaryLevel().items.tick(world, primaryPlayer().controller.position(), primaryPlayer().inventory) > 0U) {
         events_.publish(SoundEvent{SoundEventKind::ItemPickup, primaryPlayer().controller.position()});
     }
+    // ADV-1：配方解锁走成就链，与 26.1 同形（`recipes/` 成就的 inventory_changed
+    // + recipe_unlocked，奖励是 rewards.recipes -> 配方书）。上一轮那条「背包里
+    // 出现某条配方的任一材料就解锁它」的简化规则连同它的两个函数一起删了——两条
+    // 路并存就是两个口径。
+    //
+    // 触发点在这里而不是拾取那个 if 里面：vanilla 打 inventory_changed 的是
+    // 「背包某一槽变了」（ServerPlayer.java:317-327 的 containerListener），拾取
+    // 只是其中一条来路，合成/给予/丢弃同样会变。tickPlayerAdvancements 与上一
+    // tick 的槽位指纹比一遍，没变就是 36 次整数比较，不分配也不遍历成就表。
+    static_cast<void>(tickPlayerAdvancements(advancementTable(), primaryPlayer().inventory,
+                                             primaryPlayer().inventoryFingerprints,
+                                             primaryPlayer().advancements,
+                                             primaryPlayer().recipeBook));
     // XP-1: the experience orb pool — physics/magnet/merge/despawn, then
     // contact pickup credits primaryPlayer().experience directly (no loot/
     // inventory indirection, unlike item drops). Reuses ItemPickup for the
@@ -439,6 +468,21 @@ void GameSession::tick(world::World& world, SimulationHost& host) {
             }
         }
     }
+    // EXP-3: creepers whose fuse ran out this tick. Raised after the melee pass
+    // above so a creeper that was also mid-swing resolves its hit first, and
+    // before the projectile tick so the blast's own knockback is what a
+    // simultaneously-fired arrow flies through.
+    //
+    // Level.ExplosionInteraction.MOB: unlike the player-lit TNT above, a mob's
+    // blast breaks blocks only while mob_griefing is on. Damage and knockback
+    // are unconditional — turning the rule off makes a creeper harmless to the
+    // terrain, never harmless to you.
+    for (const auto& detonation : entityTick.detonations) {
+        static_cast<void>(explode(
+            world, host,
+            ExplosionSpec{detonation.center, detonation.radius,
+                          gameRules_.get<bool>(GameRuleId::MobGriefing)}));
+    }
     // RW-0: the projectile pool — physics/raycast hit (entity through
     // Damage.hpp above, or block -> stick), landed-arrow pickup, lifetime
     // despawn. Runs after the creature tick above so a hit this same tick
@@ -482,6 +526,82 @@ void GameSession::tick(world::World& world, SimulationHost& host) {
             // clearSheared-only relay so eating grass also speeds a lamb's
             // growth, matching vanilla ate().
             static_cast<void>(worldEntities().ate(request.entityId));
+        }
+    }
+    // AR-M5: the farmer villagers' work. Both kinds are block writes the AI pass
+    // could not make itself, and both re-check the world before acting — the
+    // cell may have changed between the goal seeing it and this drain, exactly
+    // as the grass eat above must.
+    for (const auto& work : entityTick.villagerWorks) {
+        auto* villager = worldEntities().byId(work.entityId);
+        if (villager == nullptr) {
+            continue;
+        }
+        const auto& cell = work.cell;
+        GameplayMutationSink sink{world, *this};
+        switch (work.kind) {
+        case entities::MobBrain::VillagerWorkRequest::Kind::Harvest: {
+            // HarvestFarmland: reap and replant in one action. The crop is set
+            // back to age 0 rather than broken, so the field is never left empty
+            // and no seed item is involved — a villager farms, it does not mine.
+            const auto state = world.state(cell.x, cell.y, cell.z);
+            if (!entities::isMatureCrop(world, cell)) {
+                break;
+            }
+            const Item* produce = entities::cropProduce(state.block());
+            if (produce == nullptr) {
+                break;
+            }
+            if (worldMutations_
+                    .setBlock(world, {cell.x, cell.y, cell.z}, state.withAge(0),
+                              world::MutationFlags::All, world::MutationCause::Gravity, sink)
+                    .changed) {
+                // Into the villager's one carry slot. A different produce
+                // replaces what is there rather than mixing: one slot, one item.
+                if (villager->villagerCarryItem != produce) {
+                    villager->villagerCarryItem = produce;
+                    villager->villagerCarryCount = 0U;
+                }
+                if (villager->villagerCarryCount < entities::kVillagerCarryCapacity) {
+                    ++villager->villagerCarryCount;
+                }
+            }
+            break;
+        }
+        case entities::MobBrain::VillagerWorkRequest::Kind::Compost: {
+            // WorkAtComposter: one item in, through the same rule the player's
+            // right-click uses — including the roll, so a villager fills a
+            // composter at exactly the odds a player would.
+            const auto state = world.state(cell.x, cell.y, cell.z);
+            if (state.block() != world::Block::Composter ||
+                villager->villagerCarryItem == nullptr || villager->villagerCarryCount == 0U) {
+                break;
+            }
+            const int level = state.composterLevel();
+            if (level >= kComposterMaxFillLevel) {
+                break;  // full and ripening, or ready: nothing to put in
+            }
+            const float chance = itemCompostChance(villager->villagerCarryItem);
+            if (chance <= 0.0F) {
+                villager->villagerCarryCount = 0U;  // not compostable: drop it
+                villager->villagerCarryItem = nullptr;
+                break;
+            }
+            const int newLevel = composterAddItem(level, chance, composterRandom_.nextFloat());
+            --villager->villagerCarryCount;
+            if (villager->villagerCarryCount == 0U) {
+                villager->villagerCarryItem = nullptr;
+            }
+            if (newLevel != level &&
+                worldMutations_
+                    .setBlock(world, {cell.x, cell.y, cell.z}, state.withComposterLevel(newLevel),
+                              world::MutationFlags::All, world::MutationCause::Gravity, sink)
+                    .changed &&
+                newLevel == kComposterMaxFillLevel) {
+                worldSimulation_.queueComposterReady({cell.x, cell.y, cell.z});
+            }
+            break;
+        }
         }
     }
     // NaturalSpawner: creatures and monsters settle inside the simulation
@@ -843,6 +963,38 @@ void GameSession::publishSnapshots() {
             }
         }
     }
+    // AR-M6: the trade screen's display state. Published whenever the menu is
+    // open — not gated on a block cell like the anvil and the table above,
+    // because the "container" here is a villager and the menu itself is the
+    // only thing that knows which one.
+    if (primaryPlayer().trading.open()) {
+        const TradingMenu& menu = primaryPlayer().trading;
+        worldSnapshot_.tradePaymentA = menu.paymentA;
+        worldSnapshot_.tradePaymentB = menu.paymentB;
+        worldSnapshot_.tradeResult = menu.result;
+        worldSnapshot_.tradeOfferCount = static_cast<std::uint8_t>(
+            std::min<std::size_t>(menu.offerCount, kSnapshotTradeOffers));
+        for (std::size_t row = 0; row < kSnapshotTradeOffers; ++row) {
+            const bool live = row < worldSnapshot_.tradeOfferCount;
+            const TradeOfferView& offer = menu.offers[row];
+            worldSnapshot_.tradeWantsA[row] = live ? offer.wantsA : ItemStack{};
+            worldSnapshot_.tradeWantsB[row] = live ? offer.wantsB : ItemStack{};
+            worldSnapshot_.tradeGives[row] = live ? offer.gives : ItemStack{};
+            worldSnapshot_.tradeOfferLevels[row] = live ? offer.level : 0U;
+            worldSnapshot_.tradeOfferUses[row] = live ? offer.uses : 0U;
+            worldSnapshot_.tradeOfferMaxUses[row] = live ? offer.maxUses : 0U;
+            worldSnapshot_.tradeOfferLocked[row] =
+                live && !offer.unlocked ? std::uint8_t{1U} : std::uint8_t{0U};
+            worldSnapshot_.tradeOfferOutOfStock[row] =
+                live && offer.outOfStock ? std::uint8_t{1U} : std::uint8_t{0U};
+        }
+        worldSnapshot_.tradeSelectedOffer =
+            menu.hasSelection() ? static_cast<std::uint8_t>(menu.selectedOffer)
+                                : kNoSelectedTradeOffer;
+        worldSnapshot_.tradeVillagerLevel = menu.villagerLevel;
+        worldSnapshot_.tradeXpInLevel = menu.xpInLevel;
+        worldSnapshot_.tradeXpForNextLevel = menu.xpForNextLevel;
+    }
     // Last, once every system has settled: what the renderer will draw from
     // until the next tick replaces it.
     entitySnapshot_.capture(primaryLevel().entities.entities(), primaryLevel().items.entities(),
@@ -995,6 +1147,17 @@ bool GameSession::hurtPlayer(PlayerId playerId, DamageType source, float amount,
                              SimulationHost& host, bool causedByLivingNonPlayer) {
     hostBridge_.setHost(&host);
     auto& player = players_.at(playerId);
+    // Player#isInvulnerableTo: a creative player carries abilities.invulnerable,
+    // and only a BYPASSES_INVULNERABILITY source gets through it (the void and
+    // /kill). Until EXP-1 nothing reached this function in creative — the mobs
+    // do not target a creative player and tickPlayerVitals returns early for
+    // anything but survival — so an explosion was the first source that could,
+    // and it killed a creative player outright. The gate belongs here, on the
+    // one entry every damage source shares, not on each caller.
+    if (player.gameMode == GameMode::Creative &&
+        !hasDamageTag(source, DamageTag::BypassesInvulnerability)) {
+        return false;
+    }
     // EQ-2: the armor/toughness stage reads the player's currently worn
     // armor, summed fresh on every hit (armor can change between hits, so
     // this is not cached on the player).
@@ -1245,6 +1408,164 @@ void GameSession::openEnchantingContainer(const world::World& world, glm::ivec3 
     openEnchantingTable_ = table;
 }
 
+// --- AR-M6: the trade screen's backend --------------------------------------
+
+namespace {
+
+// Fills one row of the offer view from the villager's own table entry plus its
+// live level and use count. The view is what the UI reads, so everything it
+// needs to draw a row — locked, out of stock, how many uses are left — is
+// resolved HERE and never left for the screen to derive.
+[[nodiscard]] TradeOfferView buildOfferView(const entities::VillagerOffer& offer, int level,
+                                            std::uint8_t uses) {
+    TradeOfferView view;
+    view.wantsA = offer.wants;
+    view.gives = offer.gives;
+    view.level = static_cast<std::uint8_t>(offer.level);
+    view.uses = uses;
+    view.maxUses = static_cast<std::uint8_t>(offer.maxUses);
+    view.unlocked = level >= offer.level;
+    view.outOfStock = static_cast<int>(uses) >= offer.maxUses;
+    return view;
+}
+
+} // namespace
+
+TradingMenu& GameSession::tradingMenu() { return primaryPlayer().trading; }
+
+const TradingMenu& GameSession::tradingMenu() const { return primaryPlayer().trading; }
+
+bool GameSession::openTradingContainer(std::uint64_t entityId) {
+    const SimpleEntity* villager = worldEntities().byIdConst(entityId);
+    if (villager == nullptr || villager->dead() || villager->type == nullptr ||
+        !villager->type->villager()) {
+        return false;
+    }
+    if (entities::offersFor(villager->villagerProfession).empty()) {
+        return false;  // unemployed: Villager#mobInteract does not trade either
+    }
+    TradingMenu& menu = tradingMenu();
+    menu = {};
+    menu.entityId = entityId;
+    refreshTradingOffers();
+    openContainerScreen_ = ContainerScreen::Trading;
+    openChest_.reset();
+    openFurnace_.reset();
+    openEnchantingTable_.reset();
+    return true;
+}
+
+void GameSession::refreshTradingOffers() {
+    TradingMenu& menu = tradingMenu();
+    if (!menu.open()) {
+        return;
+    }
+    const SimpleEntity* villager = worldEntities().byIdConst(menu.entityId);
+    // `discarded` as well as dead: a creature removed without dying is still in
+    // the vector until the entity pass compacts it later this tick, and trading
+    // with something that is on its way out is exactly the window a UI must not
+    // have to think about.
+    if (villager == nullptr || villager->dead() || villager->discarded) {
+        // The villager died or was unloaded with the screen open. Closing here
+        // rather than in the UI is deliberate: the payments have to come back,
+        // and only the session can do that.
+        closeContainerMenu();
+        return;
+    }
+    const auto offers = entities::offersFor(villager->villagerProfession);
+    const int level = static_cast<int>(villager->villagerLevel);
+    menu.offerCount = static_cast<std::uint8_t>(
+        std::min(offers.size(), menu.offers.size()));
+    for (std::size_t index = 0; index < menu.offerCount; ++index) {
+        menu.offers[index] =
+            buildOfferView(offers[index], level, villager->villagerOfferUses[index]);
+    }
+    for (std::size_t index = menu.offerCount; index < menu.offers.size(); ++index) {
+        menu.offers[index] = {};
+    }
+    menu.villagerLevel = villager->villagerLevel;
+    // The level bar's numerator and denominator. Vanilla draws the bar from the
+    // experience earned SINCE the current level began, not from zero, so the
+    // floor is subtracted here rather than in the screen.
+    const int floorXp = entities::villagerCanLevelUp(level)
+                            ? entities::kVillagerLevelXpThresholds[
+                                  static_cast<std::size_t>(level) - 1U]
+                            : 0;
+    menu.xpInLevel = villager->villagerTradeXp - floorXp;
+    menu.xpForNextLevel = entities::villagerXpToNextLevel(level) - floorXp;
+    if (menu.xpForNextLevel < 0) {
+        menu.xpForNextLevel = 0;
+    }
+    // A selection that has become illegal (the offer ran out, or the row no
+    // longer exists) clears itself, so the result slot cannot keep offering
+    // goods for a trade that can no longer happen.
+    if (menu.hasSelection() && !menu.offers[menu.selectedOffer].selectable()) {
+        menu.selectedOffer = kNoTradeSelected;
+    }
+    menu.result = menu.hasSelection()
+                      ? tradeResultFor(menu.offers[menu.selectedOffer], menu.paymentA,
+                                       menu.paymentB)
+                      : ItemStack{};
+}
+
+bool GameSession::selectTradeOffer(std::size_t index) {
+    TradingMenu& menu = tradingMenu();
+    if (!menu.open()) {
+        return false;
+    }
+    const std::size_t previous = menu.selectedOffer;
+    menu.selectedOffer = (index < menu.offerCount && menu.offers[index].selectable())
+                             ? index
+                             : kNoTradeSelected;
+    refreshTradingOffers();
+    return menu.selectedOffer != previous;
+}
+
+bool GameSession::takeTradeResult() {
+    TradingMenu& menu = tradingMenu();
+    if (!menu.open() || !menu.hasSelection()) {
+        return false;
+    }
+    SimpleEntity* villager = worldEntities().byId(menu.entityId);
+    if (villager == nullptr || villager->dead()) {
+        return false;
+    }
+    const std::size_t index = menu.selectedOffer;
+    const TradeOfferView& view = menu.offers[index];
+    if (!view.selectable()) {
+        return false;
+    }
+    // Re-derived rather than trusted: `menu.result` is a display value, and a
+    // click that arrives a tick after the payment changed must not pay out the
+    // stale one.
+    ItemStack goods = tradeResultFor(view, menu.paymentA, menu.paymentB);
+    if (goods.empty()) {
+        return false;
+    }
+    // Goods first: an inventory with no room must not swallow the payment. The
+    // stack is handed over whole or not at all.
+    ItemStack pending = goods;
+    if (!primaryPlayer().inventory.add(pending) || pending.count != 0U) {
+        return false;
+    }
+    if (!tradeSpendPayment(view, menu.paymentA, menu.paymentB)) {
+        return false;  // unreachable: tradeResultFor already agreed
+    }
+    const auto offers = entities::offersFor(villager->villagerProfession);
+    if (index < offers.size()) {
+        if (villager->villagerOfferUses[index] < 0xFFU) {
+            ++villager->villagerOfferUses[index];
+        }
+        const auto progress = entities::villagerAfterTrade(
+            static_cast<int>(villager->villagerLevel), villager->villagerTradeXp,
+            offers[index].xp);
+        villager->villagerLevel = static_cast<std::uint8_t>(progress.level);
+        villager->villagerTradeXp = progress.xp;
+    }
+    refreshTradingOffers();
+    return true;
+}
+
 void GameSession::refreshEnchantingOffers(const world::World& world) {
     if (!openEnchantingTable_.has_value()) {
         return;
@@ -1275,21 +1596,130 @@ AnvilMenu& GameSession::anvilMenu() { return primaryPlayer().anvil; }
 
 const AnvilMenu& GameSession::anvilMenu() const { return primaryPlayer().anvil; }
 
+// EXP-1: one blast, start to finish.
+//
+// The order is vanilla's: find the blocks first (so the ray cast sees the world
+// as it was), hurt the entities, then break the blocks. Doing the breaking first
+// would let a blast tunnel through its own hole and reach further than it should.
+std::size_t GameSession::explode(world::World& world, SimulationHost& host,
+                                 const ExplosionSpec& spec) {
+    const auto broken = explodedPositions(world, spec, lootRandomState_);
+
+    // --- entities and the player, before anything is removed --------------
+    const float doubleRadius = spec.radius * 2.0F;
+    if (doubleRadius > 0.0F) {
+        // The player. Exposure is sampled against the real collision world, so
+        // a wall between the player and the blast genuinely shelters them.
+        const glm::vec3 feet = primaryPlayer().controller.position();
+        const glm::vec3 boxMin{feet.x - 0.3F, feet.y, feet.z - 0.3F};
+        const glm::vec3 boxMax{feet.x + 0.3F, feet.y + 1.8F, feet.z + 0.3F};
+        const glm::vec3 eye{feet.x, feet.y + primaryPlayer().controller.eyeHeight(), feet.z};
+        const glm::vec3 delta = eye - spec.center;
+        const float distance = std::sqrt(glm::dot(delta, delta));
+        if (distance <= doubleRadius && primaryPlayer().vitals.health() > 0.0F) {
+            const float exposure = seenPercent(world, spec.center, boxMin, boxMax);
+            if (exposure > 0.0F) {
+                // Through hurtPlayer, not vitals directly: that is the path
+                // that applies worn armor AND the enchantment protection factor,
+                // which is what finally lets Blast Protection do something.
+                static_cast<void>(hurtPlayer(kPrimaryPlayerId, DamageType::Explosion,
+                                             explosionDamage(spec.radius, distance, exposure),
+                                             host, /*causedByLivingNonPlayer=*/false));
+                const float push = explosionKnockback(spec.radius, distance, exposure);
+                if (push > 0.0F && distance > 1.0e-4F) {
+                    primaryPlayer().controller.applyExternalPush(delta / distance * push);
+                }
+            }
+        }
+        // Creatures. EntitySystem::hurt already does the knockback from an
+        // origin point, so the blast centre is handed to it directly.
+        for (const auto& entity : primaryLevel().entities.entities()) {
+            const glm::vec3 entityDelta = entity.position - spec.center;
+            const float entityDistance = std::sqrt(glm::dot(entityDelta, entityDelta));
+            if (entityDistance > doubleRadius) {
+                continue;
+            }
+            const float width = entity.type != nullptr ? entity.type->dimensions().width : 0.6F;
+            const float height = entity.type != nullptr ? entity.type->dimensions().height : 1.8F;
+            const glm::vec3 boxMinEntity{entity.position.x - width * 0.5F, entity.position.y,
+                                         entity.position.z - width * 0.5F};
+            const glm::vec3 boxMaxEntity{entity.position.x + width * 0.5F,
+                                         entity.position.y + height,
+                                         entity.position.z + width * 0.5F};
+            const float exposure = seenPercent(world, spec.center, boxMinEntity, boxMaxEntity);
+            if (exposure <= 0.0F) {
+                continue;
+            }
+            static_cast<void>(primaryLevel().entities.hurt(
+                entity.id, explosionDamage(spec.radius, entityDistance, exposure), spec.center,
+                ActorReference{}, DamageType::Explosion));
+        }
+    }
+
+    // --- the blocks -------------------------------------------------------
+    GameplayMutationSink sink{world, *this};
+    for (const auto& cell : broken) {
+        const auto previous = world.state(cell.x, cell.y, cell.z);
+        if (previous.block() == world::Block::Air) {
+            continue;
+        }
+        // SuppressDrops: WorldMutationService rolls a full drop for every
+        // Explosion-caused removal, which is vanilla's `destroyBlock` behaviour
+        // and NOT an explosion's — an explosion drops each block with
+        // probability 1/radius (vanilla's `explosion_decay` loot function).
+        // Without this every blasted block dropped, and the roll below was a
+        // second, redundant one.
+        const auto result = worldMutations().setBlock(
+            world, cell, world::BlockState{},
+            world::MutationFlags::All | world::MutationFlags::SuppressDrops,
+            world::MutationCause::Explosion, sink);
+        if (!result.changed) {
+            continue;
+        }
+        // TntBlock#wasExploded: a blast does not destroy TNT, it lights it — with
+        // a short random fuse so a stack goes off in a ragged chain rather than
+        // all at once.
+        if (previous.block() == world::Block::Tnt) {
+            const int fuse =
+                static_cast<int>(mc::rng::nextInt(lootRandomState_, 20U)) + 10;
+            worldSimulation_.ignitePrimedTnt({static_cast<float>(cell.x) + 0.5F,
+                                              static_cast<float>(cell.y) + 0.5F,
+                                              static_cast<float>(cell.z) + 0.5F},
+                                             fuse);
+            continue;
+        }
+        // Vanilla's explosion_decay loot function: each stack survives with
+        // probability 1/radius, which is why a big blast leaves less behind.
+        if (!world::blockDefinition(previous.block()).dropsItem) {
+            continue;
+        }
+        const float roll = mc::rng::nextFloat(lootRandomState_);
+        if (roll * spec.radius > 1.0F) {
+            continue;
+        }
+        spawnBlockDrops({cell.x, cell.y, cell.z}, previous, ItemStack{});
+    }
+
+    events().publish(SoundEvent{SoundEventKind::Explode, spec.center, world::Block::Air});
+    return broken.size();
+}
+
 // SLP-2/3/4: the bed right-click, end to end.
 //
 // The decision itself is Sleep.hpp's pure chain; what lives here is everything
 // that needs the session — the dimension's BedRule, how dark it is outside, the
 // creatures near the bed, the OCCUPIED write on both halves, the spawn point and
 // the player's own sleeping flag.
-BedSleepProblem GameSession::trySleepInBed(world::World& world, glm::ivec3 bed) {
+BedSleepProblem GameSession::trySleepInBed(world::World& world, SimulationHost& host,
+                                           glm::ivec3 bed) {
     const auto bedState = world.state(bed.x, bed.y, bed.z);
     if (world::blockDefinition(bedState.block()).model != world::BlockModel::Bed) {
         return BedSleepProblem::OtherProblem;
     }
     const world::BlockPos bedPos{bed.x, bed.y, bed.z};
     const auto head = bedHeadCell(bedPos, bedState);
-    const auto backward =
-        world::orientationOffset(world::oppositeOrientation(bedState.orientation()));
+    const auto facing = bedState.orientation();
+    const auto backward = world::orientationOffset(world::oppositeOrientation(facing));
     const world::BlockPos foot{head.x + backward.x, head.y + backward.y, head.z + backward.z};
 
     SleepConditions conditions;
@@ -1322,6 +1752,30 @@ BedSleepProblem GameSession::trySleepInBed(world::World& world, glm::ivec3 bed) 
     }
 
     const auto decision = evaluateSleep(world, bedPos, bedState, conditions);
+
+    // EXP-2: a bed where the dimension says it explodes does exactly that —
+    // vanilla removes the block first and then blasts from the cell beyond the
+    // head, radius 5. The refusal used to be a registered deviation ("cannot
+    // rest here"); now the nether answers the way it should.
+    if (conditions.rule == world::attribute::BedRule::Explodes &&
+        decision.problem == BedSleepProblem::NotPossibleHere) {
+        GameplayMutationSink sink{world, *this};
+        // The bed is consumed by the blast, not dropped (vanilla removes it with
+        // `level.removeBlock(pos, false)` — no drop).
+        const auto flags = world::MutationFlags::All | world::MutationFlags::SuppressDrops;
+        worldMutations().setBlock(world, head, world::BlockState{}, flags,
+                                  world::MutationCause::Explosion, sink);
+        worldMutations().setBlock(world, foot, world::BlockState{}, flags,
+                                  world::MutationCause::Explosion, sink);
+        // `pos.relative(FACING.getOpposite())` from the head — the cell on the
+        // far side of the bed from where the player is standing.
+        const auto away = world::orientationOffset(world::oppositeOrientation(facing));
+        const glm::vec3 centre{static_cast<float>(head.x + away.x) + 0.5F,
+                               static_cast<float>(head.y + away.y) + 0.5F,
+                               static_cast<float>(head.z + away.z) + 0.5F};
+        static_cast<void>(explode(world, host, ExplosionSpec{centre, 5.0F, true}));
+        return BedSleepProblem::NotPossibleHere;
+    }
     // The spawn point moves even when the sleep is refused — vanilla sets it
     // before the can-sleep gate, which is why a daytime click still re-homes you.
     if (decision.setsSpawn) {
@@ -1455,8 +1909,14 @@ void GameSession::closeContainerMenu() {
     // the player. Unconditional, like the crafting grid above — a menu that was
     // never opened is empty, and a table that was mined while its screen was
     // open must still not eat the item.
+    // AR-M6: the merchant menu's two payment slots go back the same way
+    // (MerchantMenu#removed -> clearContainer). The RESULT slot deliberately
+    // does not: it is derived, never owned, so returning it would mint goods
+    // the player never paid for.
     for (ItemStack* slot : {&primaryPlayer().enchanting.item, &primaryPlayer().enchanting.lapis,
-                           &primaryPlayer().anvil.left, &primaryPlayer().anvil.right}) {
+                           &primaryPlayer().anvil.left, &primaryPlayer().anvil.right,
+                           &primaryPlayer().trading.paymentA,
+                           &primaryPlayer().trading.paymentB}) {
         if (!inventory.add(*slot) && !slot->empty()) {
             // clearContainer's fallback: what the inventory could not take is
             // dropped in front of the player rather than deleted.
@@ -1465,6 +1925,7 @@ void GameSession::closeContainerMenu() {
     }
     primaryPlayer().enchanting = {};
     primaryPlayer().anvil = {};
+    primaryPlayer().trading = {};
     if (openChest_.has_value()) {
         chestSystem_.close(*openChest_);
     }
@@ -1478,6 +1939,7 @@ void GameSession::resetWorldState() {
         player.crafting = {};
         player.enchanting = {};
         player.anvil = {};
+        player.trading = {};
     }
     // I-3 的自定义名字表**不**在这里清。
     // 它是会话内的 intern 表，而一次存档解析（SaveRepository::load）会在

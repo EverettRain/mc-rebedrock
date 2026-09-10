@@ -6,6 +6,7 @@
 #include "gameplay/FurnaceSystem.hpp"
 #include "gameplay/GameRules.hpp"
 #include "gameplay/Inventory.hpp"
+#include "gameplay/PlayerAdvancements.hpp"
 #include "gameplay/PlayerVitals.hpp"
 #include "gameplay/WeatherSystem.hpp"
 #include "world/Dimension.hpp"
@@ -16,6 +17,7 @@
 #include <cstdint>
 #include <filesystem>
 #include <set>
+#include <span>
 #include <string>
 #include <string_view>
 #include <utility>
@@ -28,6 +30,44 @@ struct SaveSummary final {
     std::string displayName;
     std::uint64_t seed = 0U;
     std::int64_t lastPlayedUnixSeconds = 0;
+    // Whether this world has a thumbnail on disk (`<world>/icon.png`, the same
+    // file name and location vanilla uses, so a JC import/export needs no
+    // translation). It is *derived*, never stored in level.properties: the
+    // listing decides it by asking whether the file exists, which is one stat
+    // per world. Deliberately not the image itself — a 64x64 RGBA thumbnail is
+    // 16 KB, and a listing that decoded every world's icon would read (and
+    // throw away) all of them just to draw a screen that may show none. The
+    // consumer loads the pixels from iconPath() only for the entries it draws.
+    bool hasIcon = false;
+    // The two facts the world-selection list's third line is made of. 26.1 draws
+    // it in WorldSelectionList.WorldListEntry.extractContent (line 443) from
+    // LevelSummary.getInfo(), and that string is built in
+    // LevelSummary.createInfo() lines 166-186: the game mode's name, then
+    // ", Version: " and the version that wrote the world.
+    //
+    // Neither is in level.properties, and neither gets a copy there: both are
+    // lifted out of world.dat's block sequence by the *same single walk* that
+    // already produces the version header (readListingFacts), so world.dat stays
+    // the one place either fact is written down.
+    //
+    // gameMode is the WRLD block's first byte — the one appendWorldBlock writes
+    // and readWorldBlock validates. A world whose world.dat cannot be read, and
+    // one old enough to predate the block registry (format < 17, where the mode
+    // sits at a fixed offset only loadLegacy knows how to find), keep this
+    // default rather than have a mode invented for them; it is deliberately the
+    // same value a freshly constructed SaveGame carries, below.
+    gameplay::GameMode gameMode = gameplay::GameMode::Creative;
+    // SaveVersionHeader::versionName for this world, i.e. the name the VERS
+    // block recorded at *write* time. Empty when that header had to be
+    // reconstructed from the format number (SaveVersionHeader::derived) — a
+    // pre-VERS world genuinely does not record which build wrote it, so the
+    // listing shows no version rather than guessing one.
+    //
+    // In a WorldSummary this is the same string as versionHeader.versionName:
+    // SaveSummary is the subset handed to callers of list(), which never see the
+    // full header. They cannot drift, because worldSummaries() assigns this one
+    // from that one — a single read of a single block feeds both.
+    std::string versionName;
 };
 
 // A save's self-description: which build wrote it (META-1, the equivalent of
@@ -281,6 +321,23 @@ struct SaveGame final {
     // discovered pack starts disabled" — the all-built-in default the sparse-
     // persistence rule requires, not a crash.
     std::vector<std::string> enabledDataPacks;
+    // 配方书：玩家已解锁的配方标识符，和其中「新解锁、还没被看过」的那些
+    // （26.1 `ServerRecipeBook.Packed`（ServerRecipeBook.java:150-159）的
+    // `recipes` 与 `toBeDisplayed` 两个列表）。自描述块 RCPB，跟 XPOB/PJTL/DPKS
+    // 一样是**追加一个块、不动格式号**——旧存档根本没有这个块，读进来就是两个空
+    // 集合，也就是「一条配方都还没解锁」，与新开一个世界完全一致。
+    //
+    // 存的是**标识符字符串**不是稠密下标：配方表是数据驱动的（datapack overlay
+    // 可以追加/覆盖），下标是一次运行内的值，落进存档就会在下次加载时错位。
+    std::vector<std::string> unlockedRecipes;
+    std::vector<std::string> highlightedRecipes;
+
+    // ADV-1：玩家的成就进度 —— 每条成就上已完成的 criterion 名字。自描述块
+    // ADVP，跟 RCPB/XPOB/PJTL/DPKS 同一条「加一个 owner 块、不动格式号」的路。
+    // 缺块 = 空进度（成就层还不存在时写的存档），不是错误。
+    // 存的是**名字**不是下标：成就表是数据驱动的（数据包可增可替），下标是每次
+    // 运行才有意义的值，下一次装载会静默指到另一条成就上。
+    std::vector<gameplay::AdvancementProgressEntry> advancementProgress;
 };
 
 // How a stored world's save format relates to this build's (META-2b), decided by
@@ -397,6 +454,33 @@ class SaveRepository final {
     void rename(const std::string& identifier, std::string displayName) const;
     // Permanently removes the world directory and everything inside it.
     void remove(const std::string& identifier) const;
+
+    // Where this world's thumbnail lives: `<root>/<identifier>/icon.png`, the
+    // vanilla name and location. Pure path arithmetic — it never touches the
+    // disk, so it answers for a world that does not exist yet (the caller that
+    // is about to write one needs the path before the file is there) and for
+    // one that has no icon. Ask SaveSummary::hasIcon, not this, for existence.
+    [[nodiscard]] std::filesystem::path iconPath(std::string_view identifier) const;
+
+    // Writes `rgba` (width*height*4 bytes, RGBA8, top row first) as this
+    // world's icon.png, replacing any previous one. Returns false and writes
+    // nothing when the identifier is unsafe, the world directory does not
+    // exist, either dimension is zero (or too large to be an int), the span's
+    // length is not exactly width*height*4, or the disk write fails.
+    //
+    // The size check is not defensive politeness: the encoder is handed a raw
+    // pointer plus w/h/channels and reads w*h*4 bytes from it, so a span that
+    // is short for its declared dimensions is an out-of-bounds read, not a
+    // wrong picture. Rejecting it here is the only place that can see both the
+    // length and the dimensions.
+    //
+    // The file is written to a sibling `.tmp` and renamed into place, the same
+    // way world.dat and level.properties are installed, so an interrupted
+    // write cannot leave a half-encoded icon.png behind for the listing to
+    // find.
+    [[nodiscard]] bool writeIcon(std::string_view identifier,
+                                 std::span<const std::uint8_t> rgba,
+                                 std::uint32_t width, std::uint32_t height);
 
     [[nodiscard]] static std::string sanitizeDisplayName(std::string name);
     // 显示名 -> 文件夹名的那一步 slug 化，**不含**去重后缀。

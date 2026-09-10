@@ -1,5 +1,6 @@
 #include "gameplay/PlayerInteraction.hpp"
 
+#include "gameplay/Composter.hpp"
 #include "gameplay/EnchantmentCombat.hpp"
 #include "gameplay/EntitySystem.hpp"
 #include "gameplay/GameSession.hpp"
@@ -12,6 +13,7 @@
 #include "gameplay/Random.hpp"
 #include "gameplay/ScreenHandler.hpp"
 #include "gameplay/entities/BuiltinSpecies.hpp"
+#include "gameplay/entities/Villager.hpp"
 #include "world/Block.hpp"
 #include "world/BlockPlacement.hpp"
 #include "world/BlockShape.hpp"
@@ -314,6 +316,80 @@ bool tryAutoEquipArmor(GameSession& session) {
     return true;
 }
 
+// AR-M4: ComposterBlock's right-click, both halves of it.
+//
+// 26.1 splits this across useItemOn and useWithoutItem, but the two are one
+// decision on the block's LEVEL:
+//
+//   level 8 (READY) -> the bone meal pops out and the composter empties,
+//                      whatever is in the player's hand (even nothing);
+//   level 0..6      -> a compostable in hand goes in, on vanilla's roll
+//                      (the first item into an EMPTY composter is free);
+//   level 7         -> the fill is full and waiting out its twenty ticks;
+//                      vanilla returns SUCCESS and does nothing, so this
+//                      consumes the click without consuming the item.
+//
+// Returns whether the composter answered the click, matching toggleLever and
+// the rest of this ladder.
+[[nodiscard]] bool useComposter(GameSession& session, world::World& world, glm::ivec3 clicked) {
+    const auto state = world.state(clicked.x, clicked.y, clicked.z);
+    if (state.block() != world::Block::Composter) {
+        return false;
+    }
+    const glm::vec3 centre = glm::vec3{clicked} + glm::vec3{0.5F};
+    const int level = state.composterLevel();
+    GameplayMutationSink sink{world, session};
+
+    if (level >= world::kComposterReadyLevel) {
+        // ComposterBlock#extractProduce: one bone meal, then empty. The item is
+        // spawned just above the rim (vanilla's `1.01` offset) so it does not
+        // land back inside the bowl's own collision boxes.
+        session.spawnItemEntity(centre + glm::vec3{0.0F, 0.51F, 0.0F},
+                                ItemStack{world::Block::Air, 1U, &items::BoneMeal},
+                                glm::vec3{0.0F});
+        session.worldMutations().setBlock(world, {clicked.x, clicked.y, clicked.z},
+                                          state.withComposterLevel(0),
+                                          world::MutationFlags::All,
+                                          world::MutationCause::PlayerPlace, sink);
+        session.events().publish(
+            SoundEvent{SoundEventKind::BlockPlace, centre, world::Block::Composter});
+        return true;
+    }
+
+    const auto& held = session.inventory().selectedStack();
+    const float chance = compostChance(held);
+    if (chance <= 0.0F) {
+        return false;  // nothing compostable in hand: fall through to placement
+    }
+    if (level >= kComposterMaxFillLevel) {
+        return true;   // full and ripening: the click is consumed, the item is not
+    }
+    const int newLevel = composterAddItem(level, chance, session.composterRandom().nextFloat());
+    // The item is spent whether or not the roll landed — vanilla shrinks the
+    // stack on SUCCESS, and a failed roll is still a SUCCESS there.
+    if (session.gameMode() == GameMode::Survival) {
+        static_cast<void>(session.inventory().consumeSelected());
+    }
+    if (newLevel == level) {
+        session.events().publish(
+            SoundEvent{SoundEventKind::BlockHit, centre, world::Block::Composter});
+        return true;
+    }
+    session.worldMutations().setBlock(world, {clicked.x, clicked.y, clicked.z},
+                                      state.withComposterLevel(newLevel),
+                                      world::MutationFlags::All,
+                                      world::MutationCause::PlayerPlace, sink);
+    session.events().publish(
+        SoundEvent{SoundEventKind::BlockPlace, centre, world::Block::Composter});
+    // ComposterBlock#addItem: reaching MAX_LEVEL starts the twenty-tick wait
+    // that turns it READY. Scheduled here, by the code that knows the fill
+    // actually succeeded.
+    if (newLevel == kComposterMaxFillLevel) {
+        session.worldSimulation().queueComposterReady({clicked.x, clicked.y, clicked.z});
+    }
+    return true;
+}
+
 // AR-B4-7: RepeaterBlock#useWithoutItem (RepeaterBlock.java:43-51) and
 // ComparatorBlock#useWithoutItem (ComparatorBlock.java:130-141) — the two
 // handlers this file simply never had, which is why a right-click on either
@@ -527,6 +603,12 @@ void PlayerInteraction::tick(GameSession& session, world::World& world, Simulati
                     static_cast<void>(session.purchaseEnchantment(specific.optionIndex));
                 } else if constexpr (std::is_same_v<T, SetAnvilName>) {
                     session.setAnvilName(specific.name);
+                } else if constexpr (std::is_same_v<T, SelectTradeOffer>) {
+                    // AR-M6: ServerboundSelectTradePacket. The client says which
+                    // row; the server decides whether that row exists, is
+                    // unlocked and is in stock, and what the result slot shows.
+                    static_cast<void>(session.selectTradeOffer(
+                        static_cast<std::size_t>(specific.offerIndex)));
                 } else if constexpr (std::is_same_v<T, ClickCreativeItem>) {
                     session.inventory().clickCreativeItem(
                         specific.catalogStack, specific.button, specific.shiftHeld);
@@ -669,7 +751,7 @@ void PlayerInteraction::tick(GameSession& session, world::World& world, Simulati
     const bool heldEntity = latestUse_.has_value() && latestUse_->entity;
     if (using_ && latestUse_.has_value() && !heldEntity && session.serverTick() >= nextUseTick_ &&
         !session.eating() && !drawingBow) {
-        performUse(session, world, *latestUse_);
+        performUse(session, world, host, *latestUse_);
         nextUseTick_ = session.serverTick() + 4U;
     }
 }
@@ -853,7 +935,7 @@ void PlayerInteraction::applyBreak(GameSession& session, world::World& world,
 }
 
 void PlayerInteraction::performUse(GameSession& session, world::World& world,
-                                   const UseItemOn& use) {
+                                   SimulationHost& host, const UseItemOn& use) {
     if (session.eating()) {
         return;
     }
@@ -882,7 +964,7 @@ void PlayerInteraction::performUse(GameSession& session, world::World& world,
                                     !session.inventory().selectedStack().empty()) &&
         (toggleDoorOrGate(session, world, use.block, world::horizontalFacing(use.lookDirection)) ||
          pressButton(session, world, use.block) || toggleLever(session, world, use.block) ||
-         cycleDiode(session, world, use.block))) {
+         cycleDiode(session, world, use.block) || useComposter(session, world, use.block))) {
         session.playerActions().swingHand(InteractionHand::Main, SwingAnimation::Use, 6U);
         return;
     }
@@ -923,7 +1005,7 @@ void PlayerInteraction::performUse(GameSession& session, world::World& world,
         // SLP-2: BedBlock#useWithoutItem. The whole eight-step chain, the spawn
         // point and the OCCUPIED write live in the session, which is what owns
         // the clock, the entity list and the player.
-        session.trySleepInBed(world, {use.block.x, use.block.y, use.block.z});
+        session.trySleepInBed(world, host, {use.block.x, use.block.y, use.block.z});
         session.playerActions().swingHand(InteractionHand::Main, SwingAnimation::Use, 6U);
         break;
     case BlockInteraction::OpenAnvil:
@@ -1238,6 +1320,32 @@ void PlayerInteraction::performUse(GameSession& session, world::World& world,
             }
             break;
         }
+        case ItemUseAction::PrimeTnt: {
+            // EXP-2: TntBlock#onCaughtFire — the block is removed and a primed
+            // entity takes its place with vanilla's 80-tick fuse. The flint and
+            // steel wears exactly as it does lighting a fire.
+            const auto cell = use.block;
+            GameplayMutationSink sink{world, session};
+            if (session.worldMutations()
+                    .setBlock(world, {cell.x, cell.y, cell.z}, world::BlockState{},
+                              world::MutationFlags::All, world::MutationCause::PlayerBreak, sink)
+                    .changed) {
+                session.worldSimulation().ignitePrimedTnt(
+                    {static_cast<float>(cell.x) + 0.5F, static_cast<float>(cell.y) + 0.5F,
+                     static_cast<float>(cell.z) + 0.5F},
+                    80);
+                session.events().publish(SoundEvent{SoundEventKind::FlintAndSteelUse,
+                                                    glm::vec3{cell} + glm::vec3{0.5F}});
+                session.playerActions().swingHand(InteractionHand::Main, SwingAnimation::Use, 6U);
+                if (session.gameMode() == GameMode::Survival) {
+                    if (session.damageHeldTool(kPrimaryPlayerId, ToolUse::Ignite, 0.0F)) {
+                        session.events().publish(SoundEvent{SoundEventKind::ItemBreak,
+                                                            session.player().eyePosition()});
+                    }
+                }
+            }
+            break;
+        }
         case ItemUseAction::PlaceFire: {
             // AR-CX4-b: FlintAndSteelItem#useOn — write Fire into the adjacent
             // cell (already resolved to a replaceable, survivable target by
@@ -1296,6 +1404,30 @@ void PlayerInteraction::performUseOnEntity(GameSession& session, world::World&,
                   << " species=" << target->kind().id().path << " held=" << heldName
                   << " dyeable=" << (target->kind().dyeable() ? 1 : 0)
                   << " sheared=" << (target->sheared ? 1 : 0) << std::endl;
+    }
+
+    // AR-M5: Villager#mobInteract — the trade. Ahead of every other branch,
+    // because a villager is not shearable, not dyeable and not tempted, and
+    // vanilla's own dispatch answers the click with startTrading before
+    // anything else on a villager can.
+    //
+    // Registered deviation: 26.1 opens a MerchantScreen and lets the player pick
+    // an offer. This build has no merchant screen (a real one is a UI-line
+    // task — panel geometry, a scrolling offer list, three slots and the level
+    // bar all have to be built, and half-drawing it would be worse than not
+    // having it), so a click takes the FIRST unlocked offer the held stack can
+    // pay for. The mechanism underneath — per-offer uses, level unlocks and
+    // trading experience — is vanilla's, and the screen can be laid over it
+    // without changing any of it.
+    if (target->kind().villager()) {
+        // Villager#startTrading: the click OPENS the screen. It does not trade —
+        // picking an offer, paying for it and taking the goods are the screen's
+        // three actions, and all three go through GameSession's trading API.
+        if (session.openTradingContainer(use.entityId)) {
+            session.events().publish(ClientActionEvent{ClientActionEventKind::OpenContainer,
+                                                       ContainerScreen::Trading});
+        }
+        return;
     }
 
     // Sheep#mobInteract: shears win over the tempt-feed branch below (a shears

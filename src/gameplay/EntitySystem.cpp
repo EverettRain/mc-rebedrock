@@ -1354,6 +1354,39 @@ EntityTickResult EntitySystem::tick(
             if (const auto grassCell = entity.brain.takeEatGrassRequest()) {
                 result.grassEats.push_back({entity.id, *grassCell});
             }
+            if (const auto work = entity.brain.takeVillagerWorkRequest()) {
+                result.villagerWorks.push_back({entity.id, work->cell, work->kind});
+            }
+            // EXP-3: Creeper#tick's fuse. The goal sets a level ("swelling" or
+            // not) and this integrates it, so walking away from a hissing
+            // creeper winds the fuse back DOWN rather than merely pausing it.
+            // Costs nothing for every other species: the branch is skipped
+            // unless something is swelling or has a fuse still unwinding.
+            if (entity.brain.swelling() || entity.swell > 0) {
+                entity.swellDirection = entity.brain.swelling() ? 1 : -1;
+                entity.swell += entity.swellDirection;
+                if (entity.swell < 0) {
+                    entity.swell = 0;
+                }
+                if (entity.swell >= entities::kCreeperMaxSwell) {
+                    entity.swell = entities::kCreeperMaxSwell;
+                    // Creeper#explodeCreeper raises the blast at getX()/getY()/
+                    // getZ() — the creature's FEET, not its eye or centre. The
+                    // same detail EXP-2 got wrong for TNT and had to correct
+                    // after the field report that the blast reached too far: a
+                    // centre half a block higher clears the floor differently and
+                    // widens the crater. `position` is the feet, so it is passed
+                    // through unchanged.
+                    //
+                    // The session runs the blast (EntitySystem may not hurt the
+                    // player or roll loot), so this only reports it — and the
+                    // discard is a silent removal, not a death, so no loot and no
+                    // experience, exactly as Entity#discard.
+                    result.detonations.push_back(
+                        {entity.position, entities::kCreeperExplosionRadius});
+                    entity.discarded = true;
+                }
+            }
         }
 
         // Horizontal intent comes from the wander heading, plus whatever
@@ -1556,7 +1589,8 @@ EntityTickResult EntitySystem::tick(
     }
     const std::size_t sizeBeforeRemoval = entities_.size();
     std::erase_if(entities_, [&, peaceful](const SimpleEntity& entity) {
-        if (entity.position.y < kDespawnBelowY || entity.damage.deathTicks >= kDeathTicks) {
+        if (entity.discarded || entity.position.y < kDespawnBelowY ||
+            entity.damage.deathTicks >= kDeathTicks) {
             return true;
         }
         if (peaceful &&

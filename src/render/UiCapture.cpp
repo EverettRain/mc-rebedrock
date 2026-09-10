@@ -38,6 +38,8 @@ constexpr std::array kTargetNames{
     TargetName{{ui::PageId::Accessibility}, "accessibility"},
     TargetName{{ui::PageId::SoundSettings}, "sound-settings"},
     TargetName{{ui::PageId::ResourcePacks}, "resource-packs"},
+    TargetName{{ui::PageId::FontSettings}, "font-settings"},
+    TargetName{{ui::PageId::AdvancedGraphicsNotice}, "advanced-graphics-notice"},
     // A0-0：容器界面。★ 创造背包是 PlayerInventory 的**创造那一档**，不是第七块屏。
     TargetName{{ui::PageId::Game, gameplay::ContainerScreen::PlayerInventory, false},
                "inventory"},
@@ -51,6 +53,10 @@ constexpr std::array kTargetNames{
     TargetName{{ui::PageId::Game, gameplay::ContainerScreen::EnchantingTable},
                "enchanting-table"},
     TargetName{{ui::PageId::Game, gameplay::ContainerScreen::Anvil}, "anvil"},
+    // AR-M6: the trade screen. Nameable from --ui-shot from the moment the
+    // backend exists, so whoever builds the UI has a screenshot channel on day
+    // one rather than after the fact.
+    TargetName{{ui::PageId::Game, gameplay::ContainerScreen::Trading}, "trading"},
 };
 
 // 表必须覆盖 PageId 的每一个取值，否则 --ui-shot 会对某个真实存在的屏幕说"不认识"。
@@ -159,6 +165,15 @@ std::string_view uiCaptureTargetName(const UiCaptureTarget& target) {
         }
     }
     return "unknown";
+}
+
+std::vector<std::string_view> uiCaptureTargetNames() {
+    std::vector<std::string_view> names;
+    names.reserve(kTargetNames.size());
+    for (const TargetName& entry : kTargetNames) {
+        names.push_back(entry.name);
+    }
+    return names;
 }
 
 std::optional<UiCaptureTarget> uiCaptureTargetFromName(std::string_view name) {
@@ -317,6 +332,22 @@ std::optional<UiCaptureOptions> parseUiCaptureArguments(
                                             std::string{value});
             }
             result->tabIndex = parsed;
+        } else if (arguments[index] == "--ui-focus") {
+            if (++index >= arguments.size()) {
+                throw std::invalid_argument("--ui-focus requires a step count");
+            }
+            if (!result.has_value()) {
+                result = UiCaptureOptions{};
+            }
+            const std::string_view value = arguments[index];
+            std::uint32_t parsed = 0U;
+            const auto [end, error] =
+                std::from_chars(value.data(), value.data() + value.size(), parsed);
+            if (error != std::errc{} || end != value.data() + value.size()) {
+                throw std::invalid_argument("--ui-focus takes a non-negative integer, got: " +
+                                            std::string{value});
+            }
+            result->focusSteps = parsed;
         } else if (arguments[index] == "--ui-carry") {
             if (!result.has_value()) {
                 result = UiCaptureOptions{};

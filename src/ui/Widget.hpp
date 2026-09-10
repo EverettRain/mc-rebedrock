@@ -66,6 +66,22 @@ enum class WidgetKind : std::uint8_t {
     // 它是一个 kind 而不是另一个控件家族，理由与 IconButton 同：同一套命中、同一套
     // 派发，区别只在绘制侧画的是一格物品。
     Slot,
+    // UI-11 / A5：一个复选框（26.1 `Checkbox`）。左边一个 17x17 的方盒（四态精灵），
+    // 右边一行文字，整块都是热区——它在 26.1 里就是个 `AbstractButton`。
+    //
+    // 它是一个 kind 而不是"标签写成 [x] 的 Button"：勾没勾上是**状态**，
+    // 而按钮的外观只由 enabled / hover / pressed 决定。把它塞进 Button 就得靠
+    // debugId 分派绘制，那条路 Tab 那里已经明令禁止过一次。
+    Checkbox,
+    // UI-11 / A6：一张图（26.1 `GuiGraphics.blit` 出来的那种，不是九宫格控件）。
+    //
+    // ★ 第一个消费者是世界列表每一行左边那张 32x32 的存档缩略图
+    //   （`WorldSelectionList.WorldListEntry`，spec §7 的 `<Image id="icon">`）。
+    //   它**不可交互**：26.1 里图标位上那块"点一下直接进世界"的热区是行自己的
+    //   `mouseOverIcon`，不是图片控件——热区与画在哪不是一回事（IconZone 那条注释）。
+    //   做成控件的收益是那张图从此吃到"控件不越界"这条通用护栏，而它此前是绘制
+    //   循环里就地算出来的一个矩形，任何护栏都够不着。
+    Image,
 };
 
 // UI-4：图标钮里那张图标的边长与按钮边长（26.1 `CommonButtons`：20x20 的钮里一张 15x15 的图）。
@@ -131,6 +147,21 @@ struct Widget final {
     //   这一层。
     std::string tooltip{};
 
+    // UI-11 / A5：`kind == Checkbox` 时这一格勾上了没有。其余 kind 下没有意义。
+    //
+    // ★ 它是**装配时抓的一张快照**，真相在屏幕状态里（`MenuSystem::noticeStopShowing`）
+    //   ——页面每帧重建，快照因此每帧都是新的。这与滑块把 `value()` 做成回调是同一件事
+    //   的两种写法：滑块每帧要被拖，复选框一帧只读一次。
+    bool checked = false;
+
+    // UI-11 / A6：`kind == Image` 时画第几张图。语义由 debugId 决定——
+    // `WidgetId::WorldIcon` 时它是**窗口内**的行号（与 `selectWorldRow` 收到的那个
+    // 行号同一个口径），绘制侧加上滚动起点才是存档的绝对下标。
+    //
+    // ★ 用「窗口内行号」而不是绝对下标：装配侧只知道窗口有几行（`ctx.worldRowCount`），
+    //   绝对下标要另外把滚动起点也喂给装配——那就是第二份可能与布局不同步的表述。
+    std::uint16_t imageIndex = 0U;
+
     // A0：`kind == Slot` 时这一格是哪个槽。其余 kind 下这两个字段没有意义。
     //
     // ★ 为什么直接用 `gameplay::SlotKind` 而不在 ui 里另建一个镜像枚举：那会是
@@ -142,7 +173,8 @@ struct Widget final {
     std::uint16_t slotIndex = 0U;
 
     [[nodiscard]] bool interactive() const noexcept {
-        return kind != WidgetKind::Label && kind != WidgetKind::Panel;
+        return kind != WidgetKind::Label && kind != WidgetKind::Panel &&
+               kind != WidgetKind::Image;
     }
 };
 

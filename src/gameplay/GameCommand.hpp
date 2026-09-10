@@ -130,6 +130,21 @@ struct ClickEnchantOption final {
         default;
 };
 
+// AR-M6: the trade screen's offer list was clicked. The analogue of 26.1's
+// ServerboundSelectTradePacket — the client sends only which row, and the
+// server decides everything else (whether that row exists, whether the
+// villager's level has unlocked it, whether it is out of stock, and what the
+// result slot therefore shows).
+//
+// `offerIndex` is the row, top first. Any value the villager has no offer for —
+// including the deliberate `kNoTradeSelected` — is legal and clears the
+// selection; a UI never has to validate before sending.
+struct SelectTradeOffer final {
+    std::uint32_t offerIndex = 0U;
+    [[nodiscard]] friend bool operator==(const SelectTradeOffer&, const SelectTradeOffer&) =
+        default;
+};
+
 // I-3: the anvil's rename box changed. The analogue of 26.1's
 // ServerboundRenameItemPacket — the client owns the text field, the server owns
 // what the rename costs and whether it applies at all. Sent on every edit (the
@@ -220,7 +235,7 @@ struct MovementInput final {
 using GameCommand = std::variant<PlayerAction, UseItemOn, UseItem, UseItemStop, SwapSlot, ClickSlot,
                                  ChatCommand, ClickCreativeItem, ClearCursor, DropCursor,
                                  DropSelected, DragDistribute, PickupAll, ClickEnchantOption,
-                                 SetAnvilName>;
+                                 SetAnvilName, SelectTradeOffer>;
 
 // The input queue between the render thread and the simulation tick.
 class GameCommandQueue final {

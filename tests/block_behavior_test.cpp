@@ -149,6 +149,8 @@ void testPrefilterParity() {
                 definition.model == mc::world::BlockModel::Wall ||
 definition.model == mc::world::BlockModel::CrossCollision ||
                    definition.model == mc::world::BlockModel::Bed ||
+                   // EXP-2: TNT primes on a redstone signal.
+                   block == mc::world::Block::Tnt ||
                 definition.model == mc::world::BlockModel::FenceGate ||
                 definition.states.has(mc::world::StateProperty::Locked)));
         assert(runtime.has(BlockBehaviorBit::HasRandomTick) ==

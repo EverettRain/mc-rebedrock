@@ -22,6 +22,7 @@
 #include "gameplay/PlayerTickSnapshot.hpp"
 #include "gameplay/PlayerVitals.hpp"
 #include "gameplay/ServerPlayer.hpp"
+#include "gameplay/Explosion.hpp"
 #include "gameplay/Sleep.hpp"
 #include "gameplay/ScreenHandler.hpp"
 #include "gameplay/SimulationHostBridge.hpp"
@@ -81,6 +82,8 @@ struct SimulationHost {
     virtual void playPlayerHurt(glm::vec3 position) = 0;
     virtual void playPlayerFall(glm::vec3 position, bool heavy) = 0;
     virtual void playBurp(glm::vec3 position) = 0;
+    // EXP-1: entity.generic.explode.
+    virtual void playExplode(glm::vec3 position) = 0;
     // A creature sound event. `type` is the species that owns the clip, so the
     // host plays the right hurt/death/ambient/step sound per species.
     virtual void playCreatureHurt(const entities::EntityType& type, glm::vec3 position) = 0;
@@ -236,6 +239,41 @@ class GameSession final {
     // EnchantmentMenu#clickMenuButton: buy option `optionIndex` (0..2). Returns
     // whether anything was actually bought.
     bool purchaseEnchantment(int optionIndex);
+
+    // --- AR-M6: the trade screen's backend ---------------------------------
+    //
+    // The four calls a trade UI needs, and nothing else. See
+    // docs/content-dev/AR-content-realization/AR-M6-trading-backend-interface.md
+    // for the contract, the lifecycle and the snapshot fields.
+
+    // Opens the trade screen on a villager. Refuses (returns false, opens
+    // nothing) for an entity that is not a villager, is dead, or has no
+    // profession — an unemployed villager has no offers to show, and vanilla's
+    // Villager#mobInteract likewise does not start trading with one.
+    bool openTradingContainer(std::uint64_t entityId);
+    // The open merchant menu: the two payment slots, the derived result, the
+    // offer views and the villager's level/experience. Always present; a menu
+    // whose `open()` is false is simply empty.
+    [[nodiscard]] TradingMenu& tradingMenu();
+    [[nodiscard]] const TradingMenu& tradingMenu() const;
+    // MerchantMenu#slotsChanged, driven from the tick: re-read the villager's
+    // level and use counts into the offer views and re-derive the result slot.
+    // A no-op when the screen is closed. Safe to call every tick; it also
+    // closes the screen by itself when the villager has gone (died, unloaded),
+    // which is the one thing a UI must not have to police.
+    void refreshTradingOffers();
+    // Picks the offer at `index` (or kNoTradeSelected to pick none). Returns
+    // whether the selection changed anything — an out-of-range index, a locked
+    // offer and an out-of-stock one are all legal to send and all leave the
+    // selection cleared rather than erroring.
+    bool selectTradeOffer(std::size_t index);
+    // MerchantResultSlot#onTake: completes ONE use of the selected offer —
+    // spends the payments, gives the goods to the player, counts the use, and
+    // grants the villager the offer's trading experience (which is what raises
+    // its level and unlocks the next tier). Returns whether a trade happened.
+    // Everything is checked here, so a UI may call it on any click of the
+    // result slot without pre-validating.
+    bool takeTradeResult();
     // ENCH-3: the open anvil's menu, and the two operations on it. `refresh`
     // re-derives the result after any slot change (ItemCombinerMenu#slotsChanged);
     // `take` is the result-slot click that actually pays.
@@ -245,7 +283,15 @@ class GameSession final {
     // problem — None means the player is now in bed — so the caller can say why
     // it refused. The night skip itself happens in tick(), once the player has
     // been asleep long enough.
-    BedSleepProblem trySleepInBed(world::World& world, glm::ivec3 bed);
+    // EXP-1: set off a blast. Runs the ray cast (Explosion.hpp), breaks what
+    // gives way, rolls each broken block's loot at 1/radius, then hurts and
+    // shoves everything the blast can see. Returns how many blocks it broke.
+    std::size_t explode(world::World& world, SimulationHost& host,
+                        const ExplosionSpec& spec);
+
+    // `host` is needed because a bed in a dimension whose BedRule explodes does
+    // exactly that, and an explosion hurts the player through hurtPlayer.
+    BedSleepProblem trySleepInBed(world::World& world, SimulationHost& host, glm::ivec3 bed);
     // Player#stopSleeping: clears the OCCUPIED bits and stands the player up.
     // `skipNight` is what the tick passes when the sleep completed.
     void wakeUp(world::World& world, bool skipNight);
@@ -351,6 +397,9 @@ class GameSession final {
         toolDamageRandom_.setSeed(seed ^ 0x165667B19E3779F9ULL);
         // ENCH-2: the enchantment-seed reroll stream, salted independently again.
         enchantmentSeedRandom_.setSeed(seed ^ 0x7F4A7C15D1B54A32ULL);
+        // AR-M4: the composter's accept/reject draw, salted independently again
+        // — filling a composter must not shift the Thorns or orb sequences.
+        composterRandom_.setSeed(seed ^ 0x3C6EF372A54FF53AULL);
     }
     // EQ-4: the deterministic stream Thorns' random_chance draw and reflected-
     // damage roll take, so a test can seed it and replay an exact trigger
@@ -360,6 +409,9 @@ class GameSession final {
     // draws take, so a test can seed it and replay an exact spend sequence (the
     // "same seed ⇒ same durability sequence" acceptance assertion).
     [[nodiscard]] world::gen::JavaRandom& toolDamageRandom() { return toolDamageRandom_; }
+    // AR-M4: the composter's own stream. Exposed for the same reason as the two
+    // above — a test seeds it and replays an exact accept/reject sequence.
+    [[nodiscard]] world::gen::JavaRandom& composterRandom() { return composterRandom_; }
     // XP-1's spawnExperienceOrbs(pos, amount): denomination-splits `amount` into
     // vanilla's fixed orb values and places each one, drawing every scatter
     // velocity from this session's own JavaRandom stream — never the wall
@@ -494,6 +546,13 @@ class GameSession final {
     [[nodiscard]] const Inventory& inventory() const { return primaryPlayer().inventory; }
     [[nodiscard]] EquipmentSlots& equipment() { return primaryPlayer().equipment; }
     [[nodiscard]] const EquipmentSlots& equipment() const { return primaryPlayer().equipment; }
+    [[nodiscard]] RecipeBook& recipeBook() { return primaryPlayer().recipeBook; }
+    [[nodiscard]] const RecipeBook& recipeBook() const { return primaryPlayer().recipeBook; }
+    // ADV-1：成就进度（配方解锁链的另一半，落盘走 ADVP 块）。
+    [[nodiscard]] PlayerAdvancements& advancements() { return primaryPlayer().advancements; }
+    [[nodiscard]] const PlayerAdvancements& advancements() const {
+        return primaryPlayer().advancements;
+    }
     [[nodiscard]] CraftingSystem& craftingSystem() { return primaryPlayer().crafting; }
     [[nodiscard]] const CraftingSystem& craftingSystem() const { return primaryPlayer().crafting; }
     [[nodiscard]] GameMode& gameMode() { return primaryPlayer().gameMode; }
@@ -929,6 +988,8 @@ class GameSession final {
     // never perturbs the orb scatter or the Thorns sequence, and the same save
     // replayed with the same purchases always lands on the same offers.
     world::gen::JavaRandom enchantmentSeedRandom_;
+    // AR-M4: ComposterBlock#addItem's `random.nextDouble() < chance`.
+    world::gen::JavaRandom composterRandom_;
     // ENCH-3: which damaged Mending item a collected experience orb repairs
     // (vanilla's getRandomItemWith pick), on its own stream so a repair never
     // perturbs the orb scatter or any other system's draws.

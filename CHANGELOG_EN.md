@@ -8,6 +8,12 @@ simple versioned history while it is in beta.
 ## ReBedrock 26.1beta1
 
 ### Added
+- Recipes now unlock the way Minecraft unlocks them: picking up *the one* material a recipe is
+  keyed to unlocks it, rather than any ingredient of it counting. A wooden pickaxe is keyed to
+  sticks, a stone pickaxe to cobblestone, a torch to a stone pickaxe -- each one follows the
+  material vanilla itself picked, so recipes now appear in the recipe book in vanilla's order.
+  Unlock progress is saved with the world; an older save re-checks whatever you are already
+  carrying when it loads, so nothing is lost by not having had the progress recorded before.
 - Shadows fade in the rain. The sky darkens when it rains, but the sun's shadows used to stay
   exactly as deep as on a clear day -- the ground went dim while every shadow on it stayed sharp
   and black. Cloud scatters direct sunlight, so they now lighten as the rain comes on and vanish
@@ -44,6 +50,11 @@ simple versioned history while it is in beta.
 
 
 ### Fixed
+- Recipes and block drops shipped in a data pack are actually read now. The directories being
+  searched were the old plural names (`recipes/`, `loot_tables/blocks/`, `functions/`), while
+  Minecraft has used the singular ones since 1.21 (`recipe/`, `loot_table/blocks/`, `function/`),
+  so none of those files ever matched -- silently, with no error and no warning, exactly as if the
+  pack had not carried them.
 - The outline around the block you are aiming at no longer breaks up into dashes. The edges facing
   away from you were losing most of their pixels to the very face they lie on, so the box read as
   three solid edges and a handful of dotted ones that flickered as you moved.

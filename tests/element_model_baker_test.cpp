@@ -602,15 +602,16 @@ void checkStore() {
     // Size guardrail: geometry per model, texture layer per block. Keyed per
     // block instead, this table would be megabytes.
     assert(store.byteSize() < 500U * 1024U);
-    assert(store.rangeCount() ==
-           elementModelVariantCount(ElementModelKind::Repeater) +
-               elementModelVariantCount(ElementModelKind::Comparator) +
-               elementModelVariantCount(ElementModelKind::Lever) +
-               elementModelVariantCount(ElementModelKind::EnchantingTable) +
-               elementModelVariantCount(ElementModelKind::Anvil) +
-               elementModelVariantCount(ElementModelKind::Door) +
-               elementModelVariantCount(ElementModelKind::TrapDoor) +
-               elementModelVariantCount(ElementModelKind::FenceGate));
+    // Every kind's variants, summed by walking the enum rather than by listing
+    // the kinds: this assertion used to name all eight by hand, and AR-M4's
+    // ninth (the composter) silently made it wrong. Walking the enum means the
+    // store and this check can never disagree about how many kinds exist.
+    std::size_t expectedRanges = 0U;
+    for (std::size_t index = 0; index <= static_cast<std::size_t>(ElementModelKind::None);
+         ++index) {
+        expectedRanges += elementModelVariantCount(static_cast<ElementModelKind>(index));
+    }
+    assert(store.rangeCount() == expectedRanges);
 }
 
 int main() {

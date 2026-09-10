@@ -1,6 +1,7 @@
 #include "gameplay/ChestLootTable.hpp"
 
 #include "core/Json.hpp"
+#include "data/DataPackPaths.hpp"
 #include "gameplay/Item.hpp"
 #include "gameplay/ItemRegistry.hpp"
 #include "gameplay/Random.hpp"
@@ -78,7 +79,7 @@ void ChestLootTable::load(const assets::ResourceProvider& resources) {
 
 void ChestLootTable::applyOverlay(const assets::ResourceProvider& resources) {
     for (const auto& location :
-         resources.list("minecraft", "loot_table/chests", assets::PackType::ServerData)) {
+         resources.list("minecraft", data::pack::kChestLootDir, assets::PackType::ServerData)) {
         const auto bytes = resources.readBytes(location);
         if (bytes.empty()) {
             continue;

@@ -51,6 +51,12 @@ struct CraftingRecipeDef final {
     std::vector<IngredientDef> ingredients;
     std::string output; // the produced item/block identifier
     std::uint8_t count = 1U;
+    // ADV-1: which material unlocks this recipe (see BakedCraftingRecipe below).
+    // A datapack recipe that names none stays Empty, and the advancement floor
+    // simply generates no unlock advancement for it — an overlay recipe is
+    // reachable through /recipe give and through crafting it, which is what
+    // vanilla does for a recipe whose provider never called unlockedBy().
+    IngredientDef unlockedBy;
 
     [[nodiscard]] bool operator==(const CraftingRecipeDef&) const = default;
 };
@@ -62,6 +68,7 @@ struct FurnaceRecipeDef final {
     std::uint8_t count = 1U;
     std::int32_t cookTicks = 200;
     float experience = 0.0F;
+    IngredientDef unlockedBy; // ADV-1, see CraftingRecipeDef::unlockedBy
 
     [[nodiscard]] bool operator==(const FurnaceRecipeDef&) const = default;
 };
@@ -130,6 +137,7 @@ struct Codec<CraftingRecipeDef> {
             .field("ingredients", recipe.ingredients)
             .field("output", recipe.output)
             .field("count", recipe.count)
+            .field("unlockedBy", recipe.unlockedBy)
             .take();
     }
     static bool read(const core::Json& json, CraftingRecipeDef& out) {
@@ -141,7 +149,10 @@ struct Codec<CraftingRecipeDef> {
             .optionalField("allowMirror", out.allowMirror)
             .field("ingredients", out.ingredients)
             .field("output", out.output)
-            .optionalField("count", out.count);
+            .optionalField("count", out.count)
+            // ADV-1: optional — a datapack recipe that names no unlock material
+            // simply gets no unlock advancement (see CraftingRecipeDef).
+            .optionalField("unlockedBy", out.unlockedBy);
         return reader.ok();
     }
 };
@@ -156,6 +167,7 @@ struct Codec<FurnaceRecipeDef> {
             .field("count", recipe.count)
             .field("cookTicks", recipe.cookTicks)
             .field("experience", recipe.experience)
+            .field("unlockedBy", recipe.unlockedBy)
             .take();
     }
     static bool read(const core::Json& json, FurnaceRecipeDef& out) {
@@ -165,7 +177,8 @@ struct Codec<FurnaceRecipeDef> {
             .field("output", out.output)
             .optionalField("count", out.count)
             .optionalField("cookTicks", out.cookTicks)
-            .optionalField("experience", out.experience);
+            .optionalField("experience", out.experience)
+            .optionalField("unlockedBy", out.unlockedBy);
         return reader.ok();
     }
 };
@@ -183,6 +196,23 @@ struct BakedIngredient final {
     std::string_view id;
 };
 
+// ADV-1：`unlockedBy` —— 触发这条配方解锁的那个材料。
+//
+// 这不是本作发明的字段，是把 vanilla 已有的东西搬到它本来的位置：vanilla 的
+// `advancement/recipes/**.json`（1492 个）是**派生产物**，源头是配方构建器上的
+// `unlockedBy(...)`，`RecipeProvider` 在数据生成期把它生成成 JSON。所以解锁材料
+// 本来就属于「配方那一行」，写成第二份 77 条独立成就表才是复制。
+//
+// 类型是 BakedIngredient 而不是裸 id 字符串：vanilla 那个 `items` 谓词写的经常
+// 是**标签**（`#minecraft:planks`、`#minecraft:stone_tool_materials`），而
+// BakedIngredient 的 Planks 分支正是本作表达「任意木板」的那一个；用它还能让
+// 「这堆物品算不算这个材料」复用 `ingredientMatches`——配方匹配的单一真相源，
+// 不必再抄一份谓词。
+//
+// ★ 必填。`IngredientDefKind::Empty` 在这里被保留成「没填」的哨兵（一格空材料
+// 对「解锁条件」没有意义），RecipeTable.cpp 里有一条 constexpr 全表检查的
+// static_assert：新增一条配方而漏填 unlockedBy，**编译期**就停下。这条规矩是
+// 为了让「配方表与解锁表两份表述会不同步」这个风险死在类型层面。
 struct BakedCraftingRecipe final {
     std::string_view identifier;
     std::uint8_t width;
@@ -192,6 +222,7 @@ struct BakedCraftingRecipe final {
     std::span<const BakedIngredient> ingredients;
     std::string_view output;
     std::uint8_t count;
+    BakedIngredient unlockedBy;
 };
 
 struct BakedFurnaceRecipe final {
@@ -201,6 +232,7 @@ struct BakedFurnaceRecipe final {
     std::uint8_t count;
     std::int32_t cookTicks;
     float experience;
+    BakedIngredient unlockedBy;
 };
 
 [[nodiscard]] inline IngredientDef toDef(const BakedIngredient& baked) {
@@ -220,6 +252,7 @@ struct BakedFurnaceRecipe final {
     }
     def.output = std::string{baked.output};
     def.count = baked.count;
+    def.unlockedBy = toDef(baked.unlockedBy);
     return def;
 }
 
@@ -231,6 +264,7 @@ struct BakedFurnaceRecipe final {
     def.count = baked.count;
     def.cookTicks = baked.cookTicks;
     def.experience = baked.experience;
+    def.unlockedBy = toDef(baked.unlockedBy);
     return def;
 }
 

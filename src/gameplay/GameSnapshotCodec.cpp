@@ -243,6 +243,27 @@ void appendWorld(std::vector<std::uint8_t>& bytes, const WorldSnapshot& snap) {
     codec::appendItemStack(bytes, snap.anvilRight);
     codec::appendItemStack(bytes, snap.anvilResult);
     persistence::appendInteger(bytes, snap.anvilCost);
+    // AR-M6: the trade screen's display state. Fixed-width like the arrays
+    // above — every row rides whether or not it is live, so the message shape
+    // does not depend on which villager is open.
+    codec::appendItemStack(bytes, snap.tradePaymentA);
+    codec::appendItemStack(bytes, snap.tradePaymentB);
+    codec::appendItemStack(bytes, snap.tradeResult);
+    for (std::size_t row = 0; row < kSnapshotTradeOffers; ++row) {
+        codec::appendItemStack(bytes, snap.tradeWantsA[row]);
+        codec::appendItemStack(bytes, snap.tradeWantsB[row]);
+        codec::appendItemStack(bytes, snap.tradeGives[row]);
+        persistence::appendInteger(bytes, snap.tradeOfferLevels[row]);
+        persistence::appendInteger(bytes, snap.tradeOfferUses[row]);
+        persistence::appendInteger(bytes, snap.tradeOfferMaxUses[row]);
+        persistence::appendInteger(bytes, snap.tradeOfferLocked[row]);
+        persistence::appendInteger(bytes, snap.tradeOfferOutOfStock[row]);
+    }
+    persistence::appendInteger(bytes, snap.tradeOfferCount);
+    persistence::appendInteger(bytes, snap.tradeSelectedOffer);
+    persistence::appendInteger(bytes, snap.tradeVillagerLevel);
+    persistence::appendInteger(bytes, snap.tradeXpInLevel);
+    persistence::appendInteger(bytes, snap.tradeXpForNextLevel);
 }
 
 [[nodiscard]] std::optional<WorldSnapshot> readWorld(std::span<const std::uint8_t> bytes,
@@ -335,6 +356,24 @@ void appendWorld(std::vector<std::uint8_t>& bytes, const WorldSnapshot& snap) {
     if (!readStack(snap.anvilRight)) return std::nullopt;
     if (!readStack(snap.anvilResult)) return std::nullopt;
     snap.anvilCost = persistence::readInteger<std::int32_t>(bytes, cursor);
+    if (!readStack(snap.tradePaymentA)) return std::nullopt;
+    if (!readStack(snap.tradePaymentB)) return std::nullopt;
+    if (!readStack(snap.tradeResult)) return std::nullopt;
+    for (std::size_t row = 0; row < kSnapshotTradeOffers; ++row) {
+        if (!readStack(snap.tradeWantsA[row])) return std::nullopt;
+        if (!readStack(snap.tradeWantsB[row])) return std::nullopt;
+        if (!readStack(snap.tradeGives[row])) return std::nullopt;
+        snap.tradeOfferLevels[row] = persistence::readInteger<std::uint8_t>(bytes, cursor);
+        snap.tradeOfferUses[row] = persistence::readInteger<std::uint8_t>(bytes, cursor);
+        snap.tradeOfferMaxUses[row] = persistence::readInteger<std::uint8_t>(bytes, cursor);
+        snap.tradeOfferLocked[row] = persistence::readInteger<std::uint8_t>(bytes, cursor);
+        snap.tradeOfferOutOfStock[row] = persistence::readInteger<std::uint8_t>(bytes, cursor);
+    }
+    snap.tradeOfferCount = persistence::readInteger<std::uint8_t>(bytes, cursor);
+    snap.tradeSelectedOffer = persistence::readInteger<std::uint8_t>(bytes, cursor);
+    snap.tradeVillagerLevel = persistence::readInteger<std::uint8_t>(bytes, cursor);
+    snap.tradeXpInLevel = persistence::readInteger<std::int32_t>(bytes, cursor);
+    snap.tradeXpForNextLevel = persistence::readInteger<std::int32_t>(bytes, cursor);
     return snap;
 }
 

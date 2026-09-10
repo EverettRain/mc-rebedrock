@@ -61,6 +61,12 @@ namespace mc::gameplay {
     case SlotKind::FurnaceOutput: return snapshot.furnaceOutput;
     case SlotKind::EnchantingItem:  return snapshot.enchantingItem;
     case SlotKind::EnchantingLapis: return snapshot.enchantingLapis;
+    // AR-M6: the merchant menu's three slots, read from the snapshot the same
+    // way — including the result, which is derived on the simulation side and
+    // published like any other stack.
+    case SlotKind::TradePaymentA:   return snapshot.tradePaymentA;
+    case SlotKind::TradePaymentB:   return snapshot.tradePaymentB;
+    case SlotKind::TradeResult:     return snapshot.tradeResult;
     case SlotKind::AnvilLeft:   return snapshot.anvilLeft;
     case SlotKind::AnvilRight:  return snapshot.anvilRight;
     case SlotKind::AnvilOutput: return snapshot.anvilResult;

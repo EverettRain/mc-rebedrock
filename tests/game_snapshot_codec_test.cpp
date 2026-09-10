@@ -118,6 +118,35 @@ void checkRoundTrip(const gameplay::PublishedSnapshot& snapshot) {
     snap.openContainerScreen = gameplay::ContainerScreen::CraftingTable;
     snap.openChest = gameplay::ChestPosition{7, 8, 9};
     snap.openFurnace = glm::ivec3{1, 2, 3};
+    // AR-M6：交易屏的每一个字段。
+    //
+    // ★ **必须填非默认值**，否则这条往返测试对它们等于不存在：`checkRoundTrip` 断的是
+    //   `snapshot == *decoded` 的整体相等，而一个被 codec 丢掉的字段在两边都是默认值时
+    //   **仍然相等**。AR-M6 落地时 `WorldSnapshot` 加了 12 个 trade 字段、
+    //   `GameSnapshotCodec.cpp` 也确实编解码了它们，但这个文件里 `trade` 是零命中——
+    //   也就是"编了没测"。而后端自己的测试读的是 `session.worldSnapshot()`（发布侧），
+    //   渲染线程读的却是 `clientMirror.world()`（解码侧）：丢一个字段，后端全绿而屏上是空的。
+    //   本仓为此栽过一次（codec 漏字段堵死实体交互），规矩就是"往返测试须填非默认值"。
+    snap.tradePaymentA = {world::Block::Air, 20U, &gameplay::items::Wheat};
+    snap.tradePaymentB = {world::Block::Air, 3U, &gameplay::items::Carrot};
+    snap.tradeResult = {world::Block::Air, 1U, &gameplay::items::Emerald};
+    snap.tradeWantsA[0] = {world::Block::Air, 20U, &gameplay::items::Wheat};
+    snap.tradeWantsB[0] = {world::Block::Air, 2U, &gameplay::items::Stick};
+    snap.tradeGives[0] = {world::Block::Air, 1U, &gameplay::items::Emerald};
+    // 第二行取块形态的代价（南瓜是 BlockItem），与第一行的纯物品是两条不同的路。
+    snap.tradeWantsA[1] = {world::Block::Pumpkin, 6U,
+                           gameplay::blockItemFor(world::Block::Pumpkin)};
+    snap.tradeGives[1] = {world::Block::Air, 1U, &gameplay::items::Emerald};
+    snap.tradeOfferLevels = {1U, 2U, 3U, 4U, 5U, 1U, 2U, 3U};
+    snap.tradeOfferUses = {0U, 1U, 16U, 2U, 3U, 4U, 5U, 6U};
+    snap.tradeOfferMaxUses = {16U, 12U, 16U, 16U, 12U, 16U, 16U, 12U};
+    snap.tradeOfferLocked = {0U, 0U, 0U, 1U, 1U, 0U, 0U, 0U};
+    snap.tradeOfferOutOfStock = {0U, 0U, 1U, 0U, 0U, 0U, 0U, 0U};
+    snap.tradeOfferCount = 7U;
+    snap.tradeSelectedOffer = 2U;
+    snap.tradeVillagerLevel = 3U;
+    snap.tradeXpInLevel = 17;
+    snap.tradeXpForNextLevel = 70;
     return snap;
 }
 

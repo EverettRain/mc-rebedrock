@@ -8,6 +8,7 @@
 #include "render/vulkan/TemporalResolve.hpp"
 #include "render/vulkan/OffscreenTarget.hpp"
 #include "render/vulkan/SwapchainFormat.hpp"
+#include "render/WorldIcon.hpp"
 #include "render/vulkan/SceneReadback.hpp"
 #include "render/vulkan/TextureManager.hpp"
 #include "render/vulkan/VulkanDevice.hpp"
@@ -411,6 +412,10 @@ struct VulkanRenderer::Impl final : public gameplay::SimulationHost {
     }
     void playBurp(glm::vec3 position) override {
         audioSystem.playBurp(position);
+        emitLastSubtitle();
+    }
+    void playExplode(glm::vec3 position) override {
+        audioSystem.playExplode(position);
         emitLastSubtitle();
     }
     void playCreatureHurt(const gameplay::entities::EntityType& type, glm::vec3 position) override {
@@ -1450,6 +1455,12 @@ struct VulkanRenderer::Impl final : public gameplay::SimulationHost {
         //    （与 runPreviewExport 同理：那条主循环里的 uiTimeSeconds += dt 不在这条路径上），
         //    这里把起点也钉死，于是"第几次运行"不会改变全景的角度。
         uiTimeSeconds = kUiCaptureClockSeconds;
+        // 1b. 时区**不在这里钉**。世界列表那一行的日期串是本地时区的函数，出图必须
+        //     确定性——但钉法是把"按 UTC 解释"当成**参数**传给格式化
+        //     （`HudRenderer::formatWorldLastPlayed` 读 `uiCaptureActive`），
+        //     而不是在这里改进程的 `TZ`。第一版真写成了 `setenv("TZ","UTC")`，
+        //     两个毛病：Windows 的 CRT 没有 `setenv`（交叉构建当场报错），
+        //     且 `getenv`/`setenv` 并发是未定义行为（core/EnvFlags.hpp 开篇）。
         // 2. 鼠标。按钮的悬停高亮读光标位置，而隐藏窗口下指针停在哪儿不由我们决定。
         //    钉到画布外的一个点，于是没有任何控件处于悬停态（ui_capture_test 断言这条性质）。
         // 光标：按钮的悬停高亮与槽位提示框都读它。默认钉在画布外（没有任何东西悬停），
@@ -1597,6 +1608,40 @@ struct VulkanRenderer::Impl final : public gameplay::SimulationHost {
             uiCapture->tabIndex < static_cast<std::size_t>(ui::CreateWorldTab::Count)
                 ? static_cast<ui::CreateWorldTab>(uiCapture->tabIndex)
                 : ui::CreateWorldTab::Game;
+        // UI-11 / A6：世界列表那三屏的存档清单同样由夹具决定。★ 从前它们拍出来
+        // 永远是「No worlds yet」——而"一行长什么样"正是 A6 要改的东西。
+        // 滚动位置一并钉住，理由与创造背包那一行完全相同。
+        menuSystem.saveSummaries = uiCaptureSaveSummaries(target);
+        menuSystem.selectedWorldIndex = uiCaptureSelectedWorldRow(target);
+        menuSystem.worldListFirstIndex = 0U;
+        // ★ 缩略图**不走 refreshWorldIcons()**：那条路读的是磁盘上真实存档的
+        //   icon.png，而截图通道不许依赖工作树里有什么（options.properties 那次的
+        //   教训）。这里直接把夹具那张图上传进同一层、填同一张槽位表——读取与
+        //   绘制两侧走的仍是生产路径。
+        menuSystem.worldIconSlots.clear();
+        if (!menuSystem.saveSummaries.empty() && menuSystem.saveSummaries.front().hasIcon) {
+            assets::ImageData icon;
+            icon.width = kWorldIconSlotSize;
+            icon.height = kWorldIconSlotSize;
+            icon.rgba = uiCaptureWorldIcon();
+            menuSystem.worldIconSlots.push_back(menuSystem.saveSummaries.front().identifier);
+            textures_.uploadWorldIcons(std::span<const assets::ImageData>{&icon, 1U});
+        } else {
+            textures_.uploadWorldIcons({});
+        }
+        // UI-12：焦点。★ **无论用不用这根轴都要设**——不设的话上一个目标留下的焦点
+        //   会跟到下一张图上（同一次运行拍多屏），那正是 determinism knob 的定义。
+        //   语义是"按了几次 Tab"：焦点走的是**可聚焦**控件序，Label / Image 不占位，
+        //   所以这里必须先把页面装配出来再一步步推，不能拿一个裸下标当焦点。
+        menuSystem.setFocus(target.page, ui::kNoWidget);
+        if (uiCapture.has_value() && uiCapture->focusSteps > 0U) {
+            const ui::Page focusPage = buildCurrentPage();
+            std::size_t focus = ui::kNoWidget;
+            for (std::size_t step = 0; step < uiCapture->focusSteps; ++step) {
+                focus = ui::nextFocus(focusPage, focus, /*forward=*/true);
+            }
+            menuSystem.setFocus(target.page, focus);
+        }
         // 背包屏那口黑井里画的是玩家模型，而它的骨骼姿态要动画器**求值过一次**才绑定
         // （`drawPlayerPreview`：未绑定就一根骨骼也不画）。求值发生在 run() 的帧循环里，
         // 而截图通道根本不走那条循环——不喂这一下，每一张背包截图都只有 vanilla
@@ -2125,7 +2170,11 @@ struct VulkanRenderer::Impl final : public gameplay::SimulationHost {
                         std::chrono::duration<double, std::milli>(drawStart - frameCpuStart)
                             .count();
                 }
+                // UI-13：存档缩略图的时机。★ 必须在 drawFrame **之前**决定，
+                // 因为决定的结果（这一帧不画 HUD）要影响的就是这一帧。
+                updateWorldIconRequest();
                 static_cast<void>(drawFrame());
+                writeWorldIconIfRequested();
                 if (diag::traceEnabled()) {
                     diag::frameTrace().drawFrameMs += diag::msSince(drawStart);
                     afterDrawStart = std::chrono::steady_clock::now();
@@ -2335,6 +2384,114 @@ struct VulkanRenderer::Impl final : public gameplay::SimulationHost {
                                              ? menuSystem.saveSummaries.size() - visibleRows
                                              : 0U;
         menuSystem.worldListFirstIndex = std::min(menuSystem.worldListFirstIndex, maximumFirst);
+        refreshWorldIcons();
+    }
+
+    // UI-11 / A6：把有缩略图的存档读进 GUI 图集那一层，并记下"哪个存档在哪个槽位"。
+    //
+    // ★ 在 refreshSaveList 里做，也就是**每次存档清单变了**做一次；不是每帧、
+    //   也不是每次进世界列表——`hasIcon` 只在列目录时才可能变。
+    // ★ 只读 `hasIcon` 为真的那些：`SaveSummary::hasIcon` 是一次 stat 的结果，
+    //   而这里才是真正解码 PNG 的地方（那份注释就写在 hasIcon 上）。
+    void refreshWorldIcons() {
+        menuSystem.worldIconSlots.clear();
+        std::vector<assets::ImageData> icons;
+        for (const auto& summary : menuSystem.saveSummaries) {
+            if (!summary.hasIcon ||
+                icons.size() >= static_cast<std::size_t>(kWorldIconSlotCount)) {
+                continue;
+            }
+            auto image = assets::ImageData::loadRgba(saveRepository.iconPath(summary.identifier));
+            if (image.width <= 0 || image.height <= 0) {
+                continue;   // 文件在两次调用之间被删掉了，或者不是一张能解的 PNG
+            }
+            menuSystem.worldIconSlots.push_back(summary.identifier);
+            icons.push_back(std::move(image));
+        }
+        textures_.uploadWorldIcons(icons);
+    }
+
+    // UI-13：这一帧要不要抓存档缩略图。**一比一照 26.1
+    // `GameRenderer.tryTakeScreenshotIfNeeded()`（:614-631）**，那是本作此前搞错的地方。
+    //
+    // 26.1 的规则，逐条：
+    //   ① 它在**游戏内渲染循环**里，紧跟 `renderLevel(deltaTracker)` 之后（:445），
+    //      **不是退出时、也不是按 Esc 时**。退出时抓的后果就是现场那六张图标——
+    //      每一张都是暂停菜单那块灰蒙蒙的底。
+    //   ② 那一行只在 `shouldRenderLevel = resourcesLoaded && advanceGameTime && level != null`
+    //      成立时才跑（:393/:441）。`advanceGameTime` 在暂停时为假，所以**菜单开着时
+    //      根本不会抓**——这正是本作要补的那一条。
+    //   ③ `!hasWorldScreenshot`：**一个存档只抓一次**；而且文件已经存在时它把
+    //      `hasWorldScreenshot` 置真（:622-623），**永远不覆盖已有的图标**。
+    //   ④ 每秒最多试一次（`time - lastScreenshotAttempt >= 1000L`，:617）。
+    //   ⑤ `countRenderedSections() > 10 && hasRenderedAllSections()`（:634）——
+    //      世界真的画出来了才抓，否则拍到的是半张空区块。
+    //
+    // ★ **一处如实的偏离**：26.1 抓的是 `renderLevel` 之后、GUI 之前的 mainRenderTarget，
+    //   所以图里没有 HUD。本作的离屏场景图要到整帧录完才读得到，那时 HUD 已经画上去了。
+    //   取 HUD 之前的内容要在世界 pass 与 GUI pass 之间插一次 copy（动帧图与屏障，归 RN 线）。
+    //   这里的做法是：被选中的那**一帧**不画 HUD（`worldIconPending_`），拍完就恢复。
+    //   代价是一个存档一生中有一帧没有 HUD（约 6~16 ms），换来的是与 vanilla 同样的内容。
+    void updateWorldIconRequest() {
+        worldIconPending_ = false;
+        if (worldIconDone_ || !worldSessionActive || paused || !worldReady ||
+            !currentSave.has_value() || uiCapture.has_value() || testScene.has_value()) {
+            return;
+        }
+        // ④ 每秒最多试一次。
+        const auto now = std::chrono::steady_clock::now();
+        if (now - lastWorldIconAttempt_ < std::chrono::seconds{1}) {
+            return;
+        }
+        lastWorldIconAttempt_ = now;
+        // ③ 已经有图标了就**永远**不再抓。★ 这一条同时意味着"想换一张就自己删掉
+        //   那个文件"，与 vanilla 完全一样。
+        std::error_code error;
+        if (std::filesystem::is_regular_file(
+                saveRepository.iconPath(currentSave->summary.identifier), error)) {
+            worldIconDone_ = true;
+            return;
+        }
+        // ⑤ 世界画出来了没有。本作的同构量是"这一帧可见的区段数"与"还欠上传的区段数"。
+        if (lastVisibleMeshCount <= 10U || !pendingSectionUpdates.empty()) {
+            return;
+        }
+        worldIconPending_ = true;
+    }
+
+    // 上一帧是被选中的那一帧的话，把它读回来存成 `<world>/icon.png`。
+    //
+    // ★ 自己等一次 idle：`readSceneImageRgba` 会单开一次提交，不与在飞的帧同步。
+    //   它一个存档只发生一次，所以那一次停顿不在任何热路径上。
+    void writeWorldIconIfRequested() {
+        if (!worldIconPending_) {
+            return;
+        }
+        worldIconPending_ = false;
+        // 无论成功与否都不再重试这一秒；成功了就整局不再抓。
+        worldIconDone_ = writeCurrentWorldIcon();
+    }
+
+    [[nodiscard]] bool writeCurrentWorldIcon() {
+        if (!currentSave.has_value() || !lastSceneImageIndex_.has_value() ||
+            *lastSceneImageIndex_ >= sceneTargets.size()) {
+            return false;
+        }
+        checkVk(vkDeviceWaitIdle(device), "vkDeviceWaitIdle(world icon)");
+        const auto frame = readSceneImageRgba(
+            resources_, sceneTargets[*lastSceneImageIndex_].image.image, sceneUnormFormat(),
+            VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL, swapchainExtent.width, swapchainExtent.height);
+        const auto icon = worldIconFromFrame(frame, static_cast<int>(swapchainExtent.width),
+                                             static_cast<int>(swapchainExtent.height));
+        if (icon.empty()) {
+            return false;
+        }
+        if (!saveRepository.writeIcon(currentSave->summary.identifier, icon, kWorldIconSize,
+                                      kWorldIconSize)) {
+            return false;
+        }
+        // 写成了就让世界列表下次刷新时看得见它（`hasIcon` 是列目录 stat 出来的）。
+        return true;
     }
 
     void scrollWorldList(int rows) {
@@ -2804,8 +2961,15 @@ struct VulkanRenderer::Impl final : public gameplay::SimulationHost {
         simulationActive.store(false, std::memory_order_release);
         if (inventoryOpen)
             setInventoryOpen(false);
-        if (saveFirst)
+        if (saveFirst) {
             saveCurrentWorld();
+        }
+        // UI-13：这里**不再**抓缩略图。26.1 是在游戏内渲染循环里抓的
+        // （`GameRenderer.tryTakeScreenshotIfNeeded`，紧跟 `renderLevel` 之后），
+        // 不是退出时——退出时最后一帧上盖着暂停菜单，每个存档的图标都成了那块灰蒙蒙的
+        // 菜单底。见 updateWorldIconRequest。
+        worldIconDone_ = false;
+        worldIconPending_ = false;
         worldSessionActive = false;
         paused = true;
         menuSystem.optionsOpen = false;
@@ -3251,6 +3415,12 @@ struct VulkanRenderer::Impl final : public gameplay::SimulationHost {
         //   两个页面无法 Esc 返回"，而实际漏的比报的多（创建世界、编辑世界也在里面）。
         case ui::PageId::Controls:
         case ui::PageId::SoundSettings:
+        // UI-11 / A2：★ 漏了这个 case 的症状是「字体设置屏按 Esc 没反应」——
+        //   与 UI-6e 那次现场报告的「音乐与声音、按键控制无法 Esc 返回」是同一种伤。
+        case ui::PageId::FontSettings:
+        // UI-11 / A5：提示屏的 Esc 等同 Back（26.1 `SafetyScreen.onClose` 回到 previous），
+        // 什么也不写盘——勾了「不再显示」但没按 Proceed 的那一下就此作废。
+        case ui::PageId::AdvancedGraphicsNotice:
         case ui::PageId::ResourcePacks:
         case ui::PageId::CreateWorld:
         case ui::PageId::EditWorld:
@@ -3272,6 +3442,13 @@ struct VulkanRenderer::Impl final : public gameplay::SimulationHost {
 
     // 菜单页上的滚轮：滚该页自己的那个列表
     void scrollMenuList(int direction) {
+        // UI-11 / A1：**Ctrl + 滚轮改 GUI 缩放**（26.1 `VideoSettingsScreen.mouseScrolled`）。
+        // ★ 它在分派**之前**拦下：按住 Ctrl 时滚轮不再滚列表，这与 26.1 一致
+        //   （那边是 `if (hasControlDown()) { … return true; }`，走不到 super）。
+        if (menuSystem.pageStack.current() == ui::PageId::VideoSettings && controlKeyHeld()) {
+            adjustGuiScaleByScroll(direction);
+            return;
+        }
         switch (menuSystem.pageStack.current()) {
         case ui::PageId::WorldList:
             scrollWorldList(direction);
@@ -3292,6 +3469,9 @@ struct VulkanRenderer::Impl final : public gameplay::SimulationHost {
         //   非滚不可，而滚轮没反应。它掉进了下面那个 `default: break;`——
         //   与 handleBackKey 漏掉 Esc 是同一个 default 造的同一种伤。
         case ui::PageId::SoundSettings:
+        // UI-11 / A2：字体屏两项装得下（滚不动，上界会被钳成 0），但它与别的设置
+        //   子屏是同一种版面——少写一个 case 的后果是「换个窗口尺寸就滚不了」。
+        case ui::PageId::FontSettings:
             scrollOptionsList(direction);
             break;
         // 其余页面没有可滚的列表。**逐个列出而不是 default**：加一页带列表的屏幕时，
@@ -3306,6 +3486,8 @@ struct VulkanRenderer::Impl final : public gameplay::SimulationHost {
         case ui::PageId::Death:
         case ui::PageId::Options:
         case ui::PageId::Accessibility:
+        // UI-11 / A5：提示屏没有可滚的列表。
+        case ui::PageId::AdvancedGraphicsNotice:
         case ui::PageId::Count:
             break;
         // UI-10 / D24：两栏各自滚。★ 滚哪一栏由**光标在哪一栏**决定——26.1 的
@@ -3403,6 +3585,7 @@ struct VulkanRenderer::Impl final : public gameplay::SimulationHost {
         case ui::PageId::Controls:
         case ui::PageId::AdvancedGraphics:
         case ui::PageId::SoundSettings:
+        case ui::PageId::FontSettings:
         case ui::PageId::Options:
             if (ui::optionsMaximumFirstRow(layout, menuSystem.pageStack.current()) > 0U) {
                 return ui::optionsScrollbarTrack(layout, menuSystem.pageStack.current());
@@ -3419,6 +3602,8 @@ struct VulkanRenderer::Impl final : public gameplay::SimulationHost {
         case ui::PageId::Death:
         case ui::PageId::Accessibility:
         case ui::PageId::ResourcePacks:
+        // UI-11 / A5：提示屏没有可滚的列表。
+        case ui::PageId::AdvancedGraphicsNotice:
         case ui::PageId::Count:
             break;
         }
@@ -3444,6 +3629,7 @@ struct VulkanRenderer::Impl final : public gameplay::SimulationHost {
         case ui::PageId::Controls:
         case ui::PageId::AdvancedGraphics:
         case ui::PageId::SoundSettings:
+        case ui::PageId::FontSettings:
         case ui::PageId::Options:
             menuSystem.optionsListFirstIndex = ui::optionsScrollIndexFromCursor(
                 layout, menuSystem.pageStack.current(), cursor.y);
@@ -3459,6 +3645,8 @@ struct VulkanRenderer::Impl final : public gameplay::SimulationHost {
         case ui::PageId::Death:
         case ui::PageId::Accessibility:
         case ui::PageId::ResourcePacks:
+        // UI-11 / A5：提示屏没有可滚的列表。
+        case ui::PageId::AdvancedGraphicsNotice:
         case ui::PageId::Count:
             break;
         }
@@ -4249,13 +4437,39 @@ struct VulkanRenderer::Impl final : public gameplay::SimulationHost {
         };
         cb.movePackUp = [this](std::size_t row) { movePackRow(row, true); };
         cb.movePackDown = [this](std::size_t row) { movePackRow(row, false); };
+        // UI-11 / A5：首次进入高级图形设置时先挡一块全屏提示（26.1 `SafetyScreen`
+        // 挡在首次进多人游戏之前的那一块）。勾了「不再显示」并按 Proceed 之后
+        // `skipAdvancedGraphicsWarning` 为真，从此直达。
         cb.openAdvancedGraphics = [this] {
+            if (!options.skipAdvancedGraphicsWarning) {
+                menuSystem.noticeStopShowing = false;
+                menuSystem.pageStack.push(ui::PageId::AdvancedGraphicsNotice);
+                return;
+            }
+            menuSystem.pageStack.push(ui::PageId::AdvancedGraphics);
+        };
+        // 勾选只翻屏幕状态，**不写盘**——26.1 也是按下 Proceed 才存
+        // （`SafetyScreen`：`if (stopShowing.selected()) { options.… = true; options.save(); }`）。
+        // 勾上之后按 Back 什么也不会留下。
+        cb.toggleNoticeStopShowing = [this] {
+            menuSystem.noticeStopShowing = !menuSystem.noticeStopShowing;
+        };
+        cb.proceedAdvancedGraphicsNotice = [this] {
+            if (menuSystem.noticeStopShowing) {
+                options.skipAdvancedGraphicsWarning = true;
+                options.save(optionsPath);
+            }
+            // 提示屏不留在栈里：Proceed 之后返回键应当回到 Options，而不是回到提示屏
+            // （26.1 是 `setScreen(new JoinMultiplayerScreen(previous))`，同样替换而非压栈）。
+            menuSystem.pageStack.pop();
             menuSystem.pageStack.push(ui::PageId::AdvancedGraphics);
         };
         // UI-6c：26.1 的两条新入口（§7.6 枢纽 → §7.8 绑定列表，Options → §7.11 辅助功能）
         cb.resetKeyBind = [this](input::InputAction action) { keyBindScreen_.resetOne(action); };
         cb.openKeyBinds = [this] { menuSystem.optionsListFirstIndex = 0U; menuSystem.pageStack.push(ui::PageId::KeyBinds); };
         cb.openAccessibility = [this] { menuSystem.optionsListFirstIndex = 0U; menuSystem.pageStack.push(ui::PageId::Accessibility); };
+        // UI-11 / A2：语言屏 → 字体设置（26.1 `LanguageSelectScreen:79`）。
+        cb.openFontSettings = [this] { menuSystem.optionsListFirstIndex = 0U; menuSystem.pageStack.push(ui::PageId::FontSettings); };
         cb.doneOptions = [this] {
             // UI-6e ③：资源包那一屏的 Done 才提交草稿（26.1 同样是 onClose 时 apply）。
             if (menuSystem.pageStack.current() == ui::PageId::ResourcePacks) {
@@ -4407,6 +4621,7 @@ struct VulkanRenderer::Impl final : public gameplay::SimulationHost {
         ctx.optionsWindow =
             ui::optionsWindowFor(layout, page, menuSystem.optionsListFirstIndex);
         fillPackContext(ctx, layout);
+        hud_.fillNoticeContext(ctx, layout);
         // UI-9：与绘制侧读同一个标签页。两侧不一致的后果不是"少画一页"，而是
         // **点 A 触发 B**：装配按一页造控件、布局按另一页给矩形。
         ctx.createWorldTab = menuSystem.createWorldTab;
@@ -4419,7 +4634,7 @@ struct VulkanRenderer::Impl final : public gameplay::SimulationHost {
         ui::Page built;
         ui::buildPageInto(built, page, ctx, buildMenuCallbacks());
         ui::layoutPageInto(built, page, layout, keyFirst, ctx.optionsWindow.firstRow,
-                           menuSystem.createWorldTab);
+                           menuSystem.createWorldTab, ctx.noticeMetrics);
         return built;
     }
 
@@ -4724,6 +4939,33 @@ struct VulkanRenderer::Impl final : public gameplay::SimulationHost {
         persistOptions();
     }
 
+    // UI-11 / A1：Ctrl+滚轮那一档。规则全在 `ui::guiScaleAfterCtrlScroll`（纯函数、
+    // 有断言），这里只负责取上界、落盘、以及 26.1 那句 `list.setScrollAmount(0)`。
+    void adjustGuiScaleByScroll(int direction) {
+        int framebufferWidth = 0;
+        int framebufferHeight = 0;
+        glfwGetFramebufferSize(window, &framebufferWidth, &framebufferHeight);
+        const int maximumScale =
+            ui::HudLayout::calculateGuiScale(framebufferWidth, framebufferHeight, 0);
+        const auto next =
+            ui::guiScaleAfterCtrlScroll(menuSystem.guiScaleSetting, direction, maximumScale);
+        if (!next.has_value()) {
+            return;
+        }
+        menuSystem.guiScaleSetting = *next;
+        // ★ 26.1 改完缩放会把设置列表滚回顶部（`this.list.setScrollAmount(0.0)`）：
+        //   换了缩放档就是换了一套版面，留在原来的行号上会落在别的项目上。
+        menuSystem.optionsListFirstIndex = 0U;
+        persistOptions();
+    }
+
+    // 左右任一 Ctrl 按下（26.1 `Minecraft.hasControlDown()`；macOS 上那边还认 Cmd，
+    // 本作的输入层没有那条平台分支，登记为已知差异而不是在这里自造一条）。
+    [[nodiscard]] bool controlKeyHeld() const {
+        return glfwGetKey(window, GLFW_KEY_LEFT_CONTROL) == GLFW_PRESS ||
+               glfwGetKey(window, GLFW_KEY_RIGHT_CONTROL) == GLFW_PRESS;
+    }
+
     void cycleGuiScale() {
         int framebufferWidth = 0;
         int framebufferHeight = 0;
@@ -4838,6 +5080,14 @@ struct VulkanRenderer::Impl final : public gameplay::SimulationHost {
             gameplay::ClickEnchantOption click;
             click.optionIndex = static_cast<int>(action.index);
             runtime.enqueueClientCommand(std::move(click));
+            return;
+        }
+        case ui::ContainerActionKind::SelectTradeOffer: {
+            // AR-M6：客户端只报"点了第几行"，那一行存不存在、解没解锁、缺不缺货
+            // 全在服务端判——与上面那条附魔选项同构。
+            gameplay::SelectTradeOffer select;
+            select.offerIndex = static_cast<std::uint32_t>(action.index);
+            runtime.enqueueClientCommand(std::move(select));
             return;
         }
         case ui::ContainerActionKind::SetCreativeTab:
@@ -8760,6 +9010,9 @@ struct VulkanRenderer::Impl final : public gameplay::SimulationHost {
         }
         currentFrame = (currentFrame + 1U) % kFramesInFlight;
         ++frameNumber_;
+        // UI-11 / A6：退出世界时要把**最后一帧**存成存档缩略图，而那时已经画不出
+        // 新的一帧了（世界正要被卸载）。记住这一帧用的是哪个离屏目标。
+        lastSceneImageIndex_ = imageIndex;
         return imageIndex;
     }
 
@@ -9120,6 +9373,14 @@ struct VulkanRenderer::Impl final : public gameplay::SimulationHost {
     std::array<FrameContext, kFramesInFlight> frames{};
     std::size_t currentFrame = 0;
     std::uint32_t frameNumber_ = 0;
+    // UI-11 / A6：上一帧画在哪个离屏目标上。退出世界时那一帧就是存档缩略图的来源
+    // ——那时已经画不出新的一帧了（世界正要被卸载）。
+    std::optional<std::uint32_t> lastSceneImageIndex_;
+    // UI-13：存档缩略图的三个状态，语义逐条对应 26.1 `GameRenderer` 的
+    // `hasWorldScreenshot` / `lastScreenshotAttempt`（:120-121），外加"这一帧就是那一帧"。
+    bool worldIconDone_ = false;
+    bool worldIconPending_ = false;
+    std::chrono::steady_clock::time_point lastWorldIconAttempt_{};
     // 压测的帧数上限，取自 MC_REBEDROCK_STRESS_FRAMES，为 0 表示不启用
     std::size_t stressFrames = 0;
     // MC_REBEDROCK_DISABLE_OCCLUSION 关掉遮挡通道
@@ -9204,6 +9465,7 @@ struct VulkanRenderer::Impl final : public gameplay::SimulationHost {
             .titleArtUv = textures_.titleArtUv,
             .pinnedCursor = pinnedCursor,
             .uiCaptureActive = uiCaptureActive_,
+            .worldIconCapturePending = worldIconPending_,
             .paused = paused,
             .uiTimeSeconds = uiTimeSeconds,
             .cameraSubmergedInWater = [this] { return cameraSubmergedInWater(); },

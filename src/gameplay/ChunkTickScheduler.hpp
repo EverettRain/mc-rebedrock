@@ -52,6 +52,11 @@ enum class TickTask : std::uint8_t {
     // (dueTick, priority, subTickOrder) order Java's LevelTicks gives them —
     // diodes schedule at HIGH so they run before the ordinary ticks around them.
     RedstoneComponent,
+    // AR-M4: a composter that has just reached level 7 turns into level 8
+    // (READY) twenty ticks later — ComposterBlock#addItem's
+    // `level.scheduleTick(pos, block, 20)`. Its own task rather than a reuse of
+    // one above so the composter never competes for another mechanism's budget.
+    ComposterReady,
     Count,
 };
 

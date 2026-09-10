@@ -65,6 +65,7 @@ struct TestHost final : mc::gameplay::SimulationHost {
     void playPlayerHurt(glm::vec3) override { ++playerHurts; }
     void playPlayerFall(glm::vec3, bool) override {}
     void playBurp(glm::vec3) override {}
+    void playExplode(glm::vec3) override {}
     void playCreatureHurt(const mc::gameplay::entities::EntityType&, glm::vec3) override {}
     void playCreatureDeath(const mc::gameplay::entities::EntityType&, glm::vec3) override {}
     void playCreatureAmbient(const mc::gameplay::entities::EntityType&, glm::vec3) override {}
@@ -220,7 +221,7 @@ int main() {
         session.tick(world, host); // resolve the environment for this tick
         assert(session.environment().ambientDarkness >= 4);
 
-        const auto problem = session.trySleepInBed(world, {8, 1, 8});
+        const auto problem = session.trySleepInBed(world, host, {8, 1, 8});
         assert(problem == BedSleepProblem::None);
         assert(session.playerSleeping());
         // Both halves know.
@@ -255,7 +256,7 @@ int main() {
         TestHost host;
         session.clocks().setTotalTicks(mc::world::ClockId::Overworld, 18000U);
         session.tick(world, host);
-        assert(session.trySleepInBed(world, {8, 1, 8}) == BedSleepProblem::None);
+        assert(session.trySleepInBed(world, host, {8, 1, 8}) == BedSleepProblem::None);
 
         // Two ticks in, step well out of reach.
         session.tick(world, host);

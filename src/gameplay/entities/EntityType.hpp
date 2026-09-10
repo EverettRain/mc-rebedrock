@@ -86,6 +86,12 @@ struct MobCategoryTraits final {
 // switches on (`gameplay/SpawnPlacements.hpp`) — a virtual dispatch that exists
 // to produce one bool is a cost with nothing to show for it, and the set is
 // closed in vanilla too.
+// EXP-3: Creeper's two numbers. `maxSwell` is 30 ticks (a second and a half of
+// hissing) and the blast is radius 3 — smaller than TNT's 4, which is why a
+// creeper hole is shallower than a TNT crater.
+inline constexpr int kCreeperMaxSwell = 30;
+inline constexpr float kCreeperExplosionRadius = 3.0F;
+
 enum class SpawnPlacement : std::uint8_t {
     OnGround,       // ON_GROUND: a valid floor below, two clear cells to stand in
     InWater,        // IN_WATER: the cell is water — squid, fish, dolphins
@@ -281,6 +287,11 @@ enum class EntityBehavior : std::uint16_t {
     // the interaction call site, exactly as Undead/Arthropod do for their own
     // mechanics. A creature without this bit ignores a dye click entirely.
     Dyeable = 1U << 6U,
+    // AR-M5: the villager family — the creatures that claim a workstation, work
+    // it, and trade. Read by the work goal and by the right-click that opens
+    // the trade screen, so neither needs `species == villager`; it is the same
+    // species-narrow gate Dyeable gives the sheep.
+    Villager = 1U << 7U,
 };
 
 [[nodiscard]] constexpr std::uint16_t operator|(EntityBehavior a, EntityBehavior b) {
@@ -354,6 +365,8 @@ class EntityType final {
     // EntityBehavior::Dyeable. The interaction call site reads this one bit off
     // the target's type instead of naming the sheep species.
     [[nodiscard]] bool dyeable() const { return hasBehavior(EntityBehavior::Dyeable); }
+    // AR-M5: claims a job site, works it, and trades.
+    [[nodiscard]] bool villager() const { return hasBehavior(EntityBehavior::Villager); }
     // AgeableMob breeding parameters (EM-3). `breedable()` is the one-flag test
     // the AI/tick reads before installing or running any breeding logic.
     [[nodiscard]] const BreedingProfile& breeding() const { return breeding_; }

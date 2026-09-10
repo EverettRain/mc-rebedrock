@@ -47,7 +47,7 @@ struct StaticWidgetLabel final {
 //   "Resource Packs..."），再加一个 suffix 会显示成 "Online......" —— 实测如此。
 //   本项目自有的 `options.rebedrock.advancedGraphics` 才需要它：那个键的按钮与标题
 //   是同一个词，省略号是唯一的区别。下面有一条断言钉住这条规则。
-inline constexpr std::array<StaticWidgetLabel, 46> kStaticWidgetLabels{{
+inline constexpr std::array<StaticWidgetLabel, 51> kStaticWidgetLabels{{
     // 标题界面与世界列表
     {WidgetId::Singleplayer, "menu.singleplayer", "Singleplayer"},
     {WidgetId::Multiplayer, "menu.multiplayer", "Multiplayer"},
@@ -116,6 +116,20 @@ inline constexpr std::array<StaticWidgetLabel, 46> kStaticWidgetLabels{{
     {WidgetId::PackOpenFolder, "pack.openFolder", "Open Pack Folder"},
     // UI-9：创建世界 World / More 两页的六个按钮。键全部取自 26.1
     // `CreateWorldScreen.WorldTab` / `.MoreTab` 里用它们的那几行。
+    // UI-11 / A2：26.1 `LanguageSelectScreen:79` 的跳转按钮，文案自带省略号。
+    {WidgetId::FontSettings, "options.font", "Font Settings..."},
+    // UI-11 / A5：提示屏。正文与标题是本项目自己的键（26.1 那两条讲的是多人游戏），
+    // 「不再显示」与两个按钮则直接用 vanilla 的 `multiplayerWarning.check` /
+    // `gui.proceed` / `gui.back`——同一句话没有理由另起一个键。
+    {WidgetId::NoticeMessage, "rebedrock.advancedGraphicsWarning.message",
+     "The options on this screen trade frame time for image quality, and some of them "
+     "cost far more than they look: sun shadows re-render every opaque section once more "
+     "per frame, and dynamic lights relight a chunk on every light source that moves. "
+     "Turn them on one at a time and watch the frame graph."},
+    {WidgetId::NoticeStopShowing, "multiplayerWarning.check", "Do not show this screen again"},
+    {WidgetId::NoticeProceed, "gui.proceed", "Proceed"},
+    {WidgetId::JapaneseGlyphVariants, "options.japaneseGlyphVariants",
+     "Japanese Glyph Variants"},
     {WidgetId::CreateWorldType, "selectWorld.mapType", "World Type"},
     {WidgetId::CreateBonusChest, "selectWorld.bonusItems", "Bonus Chest"},
     {WidgetId::CreateGenerateStructures, "selectWorld.mapFeatures", "Generate Structures"},
@@ -126,7 +140,10 @@ inline constexpr std::array<StaticWidgetLabel, 46> kStaticWidgetLabels{{
 
 // 标签要读运行期状态，仍由渲染器的 widgetLabel 现算
 // 登记在这里是为了让它有归属这件事可被编译期检查，而不是靠 switch 里恰好写了一行
-inline constexpr std::array<WidgetId, 19> kRuntimeWidgetLabels{{
+inline constexpr std::array<WidgetId, 20> kRuntimeWidgetLabels{{
+    // UI-11 / A5：提示屏的标题。它取自 `ui::pageTitle(PageId::AdvancedGraphicsNotice)`
+    // ——那张表才是「这一屏叫什么」的唯一来源，在这里再抄一份静态标签就是两份表述。
+    WidgetId::NoticeTitle,
     WidgetId::MenuBackgroundBlurriness,  // 滑块当前值，最低档显示 OFF
     WidgetId::Resolution,          // 实时窗口尺寸（可能被拖拽或最大化过）
     WidgetId::GuiScale,            // 菜单状态里的缩放档位，0 表示 Auto
@@ -158,7 +175,9 @@ inline constexpr std::array<WidgetId, 19> kRuntimeWidgetLabels{{
 // 不经 widgetLabel 取标签的 id
 // 三种列表行的文本各自在页面装配时给出，分别是世界名、语言名与按键行
 // None 则根本不是一个按钮
-inline constexpr std::array<WidgetId, 18> kUnlabelledWidgets{{
+inline constexpr std::array<WidgetId, 20> kUnlabelledWidgets{{
+    // UI-11 / A6：世界行的缩略图不是文字控件。
+    WidgetId::WorldIcon,
     WidgetId::None,
     WidgetId::WorldRow,
     WidgetId::LanguageRow,
@@ -184,6 +203,9 @@ inline constexpr std::array<WidgetId, 18> kUnlabelledWidgets{{
     // 由绘制侧按附魔种子现算（`EnchantmentNames`）；页签、删除框与滚动条上根本
     // 没有文字，画的是精灵。都不经 widgetLabel。
     WidgetId::EnchantOption,
+    // AR-M6：交易行上画的是「要什么 → 给什么」两三个物品图标加一个箭头，
+    // 由绘制侧从 `tradingMenu().offers` 现取，没有一句可翻译的文字。
+    WidgetId::TradeOffer,
     WidgetId::CreativeTab,
     WidgetId::CreativeDeleteSlot,
     WidgetId::CreativeScrollbar,

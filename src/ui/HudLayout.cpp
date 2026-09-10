@@ -300,6 +300,58 @@ UiRect HudLayout::enchantingOption(std::size_t index) const {
             19.0F * scale_};
 }
 
+// AR-M6: MerchantScreen's own 276x166 panel, centred by the same integer rule
+// every other screen uses.
+UiRect HudLayout::tradingPanel() const {
+    constexpr int kWidth = 276;
+    constexpr int kHeight = 166;
+    return {toFramebuffer(centredLogicalX(kWidth)), toFramebuffer(centredLogicalY(kHeight)),
+            toFramebuffer(kWidth), toFramebuffer(kHeight)};
+}
+// MerchantMenu: `addSlot(..., 136, 37)` and `addSlot(..., 162, 37)`.
+UiRect HudLayout::tradingPaymentSlot(std::size_t index) const {
+    if (index >= 2U) {
+        throw std::out_of_range("trading payment slot index is outside 0..1");
+    }
+    const auto panel = tradingPanel();
+    const float x = index == 0U ? 136.0F : 162.0F;
+    return {panel.x + x * scale_, panel.y + 37.0F * scale_, 16.0F * scale_, 16.0F * scale_};
+}
+// MerchantMenu: `addSlot(new MerchantResultSlot(..., 220, 37))`.
+UiRect HudLayout::tradingResultSlot() const {
+    const auto panel = tradingPanel();
+    return {panel.x + 220.0F * scale_, panel.y + 37.0F * scale_, 16.0F * scale_, 16.0F * scale_};
+}
+// MerchantScreen: NUMBER_OF_OFFER_BUTTONS = 7, TRADE_BUTTON_X = 5,
+// TRADE_BUTTON_WIDTH = 88, TRADE_BUTTON_HEIGHT = 20, first row at y = 18.
+UiRect HudLayout::tradingOffer(std::size_t index) const {
+    if (index >= kTradingOfferButtons) {
+        throw std::out_of_range("trading offer index is outside 0..6");
+    }
+    const auto panel = tradingPanel();
+    return {panel.x + 5.0F * scale_,
+            panel.y + (18.0F + static_cast<float>(index) * 20.0F) * scale_, 88.0F * scale_,
+            20.0F * scale_};
+}
+
+// MerchantScreen's player inventory: the same 9x4 grid every screen draws, but
+// anchored at x = 107 inside the 276-wide panel (its `inventoryLabelX`).
+UiRect HudLayout::tradingInventorySlot(std::size_t index) const {
+    if (index >= kInventorySlots) {
+        throw std::out_of_range("trading inventory slot index is outside 0..35");
+    }
+    const auto panel = tradingPanel();
+    const std::size_t row = index < 9 ? 0U : (index - 9U) / 9U;
+    const std::size_t column = index < 9 ? index : (index - 9U) % 9U;
+    const float top = index < 9 ? 142.0F : 84.0F + static_cast<float>(row) * 18.0F;
+    return {
+        panel.x + (107.0F + static_cast<float>(column) * 18.0F) * scale_,
+        panel.y + top * scale_,
+        16.0F * scale_,
+        16.0F * scale_,
+    };
+}
+
 UiRect HudLayout::anvilLeftSlot() const {
     const auto panel = inventoryPanel();
     return {panel.x + 27.0F * scale_, panel.y + 47.0F * scale_, 16.0F * scale_, 16.0F * scale_};

@@ -12,7 +12,11 @@ namespace {
                           kind == ContainerPageKind::CreativeCatalogTab;
     Widget widget;
     widget.kind = WidgetKind::Panel;   // 不可交互：面板只是底图
-    widget.rect = creative ? layout.creativePanel() : layout.inventoryPanel();
+    // AR-M6：交易屏的面板是 276x166（26.1 的 MerchantScreen），与另外两种都不同。
+    // 这一格必须报对，页面里每个槽「落在自己面板内」那条护栏正是拿它当参照的。
+    widget.rect = kind == ContainerPageKind::Trading ? layout.tradingPanel()
+                  : creative                         ? layout.creativePanel()
+                                                     : layout.inventoryPanel();
     return widget;
 }
 
@@ -39,6 +43,19 @@ namespace {
 // ★ 不带 `default`：加一块容器屏时编译器会指名道姓，而不是让它静默地少几个控件。
 void appendScreenControls(Page& page, ContainerPageKind kind, const HudLayout& layout) {
     switch (kind) {
+    case ContainerPageKind::Trading:
+        // AR-M6：七个交易行是**真按钮**（点它选中一条交易），所以它们是控件而不是
+        // 绘制侧的七个矩形——与附魔台的三条选项条同理。几何取自 26.1 的
+        // MerchantScreen 常量，见 HudLayout::tradingOffer 的注释；界面要改版面
+        // 只改那一个函数。
+        //
+        // ★ 这里**只有可点的东西**。行里画什么（要什么、给什么、是否缺货、
+        //   等级条、箭头、滚动条）全是绘制侧的事，后端把它们放在
+        //   `GameSession::tradingMenu()` / 快照的 trading* 字段里等着取。
+        for (std::size_t offer = 0; offer < ui::HudLayout::kTradingOfferButtons; ++offer) {
+            page.push_back(buttonWidget(layout.tradingOffer(offer), WidgetId::TradeOffer));
+        }
+        return;
     case ContainerPageKind::EnchantingTable:
         // ENCH-2：三条 108x19 的选项条是**真按钮**而不是装饰，所以它们是控件而不是
         // 绘制侧的三个矩形。三条相邻扁平排列，第几条由页面里的次序决定。

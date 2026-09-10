@@ -107,6 +107,16 @@ struct UiCaptureOptions final {
     //   状态**，不是目标身份的一部分——把它做进目标表，26 个目标会立刻变成 28 个，
     //   而真正变化的只有一屏。默认 0 保持现状，既有基线不动。
     std::size_t tabIndex = 0U;
+    // UI-12：按了几次 Tab。0 = 没有焦点（默认，既有基线因此逐字节不变）。
+    //
+    // ★ 语义是"**按了 n 次 Tab**"而不是"第 n 个控件"：焦点是页面里的**可聚焦**控件
+    //   序，Label / Panel / Image 不占位；给一个裸的控件下标，页面一改就指到别处去了。
+    // ★ 它是这条通道的第五根轴。理由与 --ui-cursor / --ui-carry 同族：
+    //   焦点态在 26.1 里换的是**另一张精灵**（按钮的 highlighted、复选框的
+    //   checkbox_highlighted / checkbox_selected_highlighted、列表选中框由灰变白），
+    //   而在这之前**没有任何一张基线拍到过焦点** —— 那几张图从图集烘进去之后
+    //   一次都没进过画。
+    std::size_t focusSteps = 0U;
     std::filesystem::path root{"export/ui-preview"};
 
     [[nodiscard]] bool operator==(const UiCaptureOptions&) const = default;
@@ -166,6 +176,13 @@ struct UiCaptureOptions final {
 //   --ui-out   <目录>              默认 export/ui-preview
 // 没有 --ui-shot 时返回 nullopt。参数写错直接抛，免得自动化跑着跑着悄悄拍了别的屏幕
 // 还当成功——这与 parseTestSceneArguments 的理由是同一条。
+// UI-12：全部拍摄目标的名字，与 `kTargetNames` 同序。
+//
+// ★ 立它是为了让"有哪些屏"**只有一处**。README 与出图脚本此前各抄了一份清单，
+//   而那两份都已经落后过（`experimental` 删了、容器八屏加了、UI-11 又加了两个）。
+//   回归门禁必须遍历**全部**目标，抄一份清单等于"新加的屏不在门禁里"。
+[[nodiscard]] std::vector<std::string_view> uiCaptureTargetNames();
+
 [[nodiscard]] std::optional<UiCaptureOptions> parseUiCaptureArguments(
     std::span<const std::string_view> arguments);
 

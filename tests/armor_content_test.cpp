@@ -206,7 +206,7 @@ void testEnchantability() {
 // is EQ-0's own 77 + RW-1's 2 + DYE-1's 16 + AR-CX4-b's 1 — the armor count
 // below is unaffected (none of those 19 items is armor).
 void testRegistryCount() {
-    static_assert(kItemRegistry.size() == 104U); // +6 mined ore items, +1 ENCH-2 enchanted_book, +1 MDL-3 snowball
+    static_assert(kItemRegistry.size() == 106U); // +6 mined ore items, +1 ENCH-2 enchanted_book, +1 MDL-3 snowball, +1 EXP-3 gunpowder, +1 AR-M4 bone_meal
     int armorCount = 0;
     for (const Item* item : kItemRegistry) {
         if (isArmor(item)) ++armorCount;
@@ -229,31 +229,31 @@ void testCraftingRecipesResolve() {
         return nullptr;
     };
 
-    const auto* diamondHelmet = find("minecraft:diamond_helmet");
+    const auto* diamondHelmet = find("rebedrock:diamond_helmet");
     assert(diamondHelmet != nullptr);
     assert(diamondHelmet->output.item == &items::DiamondHelmet);
     assert(diamondHelmet->output.count == 1U);
     assert(diamondHelmet->width == 3U && diamondHelmet->height == 2U);
 
-    const auto* ironBoots = find("minecraft:iron_boots");
+    const auto* ironBoots = find("rebedrock:iron_boots");
     assert(ironBoots != nullptr);
     assert(ironBoots->output.item == &items::IronBoots);
     assert(ironBoots->width == 2U && ironBoots->height == 2U);
 
-    const auto* leatherChestplate = find("minecraft:leather_chestplate");
+    const auto* leatherChestplate = find("rebedrock:leather_chestplate");
     assert(leatherChestplate != nullptr);
     assert(leatherChestplate->output.item == &items::LeatherChestplate);
     assert(leatherChestplate->width == 3U && leatherChestplate->height == 3U);
 
-    const auto* goldLeggings = find("minecraft:golden_leggings");
+    const auto* goldLeggings = find("rebedrock:golden_leggings");
     assert(goldLeggings != nullptr);
     assert(goldLeggings->output.item == &items::GoldLeggings);
 
     // Chainmail: no recipe exists anywhere in the table (vanilla parity).
-    assert(find("minecraft:chainmail_helmet") == nullptr);
-    assert(find("minecraft:chainmail_chestplate") == nullptr);
-    assert(find("minecraft:chainmail_leggings") == nullptr);
-    assert(find("minecraft:chainmail_boots") == nullptr);
+    assert(find("rebedrock:chainmail_helmet") == nullptr);
+    assert(find("rebedrock:chainmail_chestplate") == nullptr);
+    assert(find("rebedrock:chainmail_leggings") == nullptr);
+    assert(find("rebedrock:chainmail_boots") == nullptr);
 
     std::cout << "testCraftingRecipesResolve OK\n";
 }

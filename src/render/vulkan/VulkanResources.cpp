@@ -99,7 +99,8 @@ void recordImageBarrier(VkCommandBuffer commandBuffer, VkImage image, std::uint3
                         VkImageLayout oldLayout, VkImageLayout newLayout,
                         VkAccessFlags sourceAccess, VkAccessFlags destinationAccess,
                         VkPipelineStageFlags sourceStage,
-                        VkPipelineStageFlags destinationStage) {
+                        VkPipelineStageFlags destinationStage,
+                        std::uint32_t baseLayer = 0U) {
     auto barrier = vkStructure<VkImageMemoryBarrier>(VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER);
     barrier.oldLayout = oldLayout;
     barrier.newLayout = newLayout;
@@ -108,6 +109,7 @@ void recordImageBarrier(VkCommandBuffer commandBuffer, VkImage image, std::uint3
     barrier.image = image;
     barrier.subresourceRange.aspectMask = VK_IMAGE_ASPECT_COLOR_BIT;
     barrier.subresourceRange.levelCount = 1;
+    barrier.subresourceRange.baseArrayLayer = baseLayer;
     barrier.subresourceRange.layerCount = layerCount;
     barrier.srcAccessMask = sourceAccess;
     barrier.dstAccessMask = destinationAccess;
@@ -121,6 +123,25 @@ void VulkanResources::uploadImageLayers(const AllocatedImage& image, const void*
                                         VkDeviceSize byteSize, std::uint32_t width,
                                         std::uint32_t height, std::uint32_t layerCount,
                                         VkPipelineStageFlags destinationStage) const {
+    uploadImageLayerRange(image, pixels, byteSize, width, height, 0U, layerCount,
+                          destinationStage);
+}
+
+// UI-11 / A6：只重传数组里的**一段**层。
+//
+// ★ 它存在的理由是"改一层不该动到图像句柄"：世界列表要在打开时把存档缩略图刷进
+//   GUI 图集的最后一层，而重建整张图集会换掉 VkImage，于是**描述符里那份绑定作废**
+//   ——本仓为此立过一条护栏（改语言/字体会毁描述符池，"资源建得比集合晚"的绑定
+//   重建后永不再写）。原地改一层的像素则完全绕开那件事。
+//
+// ★ oldLayout 是 `SHADER_READ_ONLY_OPTIMAL`，不是 `UNDEFINED`：整张图集的其余层
+//   此时正被采样，而 UNDEFINED 允许实现丢弃内容。只有首次上传（走上面那个重载）
+//   才能用 UNDEFINED。
+void VulkanResources::uploadImageLayerRange(const AllocatedImage& image, const void* pixels,
+                                            VkDeviceSize byteSize, std::uint32_t width,
+                                            std::uint32_t height, std::uint32_t baseLayer,
+                                            std::uint32_t layerCount,
+                                            VkPipelineStageFlags destinationStage) const {
     if (layerCount == 0U || byteSize % layerCount != 0U) {
         throw std::runtime_error("Image upload size is not a whole number of layers");
     }
@@ -135,15 +156,18 @@ void VulkanResources::uploadImageLayers(const AllocatedImage& image, const void*
         regions[layer].bufferOffset = layerBytes * layer;
         regions[layer].imageSubresource.aspectMask = VK_IMAGE_ASPECT_COLOR_BIT;
         regions[layer].imageSubresource.mipLevel = 0;
-        regions[layer].imageSubresource.baseArrayLayer = layer;
+        regions[layer].imageSubresource.baseArrayLayer = baseLayer + layer;
         regions[layer].imageSubresource.layerCount = 1;
         regions[layer].imageExtent = {width, height, 1};
     }
 
     const auto commandBuffer = beginSingleUseCommands();
-    recordImageBarrier(commandBuffer, image.image, layerCount, VK_IMAGE_LAYOUT_UNDEFINED,
+    recordImageBarrier(commandBuffer, image.image, layerCount,
+                       baseLayer == 0U ? VK_IMAGE_LAYOUT_UNDEFINED
+                                       : VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL,
                        VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, 0, VK_ACCESS_TRANSFER_WRITE_BIT,
-                       VK_PIPELINE_STAGE_TOP_OF_PIPE_BIT, VK_PIPELINE_STAGE_TRANSFER_BIT);
+                       VK_PIPELINE_STAGE_TOP_OF_PIPE_BIT, VK_PIPELINE_STAGE_TRANSFER_BIT,
+                       baseLayer);
     vkCmdCopyBufferToImage(commandBuffer, staging.buffer, image.image,
                            VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL,
                            static_cast<std::uint32_t>(regions.size()), regions.data());
@@ -151,7 +175,7 @@ void VulkanResources::uploadImageLayers(const AllocatedImage& image, const void*
                        VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL,
                        VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL, VK_ACCESS_TRANSFER_WRITE_BIT,
                        VK_ACCESS_SHADER_READ_BIT, VK_PIPELINE_STAGE_TRANSFER_BIT,
-                       destinationStage);
+                       destinationStage, baseLayer);
     endSingleUseCommands(commandBuffer);
     destroyBuffer(staging);
 }

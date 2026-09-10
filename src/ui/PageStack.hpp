@@ -38,6 +38,15 @@ enum class PageId {
     // UI-6e ③：26.1 的 §7.12 `PackSelectionScreen`（资源包选择）。
     // 双栏可转移列表（spec §5 的 L4），后端是 assets::ResourcePackLibrary。
     ResourcePacks,
+    // UI-11 / A2：26.1 §7.9.1 `FontOptionsScreen`。入口是**语言屏底部左侧**那个
+    // `Font Settings...`（右侧才是 Done）——不在 Accessibility 里。
+    // 屏里两项：Force Unicode Font（后端已有）与 Japanese Glyph Variants（本作无后端，置灰）。
+    FontSettings,
+    // UI-11 / A5：26.1 `WarningScreen` / `SafetyScreen` 那块全屏提示。
+    // vanilla 用它挡在首次进入多人游戏之前；本作用它挡在**首次进入高级图形设置**
+    // 之前——那一屏里的每一项都能把帧时间打下来一个数量级。
+    // 「不再显示」勾上并按 Proceed 后写进 `GameOptions::skipAdvancedGraphicsWarning`。
+    AdvancedGraphicsNotice,
 
     // 哨兵，值等于 PageId 的个数。
     //

@@ -19,6 +19,7 @@
 #include "gameplay/Difficulty.hpp"
 #include "gameplay/GameplayMutationSink.hpp"
 #include "gameplay/NaturalSpawner.hpp"
+#include "gameplay/RecipeBook.hpp"
 #include "gameplay/entities/EntityRegistry.hpp"
 #include "world/ChunkStreamer.hpp"
 #include "world/PersistentBlockEdit.hpp"
@@ -81,6 +82,7 @@ struct RecordingHost final : public gameplay::SimulationHost {
     void playPlayerHurt(glm::vec3) override {}
     void playPlayerFall(glm::vec3, bool) override {}
     void playBurp(glm::vec3) override {}
+    void playExplode(glm::vec3) override {}
     void playCreatureHurt(const gameplay::entities::EntityType&, glm::vec3) override {}
     void playCreatureDeath(const gameplay::entities::EntityType&, glm::vec3) override {}
     void playCreatureAmbient(const gameplay::entities::EntityType&, glm::vec3) override {}
@@ -128,6 +130,7 @@ int main() {
     std::string worldId;
     std::uint64_t savedServerTick = 0U;
     world::ClockState savedOverworldClock{};
+    std::vector<std::string> savedUnlockedRecipes;
     std::size_t savedChestCount = 0U;
     std::size_t savedEntityCount = 0U;
     std::size_t serverResident = 0U;
@@ -278,7 +281,19 @@ int main() {
         // Move the player to a distinctive position first, so the save carries
         // clearly non-default coordinates for the reload assertions below.
         runtime.gameSession().teleportPlayer(gameplay::kPrimaryPlayerId, savedPlayerPos);
+        // 配方书：解锁两条，好让存档里的 RCPB 块非空。
+        //
+        // ★ 这一段守的是 GameRuntime 那两行接线，不是存档格式本身（那一层由
+        //   `recipe_book` 覆盖）。"格式写对了、但没有人把它填进 SaveGame"是本仓栽过
+        //   好几次的形状（同族：codec 漏字段、`fillPackContext` 两份、快照写了没发布）。
+        static_cast<void>(runtime.gameSession().recipeBook().addRecipe("minecraft:stick"));
+        static_cast<void>(
+            runtime.gameSession().recipeBook().addRecipe("minecraft:crafting_table"));
+        savedUnlockedRecipes.assign(runtime.gameSession().recipeBook().known().begin(),
+                                    runtime.gameSession().recipeBook().known().end());
+        assert(savedUnlockedRecipes.size() >= 2U);
         runtime.save();
+        assert(runtime.currentSave().unlockedRecipes == savedUnlockedRecipes);
         assert(runtime.currentSave().serverTick > 0U);
         savedServerTick = runtime.currentSave().serverTick;
         savedOverworldClock =
@@ -513,6 +528,11 @@ int main() {
         // the cold-start regression: the snapshot used to sit at (0,0,0) until a
         // tick published it, and the world-ready re-anchor teleported the player
         // back to the origin, overwriting the restored position.
+        // 配方书跟着世界回来了——`load()` 那一行真的被调过。
+        {
+            const auto known = runtime.gameSession().recipeBook().known();
+            assert(std::vector<std::string>(known.begin(), known.end()) == savedUnlockedRecipes);
+        }
         const glm::vec3 restoredPos = runtime.gameSession().player().position();
         assert(glm::length(restoredPos - savedPlayerPos) < 0.01F);
         const auto& restoredSnap = runtime.gameSession().playerTickSnapshot();

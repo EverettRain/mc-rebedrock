@@ -562,6 +562,26 @@ void testFixtureSourceGuards() {
         }
     }
 
+    // ★ UI-12：**焦点必须每个目标都重置**，无论用不用 `--ui-focus`。
+    //
+    //   焦点是屏幕状态，而一次运行会连着拍好几个目标——不重置的话上一个目标留下的
+    //   焦点会跟到下一张图上（按钮画成 highlighted、复选框换成带白边那张）。
+    //   ★ **两遍比对发现不了它**：两遍的泄漏方式完全一样，图当然相同。这与那条
+    //     "绘制侧只准有一处读光标"是同一族，也是护栏存在的理由。
+    {
+        const std::string renderer = readSource(MC_REBEDROCK_RENDERER_SRC);
+        const std::string body =
+            functionBody(renderer, "void applyUiCaptureTargetState(const UiCaptureTarget&");
+        CHECK(!body.empty());
+        if (!body.empty()) {
+            CHECK(body.find("setFocus(target.page, ui::kNoWidget)") != std::string::npos);
+            // 而且推焦点用的是"按了几次 Tab"，不是一个裸的控件下标——
+            // Label / Image 不占焦点序，给下标一改页面就指到别处去了。
+            CHECK(body.find("ui::nextFocus(") != std::string::npos);
+            CHECK(body.find("focusSteps") != std::string::npos);
+        }
+    }
+
     const std::string hud = readSource(MC_REBEDROCK_HUD_RENDERER_SRC);
     const std::string drawHud = functionBody(hud, "void drawHud(VkCommandBuffer");
     if (!drawHud.empty()) {

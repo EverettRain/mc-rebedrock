@@ -1,5 +1,8 @@
 #include "ui/MenuGeometry.hpp"
 
+#include "ui/ListRow.hpp"
+#include "ui/WorldListRow.hpp"
+
 #include "ui/CreateWorldLayout.hpp"
 #include "ui/DualColumnList.hpp"
 #include "ui/HeaderAndFooterLayout.hpp"
@@ -32,7 +35,9 @@ namespace {
 
 // 世界列表那条带：首行顶边与行距，逻辑像素。
 constexpr int kWorldListTop = 34;
-constexpr int kWorldListRowStep = 22;
+// UI-11 / A6：26.1 `WorldSelectionList` 的 `itemHeight` 是 **36**（:116），
+// 不是本作从前自造的 22——那一行放不下 32x32 的缩略图，也放不下三行字。
+constexpr int kWorldListRowStep = kWorldRowHeight;
 
 // UI-4：三张滚动列表都从这里取几何。行宽是从 26.1 源码查来的覆写值，不是估的：
 // 语言 270（`LanguageSelectScreen:141` 的 `220 + 50`）、按键 340（`KeyBindsList:59`）、
@@ -68,25 +73,55 @@ ScrollList keyBindsScrollList(const HudLayout& layout) {
 
 ScrollList worldScrollList(const HudLayout& layout) {
     // 世界列表没有一个显式的"框"：它就是标题与底部按钮带之间那条带。
+    //
+    // ★ UI-13b：视口高是**那条带的全高**，不是"放得下几行 × 行距"。
+    //   26.1 `SelectWorldScreen:63-67` 把列表建成 `height(layout.getContentHeight())`
+    //   ——三段式版面里内容区**撑满**页眉与页脚之间，装不满就空着，而不是缩到
+    //   行数的整数倍。本作从前取整数倍，于是列表下缘与底部按钮之间永远吊着一段
+    //   `available % 36` 的死空间（427x240 那一档是 38 逻辑像素，肉眼很明显）。
     return ScrollList{0,
                       kWorldListTop,
                       layout.logicalWidth(),
-                      static_cast<int>(worldListVisibleRows(layout)) * kWorldListRowStep,
+                      worldListViewportHeight(layout),
                       kWorldSelectionRowWidth,
                       kWorldListRowStep};
 }
 
 
+// UI-11 / A6：世界行在**逻辑像素**下的矩形。行内那几块（缩略图、三行字）都从它派生，
+// 所以它只有这一处；`worldListRow` 是它换算到帧缓冲像素的那一层。
+// UI-13：世界列表那条带（列表视口）的矩形，帧缓冲像素。
+//
+// ★ 它存在的理由是一个**现场可见**的缺陷：绘制侧此前自己算了一份
+//   `visibleRows * 22 + 8`，而 A6 把行距改成了 36。于是底衬与上下两条分隔线仍按
+//   22 一行算高，带比内容矮了近四成——列表下缘那条线**穿过第五行的中间**，
+//   后面的行画在带外面（现场截图 export/savelist-problem.png）。
+//   「一份几何两处表述」的老形状：行距在 ScrollList 里，带高在绘制侧手抄。
+//   现在两者都从 `worldScrollList` 派生，行距改了带高跟着改。
+UiRect worldListBox(const HudLayout& layout) {
+    const auto list = worldScrollList(layout);
+    return {0.0F, toFb(layout, list.y), toFb(layout, list.width), toFb(layout, list.height)};
+}
+
+UiRect logicalWorldListRow(std::size_t index, const HudLayout& layout) {
+    return scrollListRow(worldScrollList(layout), index);
+}
+
 UiRect worldListRow(std::size_t index, const HudLayout& layout) {
     // UI-4：走统一的 ScrollList。行宽从自造的 300 改成 26.1 的 **270**
     // （`WorldSelectionList:251`）；行高仍比行距矮 2，那 2 像素是行与行之间的缝。
-    const auto list = worldScrollList(layout);
-    auto row = fbRect(layout, scrollListRow(list, index));
-    row.height = toFb(layout, kWorldListRowStep - 2);
-    return row;
+    // UI-11 / A6：行**就是** itemHeight 那么高。26.1 的行与行之间没有缝：
+    // 视觉上的间隔来自 `Entry.getContentY/Height` 上下各让出的 2 像素
+    // （:475-481），那份内缩在 ui::worldRowParts 里。从前这里减 2 是自造的缝。
+    return fbRect(layout, logicalWorldListRow(index, layout));
 }
 
-std::size_t worldListVisibleRows(const HudLayout& layout) {
+// UI-13b：列表视口的高——从标题带下缘一路撑到底部按钮块上方。
+//
+// ★ 它是"这条带有多高"的**唯一**来源：视口、可见行数、底衬与两条分隔线全从它派生。
+//   此前"可见行数"自己算一遍带高、视口再乘回行距，于是带高是行距的整数倍，
+//   底下吊着一段死空间。
+int worldListViewportHeight(const HudLayout& layout) {
     // 世界列表那四个功能按钮排成两列各两个，整块因此在底部带上正好占两行
     constexpr int kButtonRows = 2;
     constexpr int kButtonHeight = 20;
@@ -96,7 +131,11 @@ std::size_t worldListVisibleRows(const HudLayout& layout) {
     // ceil 后的逻辑画布（spec §1.1），不是精确的 fb/scale
     const int buttonBlockTop =
         layout.logicalHeight() - kBottomMargin - kButtonHeight - (kButtonRows - 1) * kButtonStep;
-    const int available = buttonBlockTop - kListToButtonGap - kWorldListTop;
+    return std::max(buttonBlockTop - kListToButtonGap - kWorldListTop, kWorldListRowStep);
+}
+
+std::size_t worldListVisibleRows(const HudLayout& layout) {
+    const int available = worldListViewportHeight(layout);
     return static_cast<std::size_t>(std::max(available / kWorldListRowStep, 1));
 }
 
@@ -191,16 +230,64 @@ std::size_t countPageButtons(const Page& page) {
     std::size_t buttons = 0;
     for (const Widget& widget : page) {
         if (!isKeyBindRowWidget(widget) && !isPackRowWidget(widget) &&
-            !isPackZoneWidget(widget)) {
+            !isPackZoneWidget(widget) && !isScrollListRowWidget(widget)) {
             ++buttons;
         }
     }
     return buttons;
 }
 
+namespace {
+
+// UI-11 / A5：提示屏的一趟布局。
+//
+// ★ "正文有几行"是从**页面里数出来的**，不是另一个参数说的：装配把每一行做成一个
+//   Label，所以行数天然只有一份表述。给这里再加一个 `lineCount` 形参，就等于允许
+//   "装配了 4 行、布局按 3 行算高度"——那正是 optionsFirstRow 那一族的形状。
+void layoutNoticePageInto(Page& page, const HudLayout& layout, const NoticeMetrics& metrics) {
+    std::size_t lineCount = 0;
+    for (const Widget& widget : page) {
+        if (static_cast<WidgetId>(widget.debugId) == WidgetId::NoticeMessage) {
+            ++lineCount;
+        }
+    }
+    const auto notice = noticeLayout(layout.logicalWidth(), layout.logicalHeight(),
+                                     static_cast<int>(lineCount), metrics);
+    std::size_t line = 0;
+    for (Widget& widget : page) {
+        switch (static_cast<WidgetId>(widget.debugId)) {
+        case WidgetId::NoticeTitle:
+            widget.rect = fbRect(layout, notice.title);
+            break;
+        case WidgetId::NoticeMessage:
+            widget.rect = fbRect(
+                layout, noticeMessageLineRect(notice.message, static_cast<int>(line++)));
+            break;
+        case WidgetId::NoticeStopShowing:
+            widget.rect = fbRect(layout, notice.check);
+            break;
+        case WidgetId::NoticeProceed:
+            widget.rect = fbRect(layout, notice.proceed);
+            break;
+        default:
+            // 这一页上只剩 Back 一个控件。写成 default 而不是 `case WidgetId::Back`
+            // 是因为 WidgetId 有上百个取值，穷举它没有意义——真正的护栏是
+            // `notice_screen` 里那条"这一页恰好装配了这五种控件"的断言。
+            widget.rect = fbRect(layout, notice.back);
+            break;
+        }
+    }
+}
+
+} // namespace
+
 void layoutPageInto(Page& page, PageId id, const HudLayout& layout,
                     std::size_t keyBindFirstRow, std::size_t optionsFirstRow,
-                    CreateWorldTab createWorldTab) {
+                    CreateWorldTab createWorldTab, const NoticeMetrics& noticeMetrics) {
+    if (pageLayoutKind(id) == PageLayoutKind::CentredNotice) {
+        layoutNoticePageInto(page, layout, noticeMetrics);
+        return;
+    }
     // ★ UI-10 / D24：这里**不需要**两栏的窗口起点。装配只造窗口里的那几行，所以
     //   页面里第几个同栏的行天然就是屏幕上的第几行；绝对行号只有**回调**用得着
     //   （它要去索引真正的那个包）。给布局也塞一个 firstRow 参数是"只做有消费者的
@@ -219,6 +306,8 @@ void layoutPageInto(Page& page, PageId id, const HudLayout& layout,
     // 是**那一行**图标位的三块分区。记住上一行的图标位即可——装配保证它们紧跟在
     // 自己那一行之后（两处次序必须一致，这是护栏 21 那一族）。
     TransferIconZones rowZones{};
+    std::size_t worldRowIndex = 0;
+    std::size_t languageRowIndex = 0;
     for (Widget& widget : page) {
         if (isPackRowWidget(widget)) {
             const bool right = isSelectedPackRow(widget);
@@ -235,6 +324,29 @@ void layoutPageInto(Page& page, PageId id, const HudLayout& layout,
             widget.rect = fbRect(layout, id == WidgetId::PackUnselect  ? rowZones.unselect
                                          : id == WidgetId::PackMoveUp ? rowZones.moveUp
                                                                       : rowZones.moveDown);
+            continue;
+        }
+        // UI-11 / A6：滚动列表的行（世界 / 语言）与世界行的缩略图。
+        //
+        // ★ 它们此前落在按钮网格那条路上，拿到的是**底部按钮**的矩形（见
+        //   ui::isScrollListRowWidget 上面那段）。绘制与命中两侧都各自去调
+        //   worldListRow()/languageRow()，所以画面上看不出来——直到可见行数把
+        //   buttonCount 顶过 20，`bottomMenuButton` 抛出来为止。
+        if (isScrollListRowWidget(widget)) {
+            const auto id = static_cast<WidgetId>(widget.debugId);
+            if (id == WidgetId::LanguageRow) {
+                widget.rect = languageRow(languageRowIndex++, layout);
+                continue;
+            }
+            if (id == WidgetId::WorldIcon) {
+                // 缩略图坐在**它那一行**里。行号取自控件自己（imageIndex），
+                // 不是"上一行是第几行"——那样会依赖遍历顺序两次。
+                widget.rect =
+                    fbRect(layout, worldRowParts(logicalWorldListRow(widget.imageIndex, layout))
+                                       .icon);
+                continue;
+            }
+            widget.rect = worldListRow(worldRowIndex++, layout);
             continue;
         }
         if (isKeyBindRowWidget(widget)) {
@@ -483,6 +595,10 @@ UiRect frontendButtonRect(const HudLayout& layout, PageId page, std::size_t inde
                                      static_cast<float>(kFooterButtonHeight)});
     }
     case PageLayoutKind::CentredColumn:
+    // UI-11 / A5：提示屏不走这条路——它的五种控件宽度各不相同，矩形由
+    // `layoutNoticePageInto` 一次算全（那里才有"正文有几行"这个输入）。
+    // 列在这里只是为了不带 default，好让下一页被编译器点名。
+    case PageLayoutKind::CentredNotice:
         break;
     }
     return layout.menuButton(index, buttonCount);

@@ -103,6 +103,8 @@ std::vector<std::uint8_t> encodeGameCommand(const GameCommand& command) {
                                                static_cast<std::int32_t>(specific.optionIndex));
                 } else if constexpr (std::is_same_v<T, SetAnvilName>) {
                     codec::appendString32(bytes, specific.name);
+                } else if constexpr (std::is_same_v<T, SelectTradeOffer>) {
+                    persistence::appendInteger(bytes, specific.offerIndex);
                 }
             },
             command);
@@ -242,6 +244,12 @@ std::optional<GameCommand> decodeGameCommand(std::span<const std::uint8_t> bytes
             SetAnvilName rename;
             rename.name = codec::readString32(bytes, cursor);
             decoded = std::move(rename);
+            break;
+        }
+        case 15: {  // AR-M6: SelectTradeOffer
+            SelectTradeOffer select;
+            select.offerIndex = persistence::readInteger<std::uint32_t>(bytes, cursor);
+            decoded = select;
             break;
         }
         default:

@@ -8,6 +8,13 @@
 #include "persistence/SaveStream.hpp"
 #include "persistence/UnknownBlockTable.hpp"
 
+// The world thumbnail is a PNG, and miniz — already vendored and already part of
+// this library for StructureTemplate's gzip reader — carries a PNG encoder
+// (tdefl_write_image_to_png_file_in_memory_ex). No new dependency, and no new
+// link edge either: pulling in stb_image_write instead would have added an
+// unresolved symbol to every headless target that links this runtime library.
+#include <miniz.h>
+
 #include "world/BlockRegistry.hpp"
 #include "world/DayNightCycle.hpp"
 #include "world/WorldConstants.hpp"
@@ -49,6 +56,13 @@ std::uint64_t SaveRepository::regionReadCount() {
 namespace {
 
 constexpr std::array<std::uint8_t, 8> kMagic{'M', 'C', 'R', 'B', 'S', 'A', 'V', 'E'};
+// The world thumbnail's file name, matching vanilla byte for byte so a world
+// copied either way across the JC boundary keeps its icon. One constant, because
+// three places name the file: iconPath(), writeIcon(), and the two listings that
+// decide SaveSummary::hasIcon by asking whether it exists.
+constexpr std::string_view kIconFileName = "icon.png";
+// RGBA8: four bytes per pixel, and the channel count the PNG encoder is told.
+constexpr std::uint64_t kIconChannels = 4U;
 // Format 8 moved `randomTickSpeed` into a fixed header field; format 9 replaces
 // that with a sparse, self-describing GameRules block after the chests section;
 // format 10 appends the /spawnpoint block; format 11 appends the weather block;
@@ -1306,6 +1320,174 @@ void readDataPackBlock(std::span<const std::uint8_t> payload, std::size_t& curso
     }
     if (cursor != blockEnd) {
         throw std::runtime_error("world.dat data pack block has trailing data");
+    }
+}
+
+// The RCPB block carries the player's recipe book: which recipes are unlocked
+// and which of those are still highlighted ("new, not looked at yet"). Same flat
+// two-list shape ServerRecipeBook.Packed has (ServerRecipeBook.java:150-159:
+// `recipes` + `toBeDisplayed`), and the same framing DPKS uses:
+//
+//   u32 blockTag          // 'R','C','P','B'
+//   u32 blockSizeBytes    // whole block length incl. this field
+//   u16 blockVersion      // 1
+//   u16 unlockedCount
+//   unlocked[]: string    // u16 length-prefixed recipe identifier
+//   u16 highlightCount
+//   highlight[]: string
+//
+// Identifiers, never dense indices: the recipe table is data-driven (a datapack
+// overlay may append or replace entries), so an index is a per-run value that
+// would silently point at a different recipe next load.
+//
+// A pre-recipe-book world has no RCPB block at all; the reader never finds the
+// tag and both lists load empty — "nothing unlocked yet", exactly what a fresh
+// world starts with. Appending an owner block needs no format bump (the same
+// shape XPOB/PJTL/DPKS used).
+constexpr std::uint32_t kRecipeBookBlockTag =
+    'R' | ('C' << 8) | ('P' << 16) | ('B' << 24);
+constexpr std::uint16_t kRecipeBookBlockVersion = 1U;
+
+void appendRecipeBookBlock(std::vector<std::uint8_t>& bytes, const SaveGame& game) {
+    const std::size_t blockStart = bytes.size();
+    appendInteger(bytes, kRecipeBookBlockTag);
+    appendInteger(bytes, 0U);  // blockSizeBytes, patched below
+    appendInteger(bytes, kRecipeBookBlockVersion);
+    const auto appendList = [&bytes](const std::vector<std::string>& ids) {
+        appendInteger(bytes, static_cast<std::uint16_t>(ids.size()));
+        for (const auto& id : ids) {
+            appendString(bytes, id);
+        }
+    };
+    appendList(game.unlockedRecipes);
+    appendList(game.highlightedRecipes);
+    const auto blockSize = static_cast<std::uint32_t>(bytes.size() - blockStart);
+    for (std::size_t offset = 0; offset < sizeof(std::uint32_t); ++offset) {
+        bytes[blockStart + 4U + offset] =
+            static_cast<std::uint8_t>(blockSize >> (offset * 8U));
+    }
+}
+
+void readRecipeBookBlock(std::span<const std::uint8_t> payload, std::size_t& cursor,
+                         SaveGame& game) {
+    const std::size_t blockStart = cursor;
+    if (blockStart + 12U > payload.size()) {
+        throw std::runtime_error("world.dat recipe book block is truncated");
+    }
+    const auto tag = readInteger<std::uint32_t>(payload, cursor);
+    if (tag != kRecipeBookBlockTag) {
+        throw std::runtime_error("world.dat has an invalid recipe book block");
+    }
+    const auto blockSize = readInteger<std::uint32_t>(payload, cursor);
+    if (blockSize < 12U || static_cast<std::size_t>(blockSize) > payload.size() - blockStart) {
+        throw std::runtime_error("world.dat recipe book block is malformed");
+    }
+    const auto blockVersion = readInteger<std::uint16_t>(payload, cursor);
+    if (blockVersion > kRecipeBookBlockVersion) {
+        cursor = blockStart + blockSize;
+        return;
+    }
+    const std::size_t blockEnd = blockStart + blockSize;
+    const auto readList = [&](std::vector<std::string>& ids) {
+        const auto count = readInteger<std::uint16_t>(payload, cursor);
+        ids.reserve(static_cast<std::size_t>(count));
+        for (std::uint16_t index = 0; index < count; ++index) {
+            if (cursor >= blockEnd) {
+                throw std::runtime_error("world.dat recipe book block is truncated");
+            }
+            ids.push_back(readString(payload, cursor));
+        }
+    };
+    readList(game.unlockedRecipes);
+    readList(game.highlightedRecipes);
+    if (cursor != blockEnd) {
+        throw std::runtime_error("world.dat recipe book block has trailing data");
+    }
+}
+
+// ADV-1 的 ADVP 块：玩家的成就进度——每条成就上**已完成的 criterion 名字**。
+// 框架与 RCPB 一样：
+//
+//   u32 blockTag          // 'A','D','V','P'
+//   u32 blockSizeBytes    // whole block length incl. this field
+//   u16 blockVersion      // 1
+//   u16 advancementCount
+//   per advancement:
+//     string advancementId   // u16 length-prefixed
+//     u16 criterionCount
+//     criteria[]: string
+//
+// 存名字不存下标，理由与 RCPB 同：成就表是数据驱动的（底座按配方表生成、数据包
+// 还能再叠），下标是每次运行才有意义的值。
+//
+// 一份成就层还不存在时写的存档没有 ADVP 块，读的时候找不到这个 tag，进度就是空
+// 的——「什么都还没完成」，正是新世界的起点。追加一个 owner 块不需要动格式号
+// （XPOB/PJTL/DPKS/RCPB 用的是同一条路）。
+constexpr std::uint32_t kAdvancementBlockTag =
+    'A' | ('D' << 8) | ('V' << 16) | ('P' << 24);
+constexpr std::uint16_t kAdvancementBlockVersion = 1U;
+
+void appendAdvancementBlock(std::vector<std::uint8_t>& bytes, const SaveGame& game) {
+    const std::size_t blockStart = bytes.size();
+    appendInteger(bytes, kAdvancementBlockTag);
+    appendInteger(bytes, 0U);  // blockSizeBytes, patched below
+    appendInteger(bytes, kAdvancementBlockVersion);
+    appendInteger(bytes, static_cast<std::uint16_t>(game.advancementProgress.size()));
+    for (const auto& entry : game.advancementProgress) {
+        appendString(bytes, entry.advancement);
+        appendInteger(bytes, static_cast<std::uint16_t>(entry.criteria.size()));
+        for (const auto& criterion : entry.criteria) {
+            appendString(bytes, criterion);
+        }
+    }
+    const auto blockSize = static_cast<std::uint32_t>(bytes.size() - blockStart);
+    for (std::size_t offset = 0; offset < sizeof(std::uint32_t); ++offset) {
+        bytes[blockStart + 4U + offset] =
+            static_cast<std::uint8_t>(blockSize >> (offset * 8U));
+    }
+}
+
+void readAdvancementBlock(std::span<const std::uint8_t> payload, std::size_t& cursor,
+                          SaveGame& game) {
+    const std::size_t blockStart = cursor;
+    if (blockStart + 12U > payload.size()) {
+        throw std::runtime_error("world.dat advancement block is truncated");
+    }
+    const auto tag = readInteger<std::uint32_t>(payload, cursor);
+    if (tag != kAdvancementBlockTag) {
+        throw std::runtime_error("world.dat has an invalid advancement block");
+    }
+    const auto blockSize = readInteger<std::uint32_t>(payload, cursor);
+    if (blockSize < 12U || static_cast<std::size_t>(blockSize) > payload.size() - blockStart) {
+        throw std::runtime_error("world.dat advancement block is malformed");
+    }
+    const auto blockVersion = readInteger<std::uint16_t>(payload, cursor);
+    if (blockVersion > kAdvancementBlockVersion) {
+        cursor = blockStart + blockSize;
+        return;
+    }
+    const std::size_t blockEnd = blockStart + blockSize;
+    const auto count = readInteger<std::uint16_t>(payload, cursor);
+    game.advancementProgress.clear();
+    game.advancementProgress.reserve(static_cast<std::size_t>(count));
+    for (std::uint16_t index = 0; index < count; ++index) {
+        if (cursor >= blockEnd) {
+            throw std::runtime_error("world.dat advancement block is truncated");
+        }
+        gameplay::AdvancementProgressEntry entry;
+        entry.advancement = readString(payload, cursor);
+        const auto criteria = readInteger<std::uint16_t>(payload, cursor);
+        entry.criteria.reserve(static_cast<std::size_t>(criteria));
+        for (std::uint16_t criterion = 0; criterion < criteria; ++criterion) {
+            if (cursor >= blockEnd) {
+                throw std::runtime_error("world.dat advancement block is truncated");
+            }
+            entry.criteria.push_back(readString(payload, cursor));
+        }
+        game.advancementProgress.push_back(std::move(entry));
+    }
+    if (cursor != blockEnd) {
+        throw std::runtime_error("world.dat advancement block has trailing data");
     }
 }
 
@@ -2895,7 +3077,25 @@ void readDataPackOwner(std::span<const std::uint8_t> payload, std::size_t& curso
     readDataPackBlock(payload, cursor, context.game.enabledDataPacks);
 }
 
-constexpr std::array<SaveBlockOwner, 14> kSaveBlockOwners{{
+void writeRecipeBookOwner(std::vector<std::uint8_t>& bytes, const SaveWriteContext& context) {
+    appendRecipeBookBlock(bytes, context.game);
+}
+void readRecipeBookOwner(std::span<const std::uint8_t> payload, std::size_t& cursor,
+                         const SaveBlockHeader& header, SaveReadContext& context) {
+    cursor = header.bodyStart - kBlockHeaderBytes;
+    readRecipeBookBlock(payload, cursor, context.game);
+}
+
+void writeAdvancementOwner(std::vector<std::uint8_t>& bytes, const SaveWriteContext& context) {
+    appendAdvancementBlock(bytes, context.game);
+}
+void readAdvancementOwner(std::span<const std::uint8_t> payload, std::size_t& cursor,
+                          const SaveBlockHeader& header, SaveReadContext& context) {
+    cursor = header.bodyStart - kBlockHeaderBytes;
+    readAdvancementBlock(payload, cursor, context.game);
+}
+
+constexpr std::array<SaveBlockOwner, 16> kSaveBlockOwners{{
     {kVersionBlockTag, kVersionBlockVersion, &appendVersionBlock, &readVersionBlock},
     {kWorldBlockTag, kWorldBlockVersion, &appendWorldBlock, &readWorldBlock},
     {kPlayerBlockTag, kPlayerBlockVersion, &appendPlayerBlock, &readPlayerBlock},
@@ -2914,15 +3114,35 @@ constexpr std::array<SaveBlockOwner, 14> kSaveBlockOwners{{
      &readExperienceOrbOwner},
     {kProjectileBlockTag, kProjectileBlockVersion, &writeProjectileOwner, &readProjectileOwner},
     {kDataPackBlockTag, kDataPackBlockVersion, &writeDataPackOwner, &readDataPackOwner},
+    {kRecipeBookBlockTag, kRecipeBookBlockVersion, &writeRecipeBookOwner,
+     &readRecipeBookOwner},
+    {kAdvancementBlockTag, kAdvancementBlockVersion, &writeAdvancementOwner,
+     &readAdvancementOwner},
 }};
 
-// META-2b: read only the version header from a save's world.dat, without loading
-// any region chunk. world.dat itself is small since M-3 moved edits/creatures to
+// Everything a *listing* needs out of a save's world.dat: which build wrote it
+// (VERS) and which game mode it is in (WRLD's first field). Two blocks, one
+// walk — see readListingFacts.
+struct ListingFacts final {
+    SaveVersionHeader versionHeader;
+    // Absent when the save carries no WRLD block at all. A pre-block-registry
+    // format (< kFirstOwnerDrivenFormatVersion) keeps its game mode at a fixed
+    // header offset that only loadLegacy knows how to reach, and re-deriving
+    // that layout here would be a second copy of it; the caller leaves
+    // SaveSummary::gameMode at its default instead of inventing a mode.
+    std::optional<gameplay::GameMode> gameMode;
+};
+
+// META-2b: read the listing facts from a save's world.dat, without loading any
+// region chunk. world.dat itself is small since M-3 moved edits/creatures to
 // region files, so reading it whole is cheap; the point of "lazy" is that the
-// region/ directory is never touched. Reconstructs a minimal header from the
-// format number when the save predates the VERS block (mirrors load()); throws
-// on a corrupt or unreadable file so the caller can skip that world.
-[[nodiscard]] SaveVersionHeader readVersionHeaderOnly(const std::filesystem::path& worldDat) {
+// region/ directory is never touched. Both blocks are picked up in the same
+// single pass over the block frames — the file is already in memory, so a
+// second pass (or a second open) would be paying twice for it. Reconstructs a
+// minimal version header from the format number when the save predates the VERS
+// block (mirrors load()); throws on a corrupt or unreadable file so the caller
+// can skip that world.
+[[nodiscard]] ListingFacts readListingFacts(const std::filesystem::path& worldDat) {
     std::ifstream input{worldDat, std::ios::binary | std::ios::ate};
     if (!input) throw std::runtime_error("Unable to open world.dat");
     const auto length = input.tellg();
@@ -2943,14 +3163,17 @@ constexpr std::array<SaveBlockOwner, 14> kSaveBlockOwners{{
 
     // The reconstructed default, replaced below if a VERS block is present. Same
     // rule as load(): worldVersion is the save's own format number, name unknown.
-    SaveVersionHeader header{formatVersion, {}, 0U, {}, {}, false, /*derived=*/true};
+    ListingFacts facts;
+    facts.versionHeader = SaveVersionHeader{formatVersion, {}, 0U, {}, {}, false,
+                                            /*derived=*/true};
     if (formatVersion < kFirstOwnerDrivenFormatVersion) {
-        // Pre-owner-block saves have no VERS block at all; the reconstruction is
-        // the whole answer.
-        return header;
+        // Pre-owner-block saves have no block sequence at all: no VERS, and no
+        // WRLD either. The reconstruction is the whole answer.
+        return facts;
     }
     // Skip the seed and the two palettes to reach the flat block sequence, then
-    // walk the frames looking for VERS, skipping every other owner by its size.
+    // walk the frames looking for VERS and WRLD, skipping every other owner by
+    // its size.
     cursor += sizeof(std::uint64_t);  // seed
     const auto skipPalette = [&] {
         const auto count = readInteger<std::uint16_t>(payload, cursor);
@@ -2960,16 +3183,41 @@ constexpr std::array<SaveBlockOwner, 14> kSaveBlockOwners{{
     };
     skipPalette();  // block palette
     skipPalette();  // item palette
-    while (cursor < payload.size()) {
+    bool sawVersion = false;
+    while (cursor < payload.size() && !(sawVersion && facts.gameMode.has_value())) {
         std::size_t peek = cursor;
         const auto blockHeader = readBlockHeader(payload, peek, "summary");
         if (blockHeader.tag == kVersionBlockTag && blockHeader.version <= kVersionBlockVersion) {
             std::size_t bodyCursor = blockHeader.bodyStart;
-            return parseVersionBlockBody(payload, bodyCursor);
+            facts.versionHeader = parseVersionBlockBody(payload, bodyCursor);
+            sawVersion = true;
+        } else if (blockHeader.tag == kWorldBlockTag &&
+                   blockHeader.version <= kWorldBlockVersion) {
+            // Decoded by the real reader rather than by a hand-copied field
+            // order: a scratch SaveGame absorbs the whole block (mode,
+            // difficulty, allowCommands) and the listing keeps the one field it
+            // came for. readWorldBlock's validation — an out-of-range mode byte
+            // is a corrupt save — travels with it, so a damaged world is thrown
+            // out of the listing exactly as it would be out of a load().
+            SaveGame scratch;
+            SaveReadContext context{scratch, {}, {}};
+            std::size_t bodyCursor = blockHeader.bodyStart;
+            readWorldBlock(payload, bodyCursor, blockHeader, context);
+            facts.gameMode = scratch.gameMode;
         }
-        cursor = blockHeader.end;  // not VERS: skip by size, never load its content
+        cursor = blockHeader.end;  // skip by size, never load an unwanted block's content
     }
-    return header;  // no VERS block: the reconstructed header stands
+    return facts;  // no VERS block: the reconstructed header stands
+}
+
+// The one place SaveSummary's two world.dat-sourced fields get filled, so the
+// plain listing and the version-aware one cannot come to disagree about what a
+// world's third line says.
+void applyListingFacts(SaveSummary& summary, const ListingFacts& facts) {
+    summary.versionName = facts.versionHeader.versionName;
+    // A save with no WRLD block reports no mode; leaving the default in place is
+    // the honest answer, not GameMode::Survival dressed up as one.
+    if (facts.gameMode.has_value()) summary.gameMode = *facts.gameMode;
 }
 
 [[nodiscard]] WorldCompatibility classifyCompatibility(std::uint32_t worldVersion) {
@@ -3006,7 +3254,28 @@ std::vector<SaveSummary> SaveRepository::list() const {
         const auto metadata = entry.path() / "level.properties";
         if (!std::filesystem::is_regular_file(metadata)) continue;
         try {
-            saves.push_back(summaryFromProperties(metadata, identifier));
+            auto summary = summaryFromProperties(metadata, identifier);
+            // One stat per world, no decode: the listing reports *whether* there
+            // is a thumbnail, never its 16 KB of pixels. The error_code overload
+            // keeps a permission failure on one world from throwing the whole
+            // listing away (an unreadable icon just reads as "no icon"), and it
+            // is deliberately a separate error_code from the iteration's — that
+            // one is the loop's break condition.
+            std::error_code iconError;
+            summary.hasIcon =
+                std::filesystem::is_regular_file(entry.path() / kIconFileName, iconError);
+            // The list's third line (game mode + version name), read out of
+            // world.dat by the same one-pass walk the version-aware listing
+            // uses. Tolerantly: level.properties alone is what makes a world
+            // listable, so a world.dat that is absent, damaged, or in a format
+            // this walk cannot follow must not delete the entry — it leaves
+            // those two fields at their documented defaults instead.
+            try {
+                applyListingFacts(summary, readListingFacts(entry.path() / "world.dat"));
+            } catch (const std::exception&) {
+                // Unreadable self-description, still a listable world.
+            }
+            saves.push_back(std::move(summary));
         } catch (const std::exception&) {
             // A damaged world remains isolated and does not hide healthy saves.
         }
@@ -3032,8 +3301,16 @@ std::vector<WorldSummary> SaveRepository::worldSummaries() const {
             // it can be badged FromNewerVersion, not silently dropped.
             summary.summary =
                 summaryFieldsFromProperties(readProperties(metadata), identifier);
+            // Same existence-only probe list() does; see the note there.
+            std::error_code iconError;
+            summary.summary.hasIcon =
+                std::filesystem::is_regular_file(entry.path() / kIconFileName, iconError);
             // Lazy: only world.dat's header, never the region chunks.
-            summary.versionHeader = readVersionHeaderOnly(entry.path() / "world.dat");
+            const auto facts = readListingFacts(entry.path() / "world.dat");
+            summary.versionHeader = facts.versionHeader;
+            // summary.summary.versionName is assigned from that same header, so
+            // the two copies of the name in a WorldSummary cannot drift.
+            applyListingFacts(summary.summary, facts);
             summary.compatibility = classifyCompatibility(summary.versionHeader.worldVersion);
             std::error_code sizeError;
             summary.sizeBytes = std::filesystem::file_size(entry.path() / "world.dat", sizeError);
@@ -3395,6 +3672,83 @@ void SaveRepository::remove(const std::string& identifier) const {
     if (error) throw std::runtime_error("Unable to delete save: " + error.message());
 }
 
+std::filesystem::path SaveRepository::iconPath(std::string_view identifier) const {
+    // Path arithmetic only — no stat, no throw. Callers need the answer before
+    // the file (or even the world) exists; existence is SaveSummary::hasIcon's
+    // job. It goes through root_ and operator/ rather than string concatenation
+    // so the separator stays the platform's, exactly like every other path this
+    // class hands out.
+    return root_ / std::filesystem::path{identifier} / std::filesystem::path{kIconFileName};
+}
+
+bool SaveRepository::writeIcon(std::string_view identifier,
+                               std::span<const std::uint8_t> rgba,
+                               std::uint32_t width, std::uint32_t height) {
+    // An identifier that is not a plain folder name would let `..` walk the
+    // write out of the save root. Every other mutating entry point throws on
+    // this; here the contract is a bool, so it joins the other refusals.
+    if (!safeIdentifier(identifier)) return false;
+    if (width == 0U || height == 0U) return false;
+    // The encoder takes int dimensions. Refusing anything that would not
+    // survive the narrowing keeps the cast below from being the thing that
+    // decides what gets encoded.
+    constexpr auto kMaximumDimension =
+        static_cast<std::uint32_t>(std::numeric_limits<int>::max());
+    if (width > kMaximumDimension || height > kMaximumDimension) return false;
+    // The load-bearing check. The encoder is handed rgba.data() plus w/h/4 and
+    // reads exactly that many bytes from it, so a span shorter than its declared
+    // dimensions is an out-of-bounds read — not a wrong-looking picture. This is
+    // the only place that can see both the length and the dimensions, so it is
+    // the only place that can refuse. Computed in u64 (both operands widened
+    // before multiplying) so a large width*height cannot wrap into a small
+    // number that a short span happens to match.
+    const std::uint64_t expectedBytes =
+        static_cast<std::uint64_t>(width) * static_cast<std::uint64_t>(height) * kIconChannels;
+    if (static_cast<std::uint64_t>(rgba.size()) != expectedBytes) return false;
+
+    const auto directory = root_ / std::filesystem::path{identifier};
+    std::error_code error;
+    // No world, no icon: writeIcon must not conjure a save directory, or a typo
+    // in the identifier would leave a stray folder holding one orphaned PNG that
+    // the listing then skips (it has no level.properties) and nobody deletes.
+    if (!std::filesystem::is_directory(directory, error)) return false;
+
+    std::size_t encodedBytes = 0U;
+    void* encoded = tdefl_write_image_to_png_file_in_memory_ex(
+        rgba.data(), static_cast<int>(width), static_cast<int>(height),
+        static_cast<int>(kIconChannels), &encodedBytes, MZ_DEFAULT_LEVEL, MZ_FALSE);
+    if (encoded == nullptr) return false;
+
+    const auto target = directory / std::filesystem::path{kIconFileName};
+    const std::filesystem::path temporary{target.string() + ".tmp"};
+    bool written = false;
+    {
+        std::ofstream output{temporary, std::ios::binary | std::ios::trunc};
+        if (output) {
+            output.write(reinterpret_cast<const char*>(encoded),
+                         static_cast<std::streamsize>(encodedBytes));
+            written = static_cast<bool>(output);
+        }
+    }
+    mz_free(encoded);
+    if (!written) {
+        std::error_code ignored;
+        std::filesystem::remove(temporary, ignored);
+        return false;
+    }
+    // Rename into place, the same install step world.dat and level.properties
+    // use: a crash mid-encode leaves the previous icon intact rather than a
+    // truncated PNG that the listing would happily report as present.
+    std::error_code renameError;
+    std::filesystem::rename(temporary, target, renameError);
+    if (renameError) {
+        std::error_code ignored;
+        std::filesystem::remove(temporary, ignored);
+        return false;
+    }
+    return true;
+}
+
 namespace {
 
 // Formats 1 through 16, where every section sat at a fixed offset and each new
@@ -3697,6 +4051,13 @@ SaveGame SaveRepository::load(const std::string& identifier) const {
     const auto directory = root_ / identifier;
     SaveGame game;
     game.summary = summaryFromProperties(directory / "level.properties", identifier);
+    {
+        // An opened world reports its thumbnail the same way the listing does,
+        // so a SaveGame's summary never contradicts the list entry it came from.
+        std::error_code iconError;
+        game.summary.hasIcon =
+            std::filesystem::is_regular_file(directory / kIconFileName, iconError);
+    }
     std::ifstream input{directory / "world.dat", std::ios::binary | std::ios::ate};
     if (!input) throw std::runtime_error("Unable to open world.dat");
     const auto length = input.tellg();
@@ -3759,6 +4120,14 @@ SaveGame SaveRepository::load(const std::string& identifier) const {
     } else {
         loadLegacy(payload, cursor, formatVersion, game);
     }
+    // An opened world's summary agrees with the world it came from, the same way
+    // hasIcon above does. Both fields are *derived* here from the values the
+    // blocks just produced, never parsed a second time — game.gameMode and
+    // game.versionHeader stay the authority, and summary is their listing-shaped
+    // view, so a list entry and the SaveGame behind it cannot say different
+    // things about the same world.
+    game.summary.gameMode = game.gameMode;
+    game.summary.versionName = game.versionHeader.versionName;
     return game;
 }
 

@@ -72,6 +72,22 @@ inline constexpr std::size_t kKeyBindWidgetsPerRow = 3U;
            widget.debugId == static_cast<std::uint16_t>(WidgetId::ResetKeyBind);
 }
 
+// UI-11 / A6：一个控件是不是**滚动列表的一行**（世界列表 / 语言列表），
+// 或者跟在世界行后面的那张缩略图。
+//
+// ★ 它存在的理由是一个真实的隐患：这两种行此前落在 `frontendButtonRect` 的
+//   `BottomBandTwoColumn` 分支上，也就是**拿到的是底部按钮的矩形**。绘制与命中
+//   两侧都绕过 `Widget::rect`、各自去调 `worldListRow()` / `languageRow()`，
+//   所以画面上看不出来；但 `bottomMenuButton` 对 `buttonCount > 20` 会抛
+//   `menu button index or count is invalid`——画布一高、可见行一多（scale 1 的
+//   720 逻辑高能放 28 行）就是闪退。收进这里之后行的矩形是真的，
+//   "控件不越界"那条通用护栏也终于管得到它们。
+[[nodiscard]] inline bool isScrollListRowWidget(const Widget& widget) {
+    return widget.debugId == static_cast<std::uint16_t>(WidgetId::WorldRow) ||
+           widget.debugId == static_cast<std::uint16_t>(WidgetId::LanguageRow) ||
+           widget.debugId == static_cast<std::uint16_t>(WidgetId::WorldIcon);
+}
+
 inline constexpr int kKeyBindRowHeight = 20;      // KeyBindsList.ITEM_HEIGHT
 inline constexpr int kKeyBindChangeWidth = 75;    // changeButton.bounds(0, 0, 75, 20)
 inline constexpr int kKeyBindResetWidth = 50;     // resetButton.bounds(0, 0, 50, 20)

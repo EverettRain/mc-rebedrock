@@ -2,6 +2,8 @@
 
 #include "gameplay/Enchantment.hpp"
 #include "gameplay/Item.hpp"
+#include "gameplay/GameMode.hpp"
+#include "render/WorldIcon.hpp"
 #include "world/Block.hpp"
 
 #include <cstdint>
@@ -178,6 +180,47 @@ gameplay::WorldSnapshot uiCaptureWorldSnapshot(const UiCaptureTarget& target,
                                          gameplay::EnchantmentId::Unbreaking, 3U);
         snapshot.anvilCost = 7;
         break;
+    case gameplay::ContainerScreen::Trading:
+        // AR-M6：一个二级农民的货架，照着 26.1 的 farmer 表填——三条已解锁、
+        // 一条缺货、一条被等级锁住，外加一条正在成交（结果格有货）。
+        //
+        // ★ 这个夹具是**给界面用的**：交易后端已经全部就绪而绘制未做，所以
+        //   `--ui-shot trading` 现在拍到的是一屏「有槽位、没底图」的界面。前端每
+        //   接一块，重拍一次就能逐项对照，不必先去世界里养一个村民。
+        snapshot.tradePaymentA = items(gameplay::items::Wheat, 20U);
+        snapshot.tradeResult = items(gameplay::items::Emerald, 1U);
+        snapshot.tradeOfferCount = 5U;
+        snapshot.tradeWantsA[0] = items(gameplay::items::Wheat, 20U);
+        snapshot.tradeGives[0] = items(gameplay::items::Emerald, 1U);
+        snapshot.tradeOfferLevels[0] = 1U;
+        snapshot.tradeOfferUses[0] = 3U;
+        snapshot.tradeOfferMaxUses[0] = 16U;
+        snapshot.tradeWantsA[1] = items(gameplay::items::Carrot, 22U);
+        snapshot.tradeGives[1] = items(gameplay::items::Emerald, 1U);
+        snapshot.tradeOfferLevels[1] = 1U;
+        snapshot.tradeOfferMaxUses[1] = 16U;
+        // 缺货那一条：uses 已经顶到 maxUses。
+        snapshot.tradeWantsA[2] = items(gameplay::items::Potato, 26U);
+        snapshot.tradeGives[2] = items(gameplay::items::Emerald, 1U);
+        snapshot.tradeOfferLevels[2] = 1U;
+        snapshot.tradeOfferUses[2] = 16U;
+        snapshot.tradeOfferMaxUses[2] = 16U;
+        snapshot.tradeOfferOutOfStock[2] = 1U;
+        snapshot.tradeWantsA[3] = items(gameplay::items::Emerald, 1U);
+        snapshot.tradeGives[3] = items(gameplay::items::Bread, 6U);
+        snapshot.tradeOfferLevels[3] = 1U;
+        snapshot.tradeOfferMaxUses[3] = 16U;
+        // 被等级锁住那一条：三级的西瓜换绿宝石，二级村民还买不到。
+        snapshot.tradeWantsA[4] = blocks(world::Block::Melon, 4U);
+        snapshot.tradeGives[4] = items(gameplay::items::Emerald, 1U);
+        snapshot.tradeOfferLevels[4] = 3U;
+        snapshot.tradeOfferMaxUses[4] = 12U;
+        snapshot.tradeOfferLocked[4] = 1U;
+        snapshot.tradeSelectedOffer = 0U;
+        snapshot.tradeVillagerLevel = 2U;
+        snapshot.tradeXpInLevel = 24;
+        snapshot.tradeXpForNextLevel = 60;
+        break;
     case gameplay::ContainerScreen::Count:
         // 哨兵，不是一屏。它不会出现在目标表里（那张表的覆盖断言只遍历 Count 之前的值）。
         break;
@@ -208,6 +251,80 @@ gameplay::PlayerTickSnapshot uiCapturePlayerSnapshot(const UiCaptureTarget& targ
     snapshot.experienceProgress = 0.4F;
     snapshot.selectedHotbarSlot = 2U;
     return snapshot;
+}
+
+namespace {
+
+// 这三屏都读 `menuSystem.saveSummaries`：列表画行，编辑与删除确认画选中存档的名字。
+[[nodiscard]] bool targetShowsSaveList(const UiCaptureTarget& target) {
+    return target.page == ui::PageId::WorldList || target.page == ui::PageId::EditWorld ||
+           target.page == ui::PageId::ConfirmDelete;
+}
+
+} // namespace
+
+std::vector<persistence::SaveSummary> uiCaptureSaveSummaries(const UiCaptureTarget& target) {
+    if (!targetShowsSaveList(target)) {
+        return {};
+    }
+    // ★ 逐字段赋值而不是聚合初始化：`SaveSummary` 是持久化层的结构，随时会加字段，
+    //   而聚合初始化在加字段时**不会报错**，只会让后面每一个值都错位一格。
+    const auto save = [](std::string identifier, std::string displayName, std::uint64_t seed,
+                         std::int64_t lastPlayed, gameplay::GameMode mode) {
+        persistence::SaveSummary summary;
+        summary.identifier = std::move(identifier);
+        summary.displayName = std::move(displayName);
+        summary.seed = seed;
+        summary.lastPlayedUnixSeconds = lastPlayed;
+        summary.gameMode = mode;
+        // ★ 写死的字面量，**故意不取 `core::kVersion.name`**：夹具的全部意义是
+        //   "只由目标决定"，而版本名每次发布都会变——取真值等于让每一次版本号变更
+        //   都把这一屏的基线改掉。
+        summary.versionName = "26.1";
+        return summary;
+    };
+    std::vector<persistence::SaveSummary> saves;
+    // 2024-01-02 03:04:05 UTC。截图通道把 TZ 钉成 UTC（applyUiCaptureDeterminism），
+    // 所以这个数在任何机器上都渲染成同一串字。
+    saves.push_back(save("new-world", "New World", 1234567890123ULL, 1704164645,
+                         gameplay::GameMode::Survival));
+    // 有自己的缩略图的那一支：另外两行走 26.1 的回落图标，一张图里两条路径都在。
+    saves.front().hasIcon = true;
+    // 没有"最后游玩"记录的那一支：第二行只有目录名，没有括号里的日期。
+    // 顺带换一个游戏模式——第三行的模式名是两条不同的译文。
+    saves.push_back(save("flat-testbed", "Flat Testbed", 0ULL, 0, gameplay::GameMode::Creative));
+    // 长到要被裁的那一支（231 逻辑像素放不下）。
+    saves.push_back(save("very-long-directory-name-for-clipping",
+                         "A World Whose Name Is Far Too Long To Fit In One Row", 42ULL,
+                         1704164645, gameplay::GameMode::Survival));
+    return saves;
+}
+
+std::vector<std::uint8_t> uiCaptureWorldIcon() {
+    // 一张 160x90 的合成"帧"：横向红、纵向绿、蓝恒定。裁剪窗口取的是中间那 90 列
+    // （`GameRenderer.takeAutoScreenshot`：宽 > 高 时 x = (160-90)/2 = 35），
+    // 所以画出来的图标左缘不是纯黑——那正好证明**裁的是中间**而不是从 0 开始。
+    constexpr int kWidth = 160;
+    constexpr int kHeight = 90;
+    std::vector<std::uint8_t> frame(static_cast<std::size_t>(kWidth * kHeight * 4));
+    for (int y = 0; y < kHeight; ++y) {
+        for (int x = 0; x < kWidth; ++x) {
+            const auto offset = static_cast<std::size_t>((y * kWidth + x) * 4);
+            frame[offset + 0U] = static_cast<std::uint8_t>(x * 255 / (kWidth - 1));
+            frame[offset + 1U] = static_cast<std::uint8_t>(y * 255 / (kHeight - 1));
+            frame[offset + 2U] = 96U;
+            frame[offset + 3U] = 255U;
+        }
+    }
+    return worldIconFromFrame(frame, kWidth, kHeight);
+}
+
+std::size_t uiCaptureSelectedWorldRow(const UiCaptureTarget& target) {
+    if (!targetShowsSaveList(target)) {
+        return static_cast<std::size_t>(-1);
+    }
+    // 第 1 行。选中的行有底、没选中的没有——一张图里两种都要有。
+    return 1U;
 }
 
 } // namespace mc::render

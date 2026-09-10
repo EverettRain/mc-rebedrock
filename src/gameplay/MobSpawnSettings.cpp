@@ -179,6 +179,7 @@ void BiomeSpawnTables::loadBuiltinDefaults() {
     const auto* chicken = speciesById("chicken");
     const auto* zombie = speciesById("zombie");
     const auto* husk = speciesById("husk");
+    const auto* creeper = speciesById("creeper");
     // Resolving none of them means the entity registry was still empty when
     // this ran, and the result is a world that silently never spawns anything.
     // It has to be loud: the tables look fine, every call succeeds, and the only
@@ -208,6 +209,12 @@ void BiomeSpawnTables::loadBuiltinDefaults() {
         }
         if (hasMonsters(biome) && zombie != nullptr) {
             std::vector<SpawnerData> monsters{{zombie, 95, 4, 4}};
+            // BiomeDefaultFeatures.monsters (26.1): the creeper is in the base
+            // monster list of every biome that has one, weight 100, groups of
+            // four — the single most common hostile after the zombie family.
+            if (creeper != nullptr) {
+                monsters.push_back({creeper, 100, 4, 4});
+            }
             // BiomeDefaultFeatures.desertSpawns (26.1): husk (weight 80, groups
             // of four) joins zombie in desert-type biomes only — every other
             // biome's monster table stays zombie-only, exactly as it was before

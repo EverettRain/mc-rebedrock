@@ -57,12 +57,12 @@ void writeOverridePack(const std::filesystem::path& packRoot, std::uint8_t plank
                                R"("ingredients":[{"block":"rebedrock:oak_log"}],)"
                                R"("output":"rebedrock:oak_planks","count":)" +
                                std::to_string(static_cast<int>(plankCount)) + "}";
-    writeFile(packRoot / "data" / "minecraft" / "recipes" / "oak_planks.json", recipe);
+    writeFile(packRoot / "data" / "minecraft" / "recipe" / "oak_planks.json", recipe);
 }
 
 [[nodiscard]] std::uint8_t plankCount() {
     for (const auto& recipe : mc::gameplay::recipeTable().crafting()) {
-        if (recipe.identifier == "minecraft:oak_planks") {
+        if (recipe.identifier == "rebedrock:oak_planks") {
             return recipe.output.count;
         }
     }

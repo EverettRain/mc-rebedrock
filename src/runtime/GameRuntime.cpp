@@ -1189,6 +1189,14 @@ void GameRuntime::loadWorld(persistence::SaveGame save, int viewDistanceChunks) 
     gameSession_.experience().restore(
         currentSave_->playerExperienceLevel, currentSave_->playerExperiencePoints,
         currentSave_->playerTotalExperience, currentSave_->playerEnchantmentSeed);
+    // 配方书同理：没有 RCPB 块的老存档两张表都是空的，也就是"一条都还没解锁"。
+    gameSession_.recipeBook().load(currentSave_->unlockedRecipes,
+                                   currentSave_->highlightedRecipes);
+    // ADV-1：成就进度。没有 ADVP 块的老存档进度是空的，玩家手里已经拿着的材料会
+    // 在**下一个 tick** 被指纹比对当成「刚变的」重新打一遍 inventory_changed，
+    // 所以老存档不会因为缺块就永远解锁不了（见 PlayerAdvancements.hpp 那段）。
+    gameSession_.advancements().load(currentSave_->advancementProgress);
+    gameSession_.primaryPlayer().inventoryFingerprints.clear();
     // Player's constructor lazily rolls enchantmentSeed the first time a save
     // carries none (`if (enchantmentSeed == 0) enchantmentSeed = random.nextInt()`,
     // Player.java:632-634): a brand-new world or a pre-XP-0 save both load a
@@ -1374,6 +1382,14 @@ bool GameRuntime::saveLocked() {
     currentSave_->playerExperiencePoints = gameSession_.experience().pointsIntoLevel();
     currentSave_->playerTotalExperience = gameSession_.experience().totalExperience();
     currentSave_->playerEnchantmentSeed = gameSession_.experience().enchantmentSeed();
+    // 配方书：已解锁与待高亮两张表。存的是**配方标识符字符串**，不是稠密下标——
+    // 配方表是数据驱动的（datapack 可以增删改），下标是每次运行才成立的值。
+    currentSave_->unlockedRecipes.assign(gameSession_.recipeBook().known().begin(),
+                                         gameSession_.recipeBook().known().end());
+    currentSave_->highlightedRecipes.assign(gameSession_.recipeBook().highlight().begin(),
+                                            gameSession_.recipeBook().highlight().end());
+    // ADV-1：成就进度（同样存名字不存下标，理由同上）。
+    currentSave_->advancementProgress = gameSession_.advancements().snapshot();
     currentSave_->chests.assign(gameSession_.chestSystem().entities().begin(),
                                 gameSession_.chestSystem().entities().end());
     currentSave_->trappedChests.assign(gameSession_.trappedChestSystem().entities().begin(),

@@ -362,8 +362,17 @@ namespace {
 // PlaceBlock targets), but only when a Fire block would actually survive there
 // (FireBlock#canSurvive: sturdy floor below, or a flammable neighbour) — a lit
 // tool clicked at empty air over nothing does nothing, exactly like vanilla.
+// EXP-2: TntBlock#onCaughtFire — flint and steel on TNT primes it instead of
+// putting a fire block beside it. Vanilla checks this before the fire placement
+// for the same reason: the fire would be the wrong answer on a block that has
+// its own reaction to being lit.
 [[nodiscard]] ItemUseResult igniteWithFlintAndSteel(
     const Item*, world::World& world, const world::PlacementContext& context) {
+    // The clicked block itself decides first: TNT is lit, not built beside.
+    const auto clicked = context.clickedBlock;
+    if (world.block(clicked.x, clicked.y, clicked.z) == world::Block::Tnt) {
+        return {ItemUseAction::PrimeTnt, world::BlockState{world::Block::Tnt}};
+    }
     const auto target = context.placePosition;
     if (!world::isReplaceable(world.block(target.x, target.y, target.z))) {
         return {};
@@ -495,10 +504,20 @@ ItemUseResult legacyBlockStackUseOn(
     if (stack.item != nullptr || stack.block == world::Block::Air) {
         return {};
     }
-    // AR-B2: a legacy door stack (a null item pointer naming a door block)
-    // still routes through the two-cell placement, matching the live-item path.
-    if (world::blockDefinition(stack.block).model == world::BlockModel::Door) {
+    // AR-B2 / SLP-1: a legacy stack (a null item pointer naming a block) that
+    // names a TWO-CELL block still has to route through the two-cell placement,
+    // exactly as the live-item path does.
+    //
+    // The bed was missing here and the failure was silent in the worst way: the
+    // single-cell path ran instead, and a lone bed half fails its own support
+    // rule (BedOtherHalf — no partner), so nothing was placed at all and nothing
+    // said why. Any future two-cell block belongs in this list too.
+    const auto model = world::blockDefinition(stack.block).model;
+    if (model == world::BlockModel::Door) {
         return doorPlaceResult(stack.block, world, context);
+    }
+    if (model == world::BlockModel::Bed) {
+        return bedPlaceResult(stack.block, world, context);
     }
     return placeBlockResult(blockItemFor(stack.block), stack.block, world, context);
 }

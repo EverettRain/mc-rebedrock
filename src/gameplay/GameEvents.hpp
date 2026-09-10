@@ -77,6 +77,8 @@ enum class SoundEventKind : std::uint8_t {
     // (item.flintandsteel.use) and shears shearing a sheep (entity.sheep.shear).
     FlintAndSteelUse,
     Shear,
+    // EXP-1: entity.generic.explode.
+    Explode,
 };
 
 // One payload for every sound the simulation raises. A variant per kind would

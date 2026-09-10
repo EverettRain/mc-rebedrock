@@ -180,9 +180,28 @@ int main() {
         }
         assert(foundHerd);
     }
-    for (const auto& entry : spawner.table(world::gen::Biome::Plains).forCategory(
-             MobCategory::Monster)) {
-        assert(entry.weight == 95 && entry.minGroup == 4 && entry.maxGroup == 4);
+    // EXP-3: the plains monster table is zombie (95) plus creeper (100) — the
+    // creeper is in every monster biome's base list, so it must be here and it
+    // must carry vanilla's own weight, which is HIGHER than the zombie's.
+    // Asserted per species rather than "every row weighs 95": that older shape
+    // could not tell a creeper row apart from a mis-weighted one.
+    {
+        int zombieWeight = 0;
+        int creeperWeight = 0;
+        std::size_t rows = 0U;
+        for (const auto& entry : spawner.table(world::gen::Biome::Plains).forCategory(
+                 MobCategory::Monster)) {
+            ++rows;
+            assert(entry.minGroup == 4 && entry.maxGroup == 4);
+            if (entry.type->id().matches("zombie")) {
+                zombieWeight = entry.weight;
+            } else if (entry.type->id().matches("creeper")) {
+                creeperWeight = entry.weight;
+            }
+        }
+        assert(rows == 2U);
+        assert(zombieWeight == 95);
+        assert(creeperWeight == 100);
     }
 
     // AR-M1: husk only ever appears in the desert's monster table, never

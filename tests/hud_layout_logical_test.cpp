@@ -151,9 +151,12 @@ void testListGeometry() {
     constexpr float kWidth = 1280.0F;
     const mc::ui::HudLayout layout{kWidth, 720.0F, 3};   // 逻辑 427x240
     // UI-4：行宽改成 26.1 的 270（`WorldSelectionList:251`），此前是自造的 300。
-    // x = (427-270)/2 = 78 -> 234；行距 22 -> 66；行高 20 -> 60。
-    EXPECT_RECT(mc::ui::worldListRow(0U, layout), 234.0F, 102.0F, 810.0F, 60.0F);
-    EXPECT_RECT(mc::ui::worldListRow(1U, layout), 234.0F, 102.0F + 66.0F, 810.0F, 60.0F);
+    // UI-11 / A6：行高改成 26.1 的 **36**（`WorldSelectionList:116` 的 itemHeight），
+    // 此前是自造的 22，而且还额外减 2 当作行间缝——26.1 的行与行之间不留缝，
+    // 视觉间隔来自 `Entry.getContentY/Height` 上下各让出的 2 像素。
+    // x = (427-270)/2 = 78 -> 234；行距 36 -> 108；行高同样 36 -> 108。
+    EXPECT_RECT(mc::ui::worldListRow(0U, layout), 234.0F, 102.0F, 810.0F, 108.0F);
+    EXPECT_RECT(mc::ui::worldListRow(1U, layout), 234.0F, 102.0F + 108.0F, 810.0F, 108.0F);
 
     // 整宽的列表框铺满**逻辑**画布，而不是帧缓冲宽度：427*3 = 1281，比 1280 多一像素。
     // 那一列被切掉正是原版行为（26.1 的版面就摆在 ceil 后的画布上）。

@@ -9,6 +9,7 @@
 #include "ui/OptionsList.hpp"
 #include "ui/ScrollList.hpp"
 #include "ui/MenuSystem.hpp"
+#include "ui/NoticeScreen.hpp"
 #include "ui/PageStack.hpp"
 #include "ui/Widget.hpp"
 
@@ -22,6 +23,19 @@ namespace mc::ui {
 
 // 标题与底部按钮之间那条带里的一个存档列表行
 [[nodiscard]] UiRect worldListRow(std::size_t index, const HudLayout& layout);
+// UI-13：世界列表那条带（列表视口）。底衬与上下两条分隔线都照它画——绘制侧此前自己
+// 算一份 `visibleRows * 22 + 8`，A6 把行距改成 36 之后那份就说了假话。
+[[nodiscard]] UiRect worldListBox(const HudLayout& layout);
+// UI-13b：那条带的高（逻辑像素）——从标题带下缘一路**撑到**底部按钮块上方。
+//
+// ★ 它是"这条带有多高"的**唯一**来源：视口、可见行数、底衬与两条分隔线全从它派生。
+//   26.1 `SelectWorldScreen:63-67` 同样是 `height(layout.getContentHeight())`：
+//   三段式版面里内容区撑满页眉与页脚之间，装不满就空着，**不缩到行数的整数倍**。
+//   缩到整数倍的后果是列表下缘与按钮之间永远吊着一段 `available % 行距` 的死空间。
+[[nodiscard]] int worldListViewportHeight(const HudLayout& layout);
+// UI-11 / A6：同一行的**逻辑像素**版本。行内那几块（32x32 缩略图与三行字）由
+// `ui::worldRowParts` 从它派生，绘制侧据此画，布局侧据此发缩略图的矩形。
+[[nodiscard]] UiRect logicalWorldListRow(std::size_t index, const HudLayout& layout);
 
 // 当前画布尺寸下，列表带里放得下多少个存档行
 // UI-3：`forceUnicode` 参与缩放求解（26.1 `Window.calculateScale`），因此凡是自己构造
@@ -89,9 +103,13 @@ namespace mc::ui {
 //   个 firstRow 折算行号，两边错开一行就是"名字和控件错位"或者"滚动条动了内容不动"。
 // ★ `createWorldTab` 同理：它是**屏幕状态**，而装配与布局必须读同一个值——
 //   装配按当前页造控件、布局按同一页算矩形，两边不同步就是"点 A 触发 B"。
+// ★ `noticeMetrics` 同理：提示屏的内容列宽是 `max(标题宽, 正文格宽, 页脚宽)`，
+//    而标题宽与复选框文字宽要量字体——`ui::` 这一层没有字体，所以由调用方量好传进来
+//    （生产路径两处都从 `MenuBuildContext::noticeMetrics` 取同一个值）。
 void layoutPageInto(Page& page, PageId id, const HudLayout& layout,
                     std::size_t keyBindFirstRow = 0U, std::size_t optionsFirstRow = 0U,
-                    CreateWorldTab createWorldTab = CreateWorldTab::Game);
+                    CreateWorldTab createWorldTab = CreateWorldTab::Game,
+                    const NoticeMetrics& noticeMetrics = {});
 
 // 一页里有几个**按钮**（不含绑定列表那些行内控件）。布局用它，测试也用它断言页面形状。
 [[nodiscard]] std::size_t countPageButtons(const Page& page);

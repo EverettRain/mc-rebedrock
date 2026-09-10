@@ -646,6 +646,11 @@ enum class Block : std::uint16_t {
     GreenCarpet,
     RedCarpet,
     BlackCarpet,
+    // AR-M4: the composter — the farmer villager's job-site block, and the first
+    // of the thirteen workstations this roster is missing. A block on its own
+    // rather than part of a family: nothing else in vanilla shares
+    // ComposterBlock's fill/ready cycle.
+    Composter,
     Count,
 };
 
@@ -4357,6 +4362,25 @@ inline constexpr std::array<BlockDefinition, static_cast<std::size_t>(Block::Cou
     BlockProperties::of(Block::BlackCarpet, "black_carpet", "Black Carpet")
         .texture("black_wool").strength(0.1F).carpet()
         .creative(CreativeCategory::ColoredBlocks),
+    // AR-M4: ComposterBlock. `Blocks.COMPOSTER` is
+    // `strength(0.6F).sound(WOOD).ignitedByLava()`; its model is
+    // composter.json's five boxes (a 2-thick floor plus four 2-thick walls), so
+    // it takes the ElementModel path the enchanting table and anvil already use
+    // rather than a model of its own. The LEVEL axis carries nine values
+    // (0..8 — 8 is READY), and because the bowl is open at the top it never
+    // occludes its neighbours.
+    //
+    // Texture slots follow composter.json's own `#textures`: 0 top, 1 side,
+    // 2 bottom (which the json also uses as `#inside`), 3 the compost surface,
+    // 4 the finished (ready) surface.
+    BlockProperties::of(Block::Composter, "composter", "Composter")
+        .texture("composter_top", "composter_side", "composter_bottom")
+        .elementModel("composter_top", "composter_side", "composter_bottom",
+                      "composter_compost", "composter_ready")
+        .strength(0.6F)
+        .noOcclusion()
+        .state(StateProperty::ComposterLevel, 9U)
+        .creative(CreativeCategory::Functional),
 };
 
 [[nodiscard]] constexpr bool isValidBlock(Block block) {

@@ -205,6 +205,8 @@ enum class ItemUseAction : std::uint8_t {
     // the foot at the clicked cell and the head one step along FACING. Same
     // atomic two-write treatment as the door.
     PlaceBed,
+    // EXP-2: flint and steel on TNT — the block becomes a primed entity.
+    PrimeTnt,
     // AR-CX4-b: FlintAndSteelItem#useOn — places Fire in the cell adjacent to
     // the clicked face (result.state names the Fire block, default AGE 0). The
     // caller writes it into placeTarget like PlaceBlock, but this action is

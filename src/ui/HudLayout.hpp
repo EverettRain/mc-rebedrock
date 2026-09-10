@@ -47,6 +47,9 @@ class HudLayout final {
   public:
     static constexpr std::size_t kHotbarSlots = 9;
     static constexpr std::size_t kInventorySlots = 36;
+    // AR-M6: MerchantScreen.NUMBER_OF_OFFER_BUTTONS. Seven rows are visible at
+    // once; a villager with more offers scrolls, which is the UI's business.
+    static constexpr std::size_t kTradingOfferButtons = 7;
     static constexpr std::size_t kCreativeVisibleSlots = 45;
     // 一个前端页面最多能承载多大的菜单
     // 视频设置页有十项，分两列的布局能在屏幕上放下更多
@@ -104,6 +107,28 @@ class HudLayout final {
     [[nodiscard]] UiRect anvilLeftSlot() const;
     [[nodiscard]] UiRect anvilRightSlot() const;
     [[nodiscard]] UiRect anvilOutputSlot() const;
+    // AR-M6: the trade screen's layout anchors.
+    //
+    // These are the ONLY geometry the trading backend needs — the click router
+    // has to know where a slot and an offer row are, or a screen cannot be
+    // driven at all. Everything else about the screen (background, the offer
+    // rows' contents, the arrow, the level bar, the scrollbar) is the UI's, and
+    // none of it is here.
+    //
+    // The numbers are 26.1's MerchantScreen/MerchantMenu constants: a 276x166
+    // panel, payment slots at (136,37) and (162,37), the result at (220,37),
+    // and seven 88x20 offer buttons at x=5 starting at y=18. A UI that wants a
+    // different layout changes these four functions and nothing else.
+    [[nodiscard]] UiRect tradingPanel() const;
+    [[nodiscard]] UiRect tradingPaymentSlot(std::size_t index) const;
+    [[nodiscard]] UiRect tradingResultSlot() const;
+    [[nodiscard]] UiRect tradingOffer(std::size_t index) const;
+    // The player's own 36 slots as the trade screen places them. MerchantScreen
+    // sets `inventoryLabelX = 107`, so the player's inventory sits 107 units
+    // into the 276-wide panel rather than 8 into a 176-wide one — without this
+    // the payment slots and the player's own row overlap, and a click lands on
+    // whichever the hit test reaches first.
+    [[nodiscard]] UiRect tradingInventorySlot(std::size_t index) const;
     [[nodiscard]] UiRect chestSlot(std::size_t index) const;
     [[nodiscard]] UiRect chestInventorySlot(std::size_t index) const;
     [[nodiscard]] UiRect creativePanel() const;

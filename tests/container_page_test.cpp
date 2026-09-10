@@ -73,6 +73,9 @@ using mc::ui::ContainerPageKind;
     case ContainerPageKind::Anvil:
         context.screen = ContainerScreen::Anvil;
         break;
+    case ContainerPageKind::Trading:
+        context.screen = ContainerScreen::Trading;
+        break;
     case ContainerPageKind::Count:
         break;
     }

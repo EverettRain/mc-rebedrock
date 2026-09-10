@@ -86,6 +86,21 @@ void appendContainerSlots(
         slots.push_back({layout.anvilOutputSlot(), nullptr, SlotKind::AnvilOutput, 0U});
         return;
     }
+    case ContainerScreen::Trading: {
+        // AR-M6: two payment slots plus a result the player can only take from.
+        // Like the anvil's, all three live on the player's own menu — the
+        // villager holds no items.
+        auto* menu = session != nullptr ? &session->tradingMenu() : nullptr;
+        slots.push_back({layout.tradingPaymentSlot(0U),
+                         menu != nullptr ? &menu->paymentA : nullptr, SlotKind::TradePaymentA,
+                         0U});
+        slots.push_back({layout.tradingPaymentSlot(1U),
+                         menu != nullptr ? &menu->paymentB : nullptr, SlotKind::TradePaymentB,
+                         0U});
+        // Null storage: the result is derived, and taking it is the trade.
+        slots.push_back({layout.tradingResultSlot(), nullptr, SlotKind::TradeResult, 0U});
+        return;
+    }
     case ContainerScreen::Count:
         // 哨兵，不是一屏。它不过线、也不会被发布，走到这里说明有人把它当成了取值。
         return;
@@ -165,6 +180,11 @@ std::vector<SlotView> ScreenHandler::buildSlots(
         }
         const auto rect =
             context.screen == ContainerScreen::Chest ? layout.chestInventorySlot(index)
+            // AR-M6: the trade screen's panel is 276 wide and the player's own
+            // rows sit 107 into it, not 8 into a 176-wide one. Without this the
+            // payment slots and the player's inventory overlap and a click
+            // lands on whichever the hit test reaches first.
+            : context.screen == ContainerScreen::Trading ? layout.tradingInventorySlot(index)
             : creativeScreen ? (context.creativeInventoryTab ? layout.creativeInventorySlot(index)
                                                              : layout.creativeHotbarSlot(index))
                              : layout.inventorySlot(index);
@@ -191,6 +211,11 @@ std::vector<SlotView> ScreenHandler::buildSlotLayout(
         }
         const auto rect =
             context.screen == ContainerScreen::Chest ? layout.chestInventorySlot(index)
+            // AR-M6: the trade screen's panel is 276 wide and the player's own
+            // rows sit 107 into it, not 8 into a 176-wide one. Without this the
+            // payment slots and the player's inventory overlap and a click
+            // lands on whichever the hit test reaches first.
+            : context.screen == ContainerScreen::Trading ? layout.tradingInventorySlot(index)
             : creativeScreen ? (context.creativeInventoryTab ? layout.creativeInventorySlot(index)
                                                              : layout.creativeHotbarSlot(index))
                              : layout.inventorySlot(index);
@@ -236,7 +261,13 @@ ItemStack* ScreenHandler::resolveSlotStorage(GameSession& session,
         return &session.anvilMenu().left;
     case SlotKind::AnvilRight:
         return &session.anvilMenu().right;
+    case SlotKind::TradePaymentA:
+        return &session.tradingMenu().paymentA;
+    case SlotKind::TradePaymentB:
+        return &session.tradingMenu().paymentB;
     case SlotKind::AnvilOutput:
+    // AR-M6: the result is derived, never stored — taking it is `takeTradeResult`.
+    case SlotKind::TradeResult:
     case SlotKind::PlayerCraftingOutput:
     case SlotKind::TableCraftingOutput:
     case SlotKind::FurnaceOutput:
@@ -385,6 +416,27 @@ void ScreenHandler::click(
         session.inventory().clickExternalSlot(storage, button);
         break;
     }
+    case SlotKind::TradePaymentA:
+    case SlotKind::TradePaymentB: {
+        // AR-M6: plain storage slots owned by the player's merchant menu. The
+        // result is re-derived after every change, so putting the right items in
+        // is all it takes for the goods to appear.
+        ItemStack& storage = slot.kind == SlotKind::TradePaymentA
+                                 ? session.tradingMenu().paymentA
+                                 : session.tradingMenu().paymentB;
+        if (shiftHeld) {
+            session.inventory().quickMoveInto(storage);
+        } else {
+            session.inventory().clickExternalSlot(storage, button);
+        }
+        session.refreshTradingOffers();
+        break;
+    }
+    case SlotKind::TradeResult:
+        // MerchantResultSlot#onTake: the click IS the trade. Everything is
+        // checked inside, so a UI may route any click here without asking first.
+        static_cast<void>(session.takeTradeResult());
+        break;
     case SlotKind::AnvilLeft:
     case SlotKind::AnvilRight: {
         // Plain storage slots; the result is re-derived after every change.
@@ -478,6 +530,21 @@ void ScreenHandler::quickMoveToContainer(
         break;
     case ContainerScreen::Furnace:
         static_cast<void>(session.furnaceSystem().moveInto(context.furnace, stack));
+        break;
+    case ContainerScreen::Trading:
+        // AR-M6: MerchantMenu#quickMoveStack fills the first free payment slot,
+        // A before B — the same first-free rule the anvil below uses.
+        if (!stack.empty()) {
+            TradingMenu& menu = session.tradingMenu();
+            if (menu.paymentA.empty()) {
+                menu.paymentA = stack;
+                stack = {};
+            } else if (menu.paymentB.empty()) {
+                menu.paymentB = stack;
+                stack = {};
+            }
+            session.refreshTradingOffers();
+        }
         break;
     case ContainerScreen::Anvil:
         // ENCH-3: a shift-click from the inventory fills the first free input,

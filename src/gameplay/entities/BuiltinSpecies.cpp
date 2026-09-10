@@ -62,11 +62,77 @@ class MeleeMonsterAi final : public MonsterAi {
 
 const MeleeMonsterAi kMeleeMonsterAi;
 
+// EXP-3: the creeper. The first species in this roster that needed a NEW
+// EntityAi rather than reusing one — the comment above MeleeMonsterAi named it
+// as the example, and here it is. It still acquires and follows a player like
+// any hostile, but instead of a MeleeAttackGoal it runs SwellGoal, which is a
+// state (swelling or not) rather than an action.
+class CreeperAi final : public MonsterAi {
+  public:
+    void configureBrain(MobBrain& brain) const override {
+        MonsterAi::configureBrain(brain);
+        // Priority 2, above the wander/look fallback: once it is close enough to
+        // swell, nothing else may take the move control back.
+        brain.goals().add(2, std::make_unique<SwellGoal>());
+        // It still has to walk to you first: Creeper.java:69 gives it a
+        // MeleeAttackGoal(1.0, false) at priority 4, below the swell. In practice
+        // the swell finishes before the melee cooldown ever lands a hit, which is
+        // why a creeper is remembered as a mob that never punches.
+        brain.goals().add(4, std::make_unique<MeleeAttackGoal>(1.0F));
+        brain.targets().add(2, std::make_unique<ActiveTargetPlayerGoal>());
+    }
+};
+
+const CreeperAi kCreeperAi;
+
+// AR-M5: the villager. MobCategory::Misc — vanilla's own category for it, which
+// is exactly why a villager never spawns naturally, never despawns and is
+// untouched by Peaceful; it arrives by spawn egg (or, later, with a village).
+// The category's placeholder MiscAi is an empty base because vanilla Misc
+// entities are projectiles and item frames; a villager is the first Misc entity
+// that is also a mob, so it gets a real AI here.
+//
+// The idle half only. Claiming a job site and working it are not goals in this
+// build — they are a per-tick pass in EntitySystem, because both need to reach
+// the world and the AI pass holds only a `const World&`.
+class VillagerAi final : public EntityAi {
+  public:
+    void configureBrain(MobBrain& brain) const override {
+        brain.goals().add(0, std::make_unique<SwimGoal>());
+        // The work goal sits above the wander/look fallback: a villager on its
+        // way to a crop or its composter must not be pulled off course by the
+        // idle stroll. Vanilla expresses the same precedence as an Activity
+        // (WORK replaces IDLE wholesale) rather than a priority.
+        brain.goals().add(2, std::make_unique<VillagerWorkGoal>());
+        // Villager#registerGoals has no PanicGoal of its own — panic is an
+        // Activity there — but EscapeDangerGoal is this build's equivalent of
+        // "something hurt me, run", and a villager that stood still while being
+        // hit would read as broken long before it read as unfaithful.
+        brain.goals().add(1, std::make_unique<EscapeDangerGoal>(0.5F));
+        brain.goals().add(5, std::make_unique<WanderAroundFarGoal>(0.6F));
+        brain.goals().add(6, std::make_unique<LookAtPlayerGoal>(8.0F));
+        brain.goals().add(7, std::make_unique<LookAroundGoal>());
+    }
+};
+
+const VillagerAi kVillagerAi;
+
 // --- loot ----------------------------------------------------------------
 
 // Pig.json (26.1): one to three raw porkchops. (Vanilla drops the cooked cut
 // when the pig dies on fire; that path is not modelled here — the same
 // simplification every other meat drop in this table makes.)
+// Creeper.json (26.1): zero to two gunpowder. (The music-disc drop needs a
+// skeleton kill to trigger and has no disc item here, so it is absent.)
+EntityDrops rollCreeperLoot(std::uint64_t& rng) {
+    EntityDrops drops;
+    const auto count = static_cast<std::uint8_t>(mc::rng::nextInt(rng, 3U));
+    if (count > 0U) {
+        drops.add({world::Block::Air, count, &items::Gunpowder});
+    }
+    return drops;
+}
+
 EntityDrops rollPigLoot(std::uint64_t& rng) {
     EntityDrops drops;
     const auto count = static_cast<std::uint8_t>(1U + mc::rng::nextInt(rng, 3U));
@@ -151,6 +217,37 @@ constexpr EntityRenderDescriptor kCowRender{
     /*secondaryTexturePath=*/{},
     // CowRenderer.java:22
     /*shadowRadius=*/0.7F,
+};
+
+// EXP-3: creeper. Geometry transcribed from 26.1's CreeperModel (head and body
+// at PartPose.offset(0,6,0), four 4x6x4 legs at y 18) into the Bedrock schema
+// this build's animation library reads; the skin is the vanilla texture out of
+// the player's own resource pack.
+constexpr EntityRenderDescriptor kCreeperRender{
+    /*geometryPath=*/"animation/creeper.geo.json",
+    /*animationPath=*/"animation/creeper.animation.json",
+    /*texturePath=*/"entity/creeper/creeper.png",
+    /*geometryId=*/"geometry.creeper",
+    /*walkAnimation=*/"animation.creeper.walk",
+    /*idleAnimation=*/"animation.creeper.idle",
+    /*scale=*/1.0F,
+    /*secondaryTexturePath=*/{},
+};
+
+// AR-M5: villager. Geometry transcribed from 26.1's VillagerModel — head with
+// its brimmed hat and nose, body with jacket, the single crossed-arms part and
+// two legs. The profession overlay (textures/entity/villager/profession/*.png)
+// is a second layer vanilla composites on top; this build draws only the base
+// skin, registered as a deviation.
+constexpr EntityRenderDescriptor kVillagerRender{
+    /*geometryPath=*/"animation/villager.geo.json",
+    /*animationPath=*/"animation/villager.animation.json",
+    /*texturePath=*/"entity/villager/villager.png",
+    /*geometryId=*/"geometry.villager",
+    /*walkAnimation=*/"animation.villager.walk",
+    /*idleAnimation=*/"animation.villager.idle",
+    /*scale=*/1.0F,
+    /*secondaryTexturePath=*/{},
 };
 
 constexpr EntityRenderDescriptor kZombieRender{
@@ -239,6 +336,21 @@ constexpr audio::MobSoundProfile kSheepSounds{
     "entity.sheep.ambient", "entity.sheep.hurt", "entity.sheep.death",
     "entity.sheep.step",    1.0F,                0.15F,
 };
+// Creeper (26.1): SoundEvents.CREEPER_HURT / CREEPER_DEATH. Mob#getAmbientSound
+// returns null for a creeper — it is silent until it hisses, and the hiss
+// (entity.creeper.primed) is raised where the fuse starts, not on the ambient
+// timer, so ambientEvent is deliberately empty (playEvent skips an empty name).
+constexpr audio::MobSoundProfile kCreeperSounds{
+    "", "entity.creeper.hurt", "entity.creeper.death", "entity.creeper.step", 1.0F, 0.15F,
+};
+
+// Villager (26.1): SoundEvents.VILLAGER_AMBIENT / HURT / DEATH. It has no step
+// sound of its own — Villager never overrides playStepSound — so stepEvent is
+// empty and the block's own footstep is what plays.
+constexpr audio::MobSoundProfile kVillagerSounds{
+    "entity.villager.ambient", "entity.villager.hurt", "entity.villager.death", "", 1.0F, 0.15F,
+};
+
 constexpr audio::MobSoundProfile kHuskSounds{
     "entity.husk.ambient", "entity.husk.hurt", "entity.husk.death",
     "entity.husk.step",    1.0F,               0.15F,
@@ -260,7 +372,7 @@ constexpr audio::MobSoundProfile kHuskSounds{
 
 // --- the manifest --------------------------------------------------------
 
-const std::array<SpeciesDef, 6> kManifest{{
+const std::array<SpeciesDef, 8> kManifest{{
     // Pig (26.1): 10 health, MOVEMENT_SPEED 0.25, box 0.9 x 0.9, egg tint
     // 0xF0A5A5 / 0xDB635E. Drops 1-3 raw porkchops. Not breedable yet (26.1
     // tempts a pig with a carrot, an item this build does not have).
@@ -365,6 +477,43 @@ const std::array<SpeciesDef, 6> kManifest{{
                                                        EntityBehavior::SunImmune |
                                                        EntityBehavior::HungerOnHit),
         /*eggLay=*/EggLayProfile{}, /*xpRewardMin=*/5, /*xpRewardMax=*/5},
+    // Creeper (26.1): Creeper.createAttributes() is
+    // Monster.createMonsterAttributes() plus MOVEMENT_SPEED 0.25 — so 20 health,
+    // attack damage 2 and follow range 16 all come from the shared monster
+    // defaults, not from Creeper itself. Box 0.6 x 1.7 (EntityType.CREEPER),
+    // egg tint 0x0DA70B / 0x000000, xpReward 5 (Mob's DEFAULT_XP_REWARD). Drops
+    // 0-2 gunpowder. Not Undead — a creeper is ARTHROPOD-less, ALIVE, and does
+    // not burn in daylight, so it carries no behaviour bits at all; the whole of
+    // "it explodes" lives in kCreeperAi's SwellGoal and the fuse in
+    // EntitySystem::tick, not in a flag here.
+    SpeciesDef{
+        /*path=*/"creeper", /*vanillaName=*/"creeper", MobCategory::Monster,
+        SpawnPlacement::OnGround, EntityDimensions{0.6F, 1.7F},
+        attributesOf(20.0F, 0.25F, 2.0F, 16.0F), /*hasSpawnEgg=*/true,
+        SpawnEggColors{0x0DA70BU, 0x000000U}, kCreeperRender, kCreeperSounds, &kCreeperAi,
+        &rollCreeperLoot, /*breeding=*/BreedingProfile{}, /*behaviorFlags=*/0U,
+        /*eggLay=*/EggLayProfile{}, /*xpRewardMin=*/5, /*xpRewardMax=*/5},
+    // Villager (26.1): Villager.createAttributes() is Mob.createMobAttributes()
+    // plus MOVEMENT_SPEED 0.5 — so 20 health and follow range 16 are the shared
+    // mob defaults and 0.5 is the one number Villager itself sets. It has no
+    // ATTACK_DAMAGE attribute at all (it never attacks), so 0. Box 0.6 x 1.95
+    // (EntityType.VILLAGER), egg tint 0x563C33 / 0xBD8B72.
+    //
+    // MobCategory::Misc, which is vanilla's: a villager does not spawn
+    // naturally, does not despawn, and Peaceful does not remove it. This task
+    // spawns them with the egg on purpose.
+    //
+    // xpReward 0: a killed villager drops no experience (Mob's default, which
+    // Villager never raises the way Monster does) and no loot — its whole value
+    // is what it trades.
+    SpeciesDef{
+        /*path=*/"villager", /*vanillaName=*/"villager", MobCategory::Misc,
+        SpawnPlacement::OnGround, EntityDimensions{0.6F, 1.95F},
+        attributesOf(20.0F, 0.5F, 0.0F, 16.0F), /*hasSpawnEgg=*/true,
+        SpawnEggColors{0x563C33U, 0xBD8B72U}, kVillagerRender, kVillagerSounds, &kVillagerAi,
+        /*loot=*/nullptr, /*breeding=*/BreedingProfile{},
+        /*behaviorFlags=*/static_cast<std::uint16_t>(EntityBehavior::Villager),
+        /*eggLay=*/EggLayProfile{}, /*xpRewardMin=*/0, /*xpRewardMax=*/0},
 }};
 
 // Builds one manifest row into an immutable EntityType. The mechanical

@@ -47,6 +47,7 @@ enum class GameRuleId : std::uint8_t {
     MaxCommandSequenceLength,
     MaxSnowAccumulationHeight,
     MobDrops,
+    MobGriefing,
     NaturalHealthRegeneration,
     RandomTickSpeed,
     SendCommandFeedback,
@@ -82,7 +83,7 @@ inline constexpr std::int32_t kUnboundedRuleMaximum = 2147483647;
 // lock, so a typo'd `/gamerule random_tick_speed 100000` would stall the render
 // thread rather than merely making the world grow fast. It clamps rather than
 // rejects, so the command still succeeds.
-inline constexpr std::array<GameRuleDefinition, 17> kGameRuleDefinitions{{
+inline constexpr std::array<GameRuleDefinition, 18> kGameRuleDefinitions{{
     //     name                              type              default  min  max  category
     {"advance_time",                    GameRuleType::Boolean, true, 0, 0, "updates"},
     {"advance_weather",                 GameRuleType::Boolean, true, 0, 0, "updates"},
@@ -119,6 +120,12 @@ inline constexpr std::array<GameRuleDefinition, 17> kGameRuleDefinitions{{
     // touching the freezing half of the same tick.
     {"max_snow_accumulation_height",    GameRuleType::Int,     std::int32_t{1}, 0, 8, "updates"},
     {"mob_drops",                       GameRuleType::Boolean, true, 0, 0, "drops"},
+    // EXP-3: whether a mob may change the world. Vanilla gates a long list of
+    // behaviours on it; the one this build has is the creeper's blast, which
+    // Creeper#explodeCreeper raises as ExplosionInteraction.MOB — block-breaking
+    // only when this rule is on. TNT is NOT gated by it (a player lit that), so
+    // turning this off leaves a creeper that still hurts but leaves no crater.
+    {"mob_griefing",                    GameRuleType::Boolean, true, 0, 0, "mobs"},
     {"natural_health_regeneration",     GameRuleType::Boolean, true, 0, 0, "player"},
     {"random_tick_speed",               GameRuleType::Int,     std::int32_t{3}, 0, 1000, "updates"},
     // Whether a successful command reports back to its sender's chat; failures

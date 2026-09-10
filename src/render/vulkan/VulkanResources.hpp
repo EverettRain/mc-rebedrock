@@ -128,6 +128,11 @@ class VulkanResources final {
     void uploadImageLayers(const AllocatedImage& image, const void* pixels, VkDeviceSize byteSize,
                            std::uint32_t width, std::uint32_t height, std::uint32_t layerCount,
                            VkPipelineStageFlags destinationStage) const;
+    // UI-11 / A6：只重传数组里的一段层（原地改像素，图像句柄不变，描述符因此不失效）。
+    void uploadImageLayerRange(const AllocatedImage& image, const void* pixels,
+                               VkDeviceSize byteSize, std::uint32_t width, std::uint32_t height,
+                               std::uint32_t baseLayer, std::uint32_t layerCount,
+                               VkPipelineStageFlags destinationStage) const;
 
     // 整个子资源范围的图像布局转换，封在一次性命令缓冲里；访问掩码与管线阶段由调用方给
     void transitionTextureImage(const AllocatedImage& image, std::uint32_t layerCount,

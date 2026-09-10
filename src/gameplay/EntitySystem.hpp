@@ -8,10 +8,12 @@
 #include "gameplay/Inventory.hpp"
 #include "gameplay/StatusEffect.hpp"
 #include "gameplay/entities/EntityType.hpp"
+#include "gameplay/entities/Villager.hpp"
 #include "gameplay/entities/MobBrain.hpp"
 
 #include <glm/vec3.hpp>
 
+#include <array>
 #include <cstddef>
 #include <cstdint>
 #include <optional>
@@ -118,6 +120,42 @@ struct SimpleEntity final {
     // Animal#loveTicks: ticks of the in-love state a feed grants. Two in-love
     // adults of one species breed on contact; ticks down to zero otherwise.
     int loveTicks = 0;
+    // EXP-3: Creeper#swell / #swellDir. The fuse counts up while the goal says
+    // "keep swelling" and back down when it says otherwise; at maxSwell (30)
+    // the creature detonates. Idles at zero for every other species, the same
+    // way `loveTicks` idles for a non-ageable one.
+    int swell = 0;
+    int swellDirection = -1;
+    // Entity#discard: removed without dying — no death animation, no loot, no
+    // experience. A detonating creeper is discarded (vanilla's own wording), so
+    // blowing yourself up is not a way to farm gunpowder.
+    bool discarded = false;
+    // AR-M5: the villager's own state. Five fields on the shared struct, idling
+    // at their defaults for every other species — the same shape `swell` and
+    // `sheared` already take, and (as the audit that opened this line argued)
+    // five more arguments for a real memory layer. A villager with
+    // `villagerProfession == None` is unemployed; `hasJobSite` is false until it
+    // claims a workstation, and `jobSite` is meaningless while it is.
+    entities::VillagerProfession villagerProfession = entities::VillagerProfession::None;
+    std::uint8_t villagerLevel = 1U;
+    int villagerTradeXp = 0;
+    glm::ivec3 jobSite{0};
+    bool hasJobSite = false;
+    // What the farmer is carrying back to its composter. One slot rather than
+    // vanilla's eight-slot SimpleContainer: the loop this task asks for is
+    // reap -> carry -> compost, and eight ItemStacks on every entity in the
+    // world (enchantment array included) would be a real cost for a capacity
+    // nothing yet uses.
+    const Item* villagerCarryItem = nullptr;
+    std::uint8_t villagerCarryCount = 0U;
+    // The crop cell the work goal is walking to, so the expensive scan runs on
+    // its cadence rather than every tick.
+    glm::ivec3 workTarget{0};
+    bool hasWorkTarget = false;
+    // MerchantOffer#uses, one counter per offer in the profession's table. An
+    // inline array so a villager carries no heap; every entry idles at zero for
+    // a creature that is not a villager.
+    std::array<std::uint8_t, entities::kMaxVillagerOffers> villagerOfferUses{};
     // AR-A2: SheepEntity#sheared. Only meaningful for the sheep species (any
     // other creature simply never has this flipped), so it lives here rather
     // than on a sheep-only subtype — the same "shared struct, per-species field
@@ -290,6 +328,25 @@ struct EntityTickResult final {
     // damage, difficulty scaling, hurt audio and death handling.
     std::vector<MobAttack> mobAttacks;
     std::vector<GrassEatRequest> grassEats;
+    // EXP-3: a creeper whose fuse ran out. EntitySystem cannot raise a blast
+    // itself for the same reason WorldSimulation cannot — hurting the player and
+    // rolling loot belong to the session — so it reports where and how big.
+    struct DetonationRequest final {
+        glm::vec3 center{0.0F};
+        float radius = 3.0F;
+    };
+    std::vector<DetonationRequest> detonations;
+
+    // AR-M5: what the farmer villagers want done to the world this tick. Same
+    // shape as grassEats and for the same reason — the AI pass may not write a
+    // block, and the session owns the mutation service.
+    struct VillagerWork final {
+        std::uint64_t entityId = 0U;
+        glm::ivec3 cell{0};
+        entities::MobBrain::VillagerWorkRequest::Kind kind =
+            entities::MobBrain::VillagerWorkRequest::Kind::Harvest;
+    };
+    std::vector<VillagerWork> villagerWorks;
 };
 
 class EntitySystem final {

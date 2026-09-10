@@ -18,6 +18,7 @@
 #include <deque>
 #include <optional>
 #include <unordered_set>
+#include <utility>
 #include <vector>
 
 #include <glm/vec3.hpp>
@@ -72,6 +73,28 @@ struct FallingBlockEntity final {
     bool removed = false;
     [[nodiscard]] friend bool operator==(const FallingBlockEntity&, const FallingBlockEntity&) =
         default;
+};
+
+// EXP-2: PrimedTnt. Vanilla's is a full entity with horizontal velocity (a
+// piston can push it, another blast can throw it); this one keeps the falling
+// block's vertical-only physics, which the simulation already has, and carries
+// the fuse. The blast itself is not raised here — WorldSimulation has no
+// business hurting a player or rolling loot — it is handed to the session as a
+// pending explosion the same way block changes are.
+struct PrimedTntEntity final {
+    glm::vec3 position{0.0F};
+    glm::vec3 previousPosition{0.0F};
+    float verticalVelocity = 0.0F;
+    // TntBlock's `setFuse(80)`: four seconds.
+    int fuse = 80;
+    bool removed = false;
+    [[nodiscard]] friend bool operator==(const PrimedTntEntity&, const PrimedTntEntity&) = default;
+};
+
+// One blast the simulation decided to raise this tick, for the session to run.
+struct PendingExplosion final {
+    glm::vec3 center{0.0F};
+    float radius = 4.0F;
 };
 
 [[nodiscard]] bool isCollectableWaterSource(
@@ -335,6 +358,15 @@ class WorldSimulation final {
     [[nodiscard]] std::vector<BlockChange> tick(
         world::World& world,
         bool processFluidUpdates = true);
+    // EXP-2: light a TNT block into a primed entity. `fuse` is vanilla's 80 for
+    // a player or redstone ignition and a short random one for a chain reaction.
+    void ignitePrimedTnt(glm::vec3 position, int fuse);
+    [[nodiscard]] const std::vector<PrimedTntEntity>& primedTnt() const { return primedTnt_; }
+    // Drained by the session each tick: the blasts whose fuses ran out.
+    [[nodiscard]] std::vector<PendingExplosion> takePendingExplosions() {
+        return std::exchange(pendingExplosions_, {});
+    }
+
     [[nodiscard]] const std::vector<FallingBlockEntity>& fallingBlocks() const {
         return fallingBlocks_;
     }
@@ -436,6 +468,15 @@ class WorldSimulation final {
     [[nodiscard]] std::size_t lastTreeGrowthsProcessed() const {
         return lastTreeGrowthsProcessed_;
     }
+    // AR-M4: ComposterBlock#addItem's `scheduleTick(pos, block, 20)`. Called by
+    // whoever put the seventh item in — the player's right-click today, the
+    // farmer villager's WorkAtComposter later — because only the caller knows
+    // the fill actually succeeded.
+    void queueComposterReady(SimulationPosition position);
+    [[nodiscard]] std::size_t pendingComposterReadyCount() const {
+        return ticks_.pending(TickTask::ComposterReady);
+    }
+
     [[nodiscard]] std::size_t pendingTreeGrowthCount() const {
         return ticks_.pending(TickTask::TreeGrowth);
     }
@@ -530,6 +571,8 @@ class WorldSimulation final {
     }
     void queueTreeGrowth(SimulationPosition position);
     void growTrees(world::World& world, std::vector<BlockChange>& changes);
+    // AR-M4: turn every composter whose twenty-tick wait is up into READY.
+    void ripenComposters(world::World& world, std::vector<BlockChange>& changes);
     void growTreeAt(world::World& world, SimulationPosition position,
                     world::Block sapling, std::vector<BlockChange>& changes);
     // getRawBrightness(pos, 0) and getMaxLocalRawBrightness(pos): the two
@@ -647,6 +690,8 @@ class WorldSimulation final {
     std::size_t leafDecayChecksThisTick_ = 0U;
     std::size_t cropStateWritesThisTick_ = 0U;
     std::vector<FallingBlockEntity> fallingBlocks_;
+    std::vector<PrimedTntEntity> primedTnt_;
+    std::vector<PendingExplosion> pendingExplosions_;
     std::uint64_t tickCount_ = 0;
     std::size_t lastWaterUpdatesProcessed_ = 0U;
 };

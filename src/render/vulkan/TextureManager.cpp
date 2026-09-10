@@ -500,6 +500,14 @@ void TextureManager::createGuiTexture() {
                200);
     blitWidget(widgets, GuiWidgetSprite::SlotHighlightFront, "container/slot_highlight_front", 32,
                200);
+    // UI-11 / A5：复选框四张 20x20。`widgets` 这一层 y=200 那一行，槽位高亮那两张
+    // （各 24 宽，落在 x=0 与 x=32）右边整条还空着——**不新增图集层**，加层要同步改三处。
+    blitWidget(widgets, GuiWidgetSprite::Checkbox, "widget/checkbox", 64, 200);
+    blitWidget(widgets, GuiWidgetSprite::CheckboxSelected, "widget/checkbox_selected", 88, 200);
+    blitWidget(widgets, GuiWidgetSprite::CheckboxHighlighted, "widget/checkbox_highlighted", 112,
+               200);
+    blitWidget(widgets, GuiWidgetSprite::CheckboxSelectedHighlighted,
+               "widget/checkbox_selected_highlighted", 136, 200);
     // UI-9：四张页签精灵各 **130x24**（不是方块），竖排四张要 96 高——`widgets` 这一层
     // y>=200 只剩 56 高，放不下。所以这一次**确实要加一层**（`tabWidgets`），
     // 并同步改三处：这个数组、`kGuiLayerCount`、`HudTypes.hpp` 的层号常量。
@@ -525,6 +533,14 @@ void TextureManager::createGuiTexture() {
                96);
     blitWidget(tabWidgets, GuiWidgetSprite::TransferMoveDownHighlighted,
                "transferable_list/move_down_highlighted", 224, 96);
+    // UI-11 / A6：世界列表那一行左边的**缺省**缩略图（26.1 `FaviconTexture` 在
+    // `<world>/icon.png` 不存在时回落到 `textures/misc/unknown_server.png`）。
+    // 原图 128x128，这里先缩到 64x64——它永远只画成 32x32，多存的像素没有消费者。
+    // 落在 `tabWidgets` 这一层 y>=128 的空白里（页签占 0..96，转移箭头占 96..128），
+    // **不新增图集层**。
+    blit(tabWidgets, stretchToAtlas(tex("misc/unknown_server.png"), kWorldIconFallbackSize,
+                                    kWorldIconFallbackSize),
+         kWorldIconFallbackSpriteX, kWorldIconFallbackSpriteY);
 
     auto hud = emptyRgbaAtlas();
     blit(hud, sprite("hud/crosshair"), 0, 0);
@@ -690,8 +706,12 @@ void TextureManager::createGuiTexture() {
         listSeparators,
         // UI-9：四张 130x24 的页签精灵。层号是 HudTypes.hpp 的 kTabWidgetLayer。
         tabWidgets,
+        // UI-11 / A6：存档缩略图。启动时是**空的**——它的内容运行期才知道
+        // （进世界列表时按 SaveSummary::hasIcon 读盘），由 uploadWorldIcons()
+        // 用 uploadImageLayerRange 原地刷进来。
+        emptyRgbaAtlas(),
     };
-    constexpr std::uint32_t kGuiLayerCount = 21U;
+    constexpr std::uint32_t kGuiLayerCount = 22U;
     // 层号是写死在 HudTypes.hpp 里的常量（kTooltipGuiLayer 等），而层内容是上面
     // 这个数组的顺序。加一层却漏改这个数，上传就会按错误的层数切分整块像素，
     // 于是每一层都错位——编译期钉住它。
@@ -722,6 +742,36 @@ void TextureManager::createGuiTexture() {
                                                  VK_IMAGE_VIEW_TYPE_2D_ARRAY);
     std::cout << "Loaded Minecraft GUI texture array: " << width << 'x' << height << " x "
               << kGuiLayerCount << '\n';
+}
+
+// UI-11 / A6：把存档缩略图刷进 GUI 图集的最后一层。
+//
+// ★ 走 `uploadImageLayerRange` 而不是重建整张图集：重建会换掉 VkImage，
+//   于是描述符里那份绑定作废（本仓为此立过护栏），而且要重新解码上百个 PNG。
+//   原地改一层的像素两样都不沾。
+void TextureManager::uploadWorldIcons(std::span<const assets::ImageData> icons) {
+    if (guiTextureImage.image == VK_NULL_HANDLE) {
+        return;
+    }
+    auto layer = emptyRgbaAtlas();
+    const auto count = std::min<std::size_t>(icons.size(),
+                                             static_cast<std::size_t>(kWorldIconSlotCount));
+    for (std::size_t slot = 0; slot < count; ++slot) {
+        const auto rect = worldIconSlotRect(static_cast<int>(slot));
+        // 缩略图统一是 64x64（`render::worldIconFromFrame` 的产物，也是 vanilla 的
+        // icon.png 尺寸）。别的尺寸拉伸到槽位大小，而不是溢出到邻座。
+        const auto& icon = icons[slot];
+        if (icon.width == kWorldIconSlotSize && icon.height == kWorldIconSlotSize) {
+            blit(layer, icon, static_cast<int>(rect.x), static_cast<int>(rect.y));
+        } else {
+            blit(layer, stretchToAtlas(icon, kWorldIconSlotSize, kWorldIconSlotSize),
+                 static_cast<int>(rect.x), static_cast<int>(rect.y));
+        }
+    }
+    resources_->uploadImageLayerRange(
+        guiTextureImage, layer.rgba.data(), static_cast<VkDeviceSize>(layer.rgba.size()), 256U,
+        256U, static_cast<std::uint32_t>(kWorldIconLayer), 1U,
+        VK_PIPELINE_STAGE_FRAGMENT_SHADER_BIT);
 }
 
 // 标题全景面是 1024x1024 的实拍图，因此单独用一个原生分辨率的数组，而不是挤进 256px 的 GUI 数组

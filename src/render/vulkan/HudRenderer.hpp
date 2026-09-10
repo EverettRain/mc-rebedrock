@@ -21,7 +21,9 @@
 #include "gameplay/command/ArgumentType.hpp"
 #include "gameplay/command/CommandDispatcher.hpp"
 #include "gameplay/entities/SpeciesRenderData.hpp"
+#include "core/BrokenDownTime.hpp"
 #include "persistence/SaveRepository.hpp"
+#include "ui/WorldListRow.hpp"
 #include "render/SkyLight.hpp"
 #include "render/PerspectiveCamera.hpp"
 #include "render/TestScene.hpp"
@@ -88,6 +90,7 @@
 #include <cmath>
 #include <cstddef>
 #include <cstdint>
+#include <ctime>
 #include <filesystem>
 #include <functional>
 #include <iomanip>
@@ -190,6 +193,12 @@ class HudRenderer final {
         // 让它同时兼职"我在拍界面"就是一个字段两个意思——RN-14 让所有方块图标
         // 变成黑菱形的正是这种兼职。
         const bool& uiCaptureActive;
+        // UI-13：这一帧被选中去当存档缩略图。26.1 抓的是 `renderLevel` 之后、GUI 之前的
+        // 画面（图里没有 HUD），而本作的离屏场景图要整帧录完才读得到——那时 HUD 已经
+        // 画上去了。取 HUD 之前的内容要在两趟 pass 之间插一次 copy（动帧图与屏障，归 RN 线），
+        // 这里的做法是让被选中的那**一帧**不画 HUD，拍完就恢复。
+        // 一个存档一生只发生一次（见 `updateWorldIconRequest`）。
+        const bool& worldIconCapturePending;
         bool& paused;
         double& uiTimeSeconds;
         std::function<bool()> cameraSubmergedInWater;
@@ -240,7 +249,8 @@ class HudRenderer final {
           peakPendingSectionCount(b.peakPendingSectionCount),
           pendingSectionUpdates(b.pendingSectionUpdates), testScene(b.testScene),
           guiWidgetSprites(b.guiWidgetSprites), titleArtUv(b.titleArtUv),
-          pinnedCursor(b.pinnedCursor), uiCaptureActive(b.uiCaptureActive), paused(b.paused),
+          pinnedCursor(b.pinnedCursor), uiCaptureActive(b.uiCaptureActive),
+          worldIconCapturePending(b.worldIconCapturePending), paused(b.paused),
           uiTimeSeconds(b.uiTimeSeconds), cameraSubmergedInWater(b.cameraSubmergedInWater),
           keyBindLabels(b.keyBindLabels),
           drawHeldItem(b.drawHeldItem), currentFrameDescriptorSet(b.currentFrameDescriptorSet),
@@ -379,6 +389,26 @@ class HudRenderer final {
     // UI-6e ③：资源包两栏的行数与选中行。**与输入侧那份必须一致**——
     // 两处各算一遍是 UI-6c/6d 已经栽过两次的形状，所以两边算的都是同一件事：
     // 左栏 = 已注册但不在草稿里的，右栏 = 草稿本身，各自被视口容量夹住。
+    // UI-11 / A5：提示屏那三样要量字体的东西——正文的换行、标题宽、复选框文字宽。
+    //
+    // ★ 与 fillPackContext 同理，它是**一处**代码给两条路径（绘制的 drawContext_ 与
+    //   输入的 ctx）填同一份值。这两处各填一遍的后果这条线上已经吃过：UI-6c 的
+    //   keyBindLabelsFor 只填了一处，界面切中文后按键设置整屏还是英文。
+    void fillNoticeContext(ui::MenuBuildContext& ctx, const ui::HudLayout& layout) const {
+        if (menuSystem.pageStack.current() != ui::PageId::AdvancedGraphicsNotice) {
+            return;
+        }
+        const auto measure = [this](std::string_view text) { return hudTextWidth(text, 1.0F); };
+        ctx.noticeMessageLines = ui::wrapText(
+            widgetLabel(ui::WidgetId::NoticeMessage),
+            static_cast<float>(ui::noticeMessageWrapWidth(layout.logicalWidth())), measure);
+        ctx.noticeMetrics = {
+            static_cast<int>(measure(widgetLabel(ui::WidgetId::NoticeTitle))),
+            static_cast<int>(measure(widgetLabel(ui::WidgetId::NoticeStopShowing))),
+        };
+        ctx.noticeStopShowing = menuSystem.noticeStopShowing;
+    }
+
     void fillPackContext(ui::MenuBuildContext& ctx, const ui::HudLayout& layout) const {
         if (menuSystem.pageStack.current() != ui::PageId::ResourcePacks) {
             return;
@@ -441,6 +471,7 @@ class HudRenderer final {
         drawContext_.optionsWindow =
             ui::optionsWindowFor(layout, pageId, menuSystem.optionsListFirstIndex);
         fillPackContext(drawContext_, layout);
+        fillNoticeContext(drawContext_, layout);
         // UI-9：创建世界开在哪一页，以及三个页签上的字。
         // ★ **装配与布局必须读同一个值**——装配按当前页造控件、布局按同一页算矩形，
         //   两边不同步就是"点 A 触发 B"（护栏 21）。所以它从这一处喂给两遍。
@@ -456,7 +487,8 @@ class HudRenderer final {
         };
         ui::buildPageInto(drawPage_, pageId, drawContext_, drawCallbacks_);
         ui::layoutPageInto(drawPage_, pageId, layout, keyFirst,
-                           drawContext_.optionsWindow.firstRow, menuSystem.createWorldTab);
+                           drawContext_.optionsWindow.firstRow, menuSystem.createWorldTab,
+                           drawContext_.noticeMetrics);
         return drawPage_;
     }
 
@@ -1036,6 +1068,12 @@ class HudRenderer final {
         }
 
         switch (button) {
+        // UI-11 / A5：提示屏的标题。它就是这一屏的标题，所以取自 ui::pageTitle
+        // 那张表——在静态标签表里再抄一份就是同一个事实的两份表述。
+        case ui::WidgetId::NoticeTitle: {
+            const auto entry = ui::pageTitle(ui::PageId::AdvancedGraphicsNotice);
+            return translated(entry.key, entry.fallback);
+        }
         case ui::WidgetId::Resolution: {
             // 标签显示实时窗口尺寸，最大化或手动拖拽过的窗口因此读数正确
             // 而不是回显上一次选中的预设
@@ -1635,6 +1673,11 @@ class HudRenderer final {
                             {1.0F, 1.0F, 1.0F, 1.0F});
                 continue;
             }
+            // UI-11 / A5：复选框（26.1 `Checkbox`）。
+            if (widget.kind == ui::WidgetKind::Checkbox) {
+                drawCheckbox(commandBuffer, widget, scale, widgetFocused);
+                continue;
+            }
             // UI-9：标签页导航栏里的一个页签（26.1 `TabButton`）。
             if (widget.kind == ui::WidgetKind::Tab) {
                 drawTabButton(commandBuffer, widget, cursor, scale, widgetFocused);
@@ -1784,6 +1827,32 @@ class HudRenderer final {
         return false;
     }
 
+    // UI-11 / A5：一个复选框。左边一个方盒（四态精灵），右边一行文字。
+    //
+    // ★ 选精灵的判据是 `selected × isFocused()`（26.1 `Checkbox.extractContents`），
+    //   **不是** hover——vanilla 的复选框悬停时盒子不变样，变的只有文字的效果。
+    //   本作的按钮把焦点与悬停并成一档（`buttonVisualState`），复选框不能跟着并：
+    //   那会让"鼠标扫过去"看起来像"选中了"。
+    // ★ blit 的边长是 `ui::kCheckboxBoxSize`（17），不是精灵美术的 20。
+    void drawCheckbox(VkCommandBuffer commandBuffer, const ui::Widget& widget, float scale,
+                      bool focused) const {
+        const auto parts = ui::checkboxParts(
+            {widget.rect.x / scale, widget.rect.y / scale, widget.rect.width / scale,
+             widget.rect.height / scale},
+            static_cast<int>(ui::kFontLineHeight));
+        const GuiWidgetSprite sprite = checkboxSprite(widget.checked, focused);
+        drawScaledGuiSprite(commandBuffer,
+                            {parts.box.x * scale, parts.box.y * scale, parts.box.width * scale,
+                             parts.box.height * scale},
+                            0.0F, guiWidgetSprite(guiWidgetSprites, sprite), scale,
+                            glm::vec4{1.0F});
+        // 26.1 `SafetyScreen.CHECK` 带 `withColor(-2039584)` = #E0E0E0。
+        // 那是**这一句话**的颜色，不是复选框控件的默认色——控件本身不给文字着色。
+        constexpr float kCheckTextChannel = 224.0F / 255.0F;
+        drawHudText(commandBuffer, widget.label, parts.textX * scale, parts.textY * scale, scale,
+                    {kCheckTextChannel, kCheckTextChannel, kCheckTextChannel, 1.0F});
+    }
+
     void drawIconButton(VkCommandBuffer commandBuffer, const ui::Widget& widget, float cursorX,
                         float cursorY, float scale, bool focused = false) const {
         const auto id = static_cast<ui::WidgetId>(widget.debugId);
@@ -1811,6 +1880,126 @@ class HudRenderer final {
                                    : glm::vec4{1.0F};
         drawScaledGuiSprite(commandBuffer, iconRect, 0.0F,
                             guiWidgetSprite(guiWidgetSprites, icon), scale, tint);
+    }
+
+    // UI-11 / A6：世界列表的一行，一比一照 26.1
+    // `WorldSelectionList.WorldListEntry.extractContent():497-507` 与
+    // `AbstractSelectionList.extractSelection():357-364`。
+    //
+    // 本作从前画的是自造的两层深灰底 + 名字 + 0.75 倍缩放的 "Seed 12345"。
+    // 26.1 是：**只有选中的那一行**有底（一圈 1px 的边框色，里面纯黑），
+    // 左边一张 32x32 的缩略图，右边三行字。
+    void drawWorldListRow(VkCommandBuffer commandBuffer, const ui::HudLayout& layout,
+                          std::size_t visibleIndex, std::size_t index) const {
+        const float scale = layout.scale();
+        const auto row = worldListRow(visibleIndex, layout);
+        const auto parts = ui::worldRowParts(ui::logicalWorldListRow(visibleIndex, layout));
+        const auto& summary = menuSystem.saveSummaries[index];
+        const auto cursor = currentFramebufferCursor();
+        const bool hovered = row.contains(cursor.x, cursor.y);
+        // ★ 未选中的行**没有任何底衬**（`extractItem:348-354` 只在 selected 时画）。
+        if (index == menuSystem.selectedWorldIndex) {
+            // 边框色：有键盘焦点是白，否则 0xFF808080（`extractItem:350`）。
+            // 本作的列表还没有"列表整体是否聚焦"这个状态，按无焦点那一档画。
+            drawHudQuad(commandBuffer, row,
+                        {ui::kWorldRowSecondaryChannel, ui::kWorldRowSecondaryChannel,
+                         ui::kWorldRowSecondaryChannel, 1.0F});
+            drawHudQuad(commandBuffer,
+                        {row.x + scale, row.y + scale, row.width - 2.0F * scale,
+                         row.height - 2.0F * scale},
+                        {0.0F, 0.0F, 0.0F, 1.0F});
+        }
+        const ui::UiRect icon{parts.icon.x * scale, parts.icon.y * scale,
+                              parts.icon.width * scale, parts.icon.height * scale};
+        // 缩略图：这个存档有自己的 icon.png 就画它，没有就走 26.1 的**回落**分支
+        // （`FaviconTexture.MISSING_LOCATION` = `misc/unknown_server.png`）。
+        // ★ 槽位按 identifier 反查，不是"第几行就是第几个槽位"——列表滚起来以后
+        //   那两个数就不一样了（见 MenuSystem::worldIconSlots 上的注释）。
+        if (const auto slot = worldIconSlot(summary.identifier); slot.has_value()) {
+            drawGuiSprite(commandBuffer, icon, kWorldIconLayer, worldIconSlotRect(*slot));
+        } else {
+            drawGuiSprite(commandBuffer, icon, kTabWidgetLayer,
+                          {static_cast<float>(kWorldIconFallbackSpriteX),
+                           static_cast<float>(kWorldIconFallbackSpriteY),
+                           static_cast<float>(kWorldIconFallbackSize),
+                           static_cast<float>(kWorldIconFallbackSize)});
+        }
+        if (hovered) {
+            // `graphics.fill(contentX, contentY, +32, +32, -1601138544)` = 0xA0909090。
+            drawHudQuad(commandBuffer, icon,
+                        {ui::kWorldIconHoverChannel, ui::kWorldIconHoverChannel,
+                         ui::kWorldIconHoverChannel, ui::kWorldIconHoverAlpha});
+        }
+        const glm::vec4 secondary{ui::kWorldRowSecondaryChannel, ui::kWorldRowSecondaryChannel,
+                                  ui::kWorldRowSecondaryChannel, 1.0F};
+        const float textX = parts.textX * scale;
+        drawHudText(commandBuffer, clipToWorldRow(summary.displayName, scale), textX,
+                    parts.nameY * scale, scale, {1.0F, 1.0F, 1.0F, 1.0F});
+        drawHudText(commandBuffer,
+                    clipToWorldRow(ui::worldRowMetaLine(
+                                       summary.identifier,
+                                       formatWorldLastPlayed(summary.lastPlayedUnixSeconds)),
+                                   scale),
+                    textX, parts.metaY * scale, scale, secondary);
+        drawHudText(commandBuffer, clipToWorldRow(worldRowInfoLine(summary), scale), textX,
+                    parts.infoY * scale, scale, secondary);
+    }
+
+    // 这个存档的缩略图在图集那一层的第几个槽位。没有就是 nullopt（画回落图标）。
+    [[nodiscard]] std::optional<int> worldIconSlot(std::string_view identifier) const {
+        for (std::size_t slot = 0; slot < menuSystem.worldIconSlots.size(); ++slot) {
+            if (menuSystem.worldIconSlots[slot] == identifier) {
+                return static_cast<int>(slot);
+            }
+        }
+        return std::nullopt;
+    }
+
+    // 三行字都受同一个宽度上限（`WorldSelectionList:421`，见 ui::kWorldRowMaxTextWidth）。
+    // 26.1 用 `StringWidget.setMaxWidth` 把超长的一行**裁**掉（CLAMPED），不是换行。
+    [[nodiscard]] std::string clipToWorldRow(std::string text, float scale) const {
+        const float limit = static_cast<float>(ui::kWorldRowMaxTextWidth) * scale;
+        while (!text.empty() && hudTextWidth(text, scale) > limit) {
+            // 按 UTF-8 码点边界退，绝不切在字节中间。
+            do {
+                text.pop_back();
+            } while (!text.empty() &&
+                     (static_cast<unsigned char>(text.back()) & 0xC0U) == 0x80U);
+        }
+        return text;
+    }
+
+    // 第 3 行：26.1 `LevelSummary.createInfo():166-186` —— 游戏模式 + 版本。
+    // 拼接在 ui::worldRowInfoLine 一处（那里有断言），这里只负责取译文。
+    [[nodiscard]] std::string worldRowInfoLine(const persistence::SaveSummary& summary) const {
+        const std::string modeKey =
+            "gameMode." + std::string{gameplay::gameModeName(summary.gameMode)};
+        const std::string_view modeFallback = summary.gameMode == gameplay::GameMode::Creative
+                                                  ? "Creative Mode"
+                                                  : "Survival Mode";
+        return ui::worldRowInfoLine(translated(modeKey, modeFallback),
+                                    translated("selectWorld.version", "Version"),
+                                    summary.versionName);
+    }
+
+    // 第 2 行括号里的日期。26.1 用 `Util.localizedDateFormatter(FormatStyle.SHORT)`，
+    // 也就是**跟随系统语言环境**的短日期；本作没有本地化的日期格式化，
+    // 固定用 ISO 的 `YYYY-MM-DD HH:MM`。已登记为偏差 D35。
+    //
+    // ★ **出图时按 UTC 解释，而不是去改进程的 `TZ`**。这个日期串是本地时区的函数，
+    //   不钉住它，同一份夹具在两台机器上会渲染成两串不同的字（与 options.properties
+    //   那次"结论取决于跑它的环境"同族）。第一版用的是 `setenv("TZ","UTC")` ——
+    //   **两个毛病**：Windows 的 CRT 没有 `setenv`（交叉构建当场报错），而
+    //   `getenv`/`setenv` 并发是未定义行为。把时区做成参数，两个问题一起没了。
+    [[nodiscard]] std::string formatWorldLastPlayed(std::int64_t unixSeconds) const {
+        if (unixSeconds <= 0) {
+            return {};   // 26.1 的 `lastPlayed != -1L` 分支：没有记录就不加括号那一段
+        }
+        const std::tm broken = core::brokenDownTime(unixSeconds, uiCaptureActive);
+        std::array<char, 32> buffer{};
+        const std::size_t written =
+            std::strftime(buffer.data(), buffer.size(), "%Y-%m-%d %H:%M", &broken);
+        return std::string{buffer.data(), written};
     }
 
     // 选择列表的一行（语言 / 世界）：一层淡背景加一行文本，悬停时提亮。
@@ -2010,10 +2199,13 @@ class HudRenderer final {
             const float y =
                 static_cast<float>(top + info.height - ui::kOptionsHeaderLineHeight -
                                    ui::kOptionsHeaderPadding) * scale;
-            drawHudText(commandBuffer, text,
-                        (static_cast<float>(swapchainExtent.width) -
-                         hudTextWidth(text, scale)) * 0.5F,
-                        y, scale, {1.0F, 1.0F, 1.0F, 1.0F});
+            // ★ **左对齐于行的左缘，不是居中**（spec §13.2 #14 的答案，UI-12 查源码关掉）：
+            //   26.1 `OptionsList.HeaderEntry.extractContent`（:196）是
+            //   `widget.setPosition(screen.width / 2 - 155, ...)`，而 155 正是
+            //   `getRowWidth() / 2`——也就是那张 310 宽列表的**行左缘**。
+            //   本作从前把它按整屏居中，行左缘与画布中线在窄画布上差得出来。
+            drawHudText(commandBuffer, text, static_cast<float>(list.rowLeft()) * scale, y, scale,
+                        {1.0F, 1.0F, 1.0F, 1.0F});
         }
     }
 
@@ -2180,12 +2372,11 @@ class HudRenderer final {
             const std::size_t remaining =
                 menuSystem.saveSummaries.size() - std::min(first, menuSystem.saveSummaries.size());
             const std::size_t visible = std::min(remaining, visibleRows);
-            // 26.1 的列表背景与周围菜单背景是两张可各自被资源包覆盖的贴图
-            const auto firstRow = worldListRow(0, layout);
-            const float listBandHeight =
-                static_cast<float>(visibleRows) * 22.0F * scale + 8.0F * scale;
-            const ui::UiRect listBand{0.0F, firstRow.y - 4.0F * scale,
-                                      static_cast<float>(swapchainExtent.width), listBandHeight};
+            // 26.1 的列表背景与周围菜单背景是两张可各自被资源包覆盖的贴图。
+            // ★ 带的矩形取自 `ui::worldListBox`，**不再在这里自己算一份**：那份写的是
+            //   `visibleRows * 22 + 8`，而 A6 把行距改成了 36，于是下缘那条分隔线
+            //   穿过第五行的中间、后面的行画在带外面（现场 export/savelist-problem.png）。
+            const ui::UiRect listBand = ui::worldListBox(layout);
             drawListBackground(commandBuffer, listBand, scale);
             drawListSeparators(commandBuffer, listBand, scale);
             if (visible == 0U) {
@@ -2196,25 +2387,7 @@ class HudRenderer final {
                     34.0F * scale, scale, {0.85F, 0.85F, 0.85F, 1.0F});
             }
             for (std::size_t visibleIndex = 0; visibleIndex < visible; ++visibleIndex) {
-                const std::size_t index = first + visibleIndex;
-                const auto rectangle = worldListRow(visibleIndex, layout);
-                const bool selected = index == menuSystem.selectedWorldIndex;
-                drawHudQuad(commandBuffer, rectangle,
-                            selected ? glm::vec4{0.95F, 0.95F, 0.95F, 0.95F}
-                                     : glm::vec4{0.10F, 0.10F, 0.10F, 0.90F});
-                drawHudQuad(commandBuffer,
-                            {rectangle.x + scale, rectangle.y + scale,
-                             rectangle.width - 2.0F * scale, rectangle.height - 2.0F * scale},
-                            selected ? glm::vec4{0.28F, 0.28F, 0.28F, 0.96F}
-                                     : glm::vec4{0.18F, 0.18F, 0.18F, 0.96F});
-                drawHudText(commandBuffer, menuSystem.saveSummaries[index].displayName,
-                            rectangle.x + 4.0F * scale, rectangle.y + 2.0F * scale, scale,
-                            {1.0F, 1.0F, 1.0F, 1.0F});
-                const std::string details =
-                    "Seed " + std::to_string(menuSystem.saveSummaries[index].seed);
-                drawHudText(commandBuffer, details, rectangle.x + 4.0F * scale,
-                            rectangle.y + 11.0F * scale, scale * 0.75F,
-                            {0.70F, 0.70F, 0.70F, 1.0F});
+                drawWorldListRow(commandBuffer, layout, visibleIndex, first + visibleIndex);
             }
         } else if (page == ui::PageId::CreateWorld) {
             drawCreateWorldForm(commandBuffer, layout);
@@ -2519,9 +2692,15 @@ class HudRenderer final {
             headerAndFooterPage
                 ? static_cast<float>(frame.headerTitle(0, ui::kFontLineHeight).y) * scale
                 : firstButton.y - 30.0F * titleScale;
-        drawHudText(commandBuffer, title,
-                    (static_cast<float>(swapchainExtent.width) - titleWidth) * 0.5F, titleY,
-                    titleScale, {1.0F, 1.0F, 1.0F, 1.0F});
+        // UI-11 / A5：提示屏的标题是**页面里的第一个控件**（26.1
+        // `WarningScreen.init` 把 StringWidget 加进内容列），位置由整块内容的居中
+        // 决定。这里再画一行就是两个标题——判据走 ui::drawsTitleAsWidget 那张
+        // 不带 default 的表，而不是在这里写 `page == AdvancedGraphicsNotice`。
+        if (!ui::drawsTitleAsWidget(ui::pageLayoutKind(currentPage))) {
+            drawHudText(commandBuffer, title,
+                        (static_cast<float>(swapchainExtent.width) - titleWidth) * 0.5F, titleY,
+                        titleScale, {1.0F, 1.0F, 1.0F, 1.0F});
+        }
         drawMenuWidgets(commandBuffer, buildDrawPage(), scale);
         // 按键绑定列表（中段）的滚动条，仅当动作数超出可见窗口时绘制
         if (currentPage == ui::PageId::KeyBinds) {
@@ -3041,9 +3220,15 @@ class HudRenderer final {
     void drawWorkContainer(VkCommandBuffer commandBuffer, VkDescriptorSet descriptorSet,
                            const ui::HudLayout& layout) const {
         // 底衬由 drawHud 一处按档位表画（容器类走 Transparent 那一档），这里不再自己铺
-        const auto panel = layout.inventoryPanel();
-        drawGuiSprite(commandBuffer, panel, containerPanelLayer(containerKind()),
-                      {0.0F, 0.0F, 176.0F, 166.0F});
+        // AR-M6：交易屏的版面是 276x166 而不是这里的 176x166，它自己的面板贴图
+        // （vanilla 的 container/villager.png，512x256）也还没有进 GUI 图集——
+        // 那张图集要求所有层同尺寸，加它是渲染侧的一节。面板层号为负就表示
+        // 「这一屏还没有底图」，于是底衬跳过，其余（槽位、悬停、光标层）照常。
+        const bool trading = containerKind() == ui::ContainerPageKind::Trading;
+        const auto panel = trading ? layout.tradingPanel() : layout.inventoryPanel();
+        if (const float panelLayer = containerPanelLayer(containerKind()); panelLayer >= 0.0F) {
+            drawGuiSprite(commandBuffer, panel, panelLayer, {0.0F, 0.0F, 176.0F, 166.0F});
+        }
         const auto hoveredClue = drawWorkContainerChrome(commandBuffer, layout, panel);
         const auto hoveredStack = drawContainerSlots(commandBuffer, containerPage(layout), layout);
         drawContainerCursorLayer(commandBuffer, layout, hoveredStack, hoveredClue);
@@ -3073,6 +3258,19 @@ class HudRenderer final {
             // `AbstractFurnaceScreen` 都没有覆写它——本作此前这两屏一行都没画。
             // 屏名来自 `CraftingTableBlock.CONTAINER_TITLE`（container.crafting）。
             title("container.crafting", "Crafting");
+            return std::nullopt;
+        case ui::ContainerPageKind::Trading:
+            // AR-M6 —— ★ **这里是交易界面的接入点，后端已经全部就绪，绘制未做。**
+            //
+            // 现在只画屏名。要画的东西全在 `clientMirror.world()` 的 trade* 字段里：
+            // 三个格子（tradePaymentA/B、tradeResult）、逐行的 tradeWantsA/WantsB/
+            // Gives + Levels/Uses/MaxUses/Locked/OutOfStock、tradeOfferCount、
+            // tradeSelectedOffer、以及等级条的 tradeVillagerLevel/tradeXpInLevel/
+            // tradeXpForNextLevel。几何锚点在 `HudLayout::tradingPanel/
+            // tradingPaymentSlot/tradingResultSlot/tradingOffer`。
+            // 契约见 docs/content-dev/AR-content-realization/
+            // AR-M6-trading-backend-interface.md。
+            title("merchant.trades", "Trades");
             return std::nullopt;
         case ui::ContainerPageKind::EnchantingTable:
             return drawEnchantingScreen(commandBuffer, layout, panel);
@@ -3638,6 +3836,10 @@ class HudRenderer final {
         case ui::ContainerPageKind::Chest:
         case ui::ContainerPageKind::EnchantingTable:
         case ui::ContainerPageKind::Anvil:
+        // AR-M6：交易屏走同一条工作容器路径（三个格子 + 一排可点的行），所以槽位、
+        // 悬停提示与光标层一到位就已经能用。缺的只有它自己的面板底图与行内绘制，
+        // 见 drawWorkContainerChrome 里 Trading 分支的接入说明。
+        case ui::ContainerPageKind::Trading:
             drawWorkContainer(commandBuffer, descriptorSet, layout);
             return;
         case ui::ContainerPageKind::Count:
@@ -3649,6 +3851,9 @@ class HudRenderer final {
         // 测试场景是方块预览的取景台，它要的是**一张只有方块的图**，所以那条路径不画界面。
         // UI-6-0 之后同一个夹具也给界面截图当世界背景用——那时界面正是要拍的东西。
         if (testScene.has_value() && !uiCaptureActive)
+            return;
+        // UI-13：这一帧要当存档缩略图，照 26.1 那样只留世界。见 bindings 里的注释。
+        if (worldIconCapturePending)
             return;
         const ui::HudLayout layout{static_cast<float>(swapchainExtent.width),
                                    static_cast<float>(swapchainExtent.height),
@@ -3820,6 +4025,7 @@ class HudRenderer final {
     // UI-2：截图通道钉死的光标位置；空表示照常读 GLFW
     const std::optional<ui::UiPoint>& pinnedCursor;
     const bool& uiCaptureActive;
+    const bool& worldIconCapturePending;
     bool& paused;
     double& uiTimeSeconds;
 

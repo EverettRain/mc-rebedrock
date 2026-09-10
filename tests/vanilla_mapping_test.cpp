@@ -287,8 +287,10 @@ void testEnumWordOverrides() {
     // — the assertion that would catch an off-by-one in any table above.
     using world::Block;
     using world::BlockState;
-    const auto apply = [](BlockState state, std::string_view property, std::string_view word) {
-        return compat::applyMappedState(state, compat::mapVanillaState(property, word));
+    const auto apply = [](BlockState state, std::string_view property, std::string_view word,
+                          std::string_view vanillaBlock = {}) {
+        return compat::applyMappedState(state,
+                                        compat::mapVanillaState(property, word, vanillaBlock));
     };
     assert(apply(BlockState{Block::Furnace}, "facing", "west").orientation() ==
            world::BlockOrientation::West);
@@ -302,6 +304,12 @@ void testEnumWordOverrides() {
     assert(!apply(BlockState{Block::Comparator}, "mode", "compare").comparatorSubtract());
     assert(apply(BlockState{Block::Repeater}, "delay", "3").repeaterDelay() == 3);
     assert(apply(BlockState{Block::Repeater}, "delay", "1").repeaterDelay() == 1);
+    // AR-M4: a composter loaded from a JE save keeps its fill — the block name
+    // has to travel with the property, or `level` resolves to the fluid axis and
+    // the fill is silently lost.
+    assert(apply(BlockState{Block::Composter}, "level", "5", "composter").composterLevel() == 5);
+    assert(apply(BlockState{Block::Composter}, "level", "8", "composter").composterLevel() == 8);
+    assert(apply(BlockState{Block::Composter}, "level", "5").composterLevel() == 0);
 }
 
 // --- Ledger sanity: the override table is exactly the registered deviation,
@@ -312,14 +320,25 @@ void testOverrideTableOnlyListsDeviations() {
     // waterlogged (shape deviation: a vanilla bool, an enum here) plus the six
     // enum-word properties (same meaning, values spelled as words), plus the
     // repeater's one-based delay — and, since SLP-1/MDL-3, the bed's PART word
-    // and the snow layer's one-based LAYERS.
-    assert(compat::kOverrides.size() == 10);
+    // and the snow layer's one-based LAYERS. AR-M4 adds the composter's LEVEL,
+    // the first NAME deviation: identical values, but `level` was already taken
+    // by the fluid axis here.
+    assert(compat::kOverrides.size() == 11);
     assert(compat::kOverrides[0].vanillaProperty == "waterlogged");
     // A property with no deviation is simply absent from the table — the
     // table is not an exhaustive property list, only exceptions to identity.
     assert(compat::findOverride("lit") == nullptr);
     assert(compat::findOverride("age") == nullptr);
     assert(compat::findOverride("moisture") == nullptr);
+    // AR-M4: `level` is redirected for the composter ONLY. Every other block's
+    // `level` must keep resolving to the fluid axis — the whole reason the
+    // override carries a block name.
+    assert(compat::findOverride("level", "composter") != nullptr);
+    assert(compat::findOverride("level", "composter")->rebedrockProperty ==
+           world::StateProperty::ComposterLevel);
+    assert(compat::findOverride("level", "water") == nullptr);
+    assert(compat::findOverride("level") == nullptr);
+
     // SLP-1 / MDL-3: both new entries map a real deviation, not a same-named
     // identity — `part` is a word here and a word there but a bit in storage,
     // and `layers` is one-based in vanilla and zero-based here.
@@ -351,10 +370,10 @@ void testOverrideTableOnlyListsDeviations() {
     }
     assert(world::statePropertyFromName("in_wall") == world::StateProperty::InWall);
     assert(world::statePropertyFromName("locked") == world::StateProperty::Locked);
-    // Still no row for any of those three: they are identity mappings. The two
-    // rows added since (SLP-1's `part`, MDL-3's `layers`) are real deviations,
-    // asserted above.
-    assert(compat::kOverrides.size() == 10);
+    // Still no row for any of those three: they are identity mappings. The
+    // rows added since (SLP-1's `part`, MDL-3's `layers`, AR-M4's
+    // composter-scoped `level`) are real deviations, asserted above.
+    assert(compat::kOverrides.size() == 11);
 }
 
 // --- Layer 4: reverse-mapping placeholder (JC4 seam), existence only ------

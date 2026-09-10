@@ -65,6 +65,12 @@ inline constexpr SpawnEggItem SheepSpawnEgg{
 inline constexpr SpawnEggItem ChickenSpawnEgg{
     "chicken_spawn_egg", &entities::speciesForSpawnEgg<"chicken">};
 
+inline constexpr SpawnEggItem CreeperSpawnEgg{
+    "creeper_spawn_egg", &entities::speciesForSpawnEgg<"creeper">};
+
+inline constexpr SpawnEggItem VillagerSpawnEgg{
+    "villager_spawn_egg", &entities::speciesForSpawnEgg<"villager">};
+
 inline constexpr SpawnEggItem HuskSpawnEgg{
     "husk_spawn_egg", &entities::speciesForSpawnEgg<"husk">};
 
@@ -76,13 +82,15 @@ namespace mc::gameplay {
 // building the creative catalog or the texture atlas. Defined here because the
 // spawn-egg constructors need entity headers that cannot be included from
 // Item.hpp (circular dependency through Inventory.hpp → Item.hpp).
-inline constexpr std::array<const Item*, 6> kSpawnEggItems{
+inline constexpr std::array<const Item*, 8> kSpawnEggItems{
     &items::PigSpawnEgg,
     &items::ZombieSpawnEgg,
     &items::CowSpawnEgg,
     &items::SheepSpawnEgg,
     &items::ChickenSpawnEgg,
     &items::HuskSpawnEgg,
+    &items::CreeperSpawnEgg,
+    &items::VillagerSpawnEgg,
 };
 
 // Push spawn eggs into the runtime-extensible lookup (for itemFromIdentifier,
