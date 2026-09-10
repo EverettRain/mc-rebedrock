@@ -335,7 +335,14 @@ UiRect HudLayout::tradingOffer(std::size_t index) const {
 }
 
 // MerchantScreen's player inventory: the same 9x4 grid every screen draws, but
-// anchored at x = 107 inside the 276-wide panel (its `inventoryLabelX`).
+// anchored at x = **108** inside the 276-wide panel.
+//
+// ★ MERCH-1 更正：这里原来写的是 107，注释说那是 `inventoryLabelX`——**把标签的 x
+//   当成了槽位网格的 x**。26.1 `MerchantMenu:45` 是
+//   `addStandardInventorySlots(inventory, 108, 84)`，而 `inventoryLabelX = 107`
+//   （`MerchantScreen:58`）是那行 "Inventory" 字的 x。两个数只差 1，且**都真实存在**，
+//   所以抄错了看起来完全合理——36 个槽位一起左移一像素，肉眼看不出来。
+//   行列公式同样照抄 `AbstractContainerMenu:72-91`：`left + x*18`，快捷栏 `top + 58`。
 UiRect HudLayout::tradingInventorySlot(std::size_t index) const {
     if (index >= kInventorySlots) {
         throw std::out_of_range("trading inventory slot index is outside 0..35");
@@ -345,7 +352,7 @@ UiRect HudLayout::tradingInventorySlot(std::size_t index) const {
     const std::size_t column = index < 9 ? index : (index - 9U) % 9U;
     const float top = index < 9 ? 142.0F : 84.0F + static_cast<float>(row) * 18.0F;
     return {
-        panel.x + (107.0F + static_cast<float>(column) * 18.0F) * scale_,
+        panel.x + (108.0F + static_cast<float>(column) * 18.0F) * scale_,
         panel.y + top * scale_,
         16.0F * scale_,
         16.0F * scale_,

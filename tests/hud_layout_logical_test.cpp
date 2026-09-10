@@ -146,6 +146,41 @@ void testMenuButtons() {
     EXPECT_RECT(layout.videoSettingsButton(11U, 12U), 348.0F, 540.0F, 585.0F, 60.0F);
 }
 
+// --- 5b. 交易屏的槽位与交易行（MERCH-1）--------------------------------------
+//
+// ★ 每一个数都来自 26.1 源码，逐条注明；断言钉的是那些数，不是本作实现跑出来的值。
+//     MerchantScreen:57          super(menu, inventory, title, 276, 166)
+//     MerchantMenu:42-44         addSlot(…, 136, 37) / (…, 162, 37) / 结果 (…, 220, 37)
+//     MerchantMenu:45            addStandardInventorySlots(inventory, **108**, 84)
+//     AbstractContainerMenu:72-91  left + x*18；快捷栏 top + 58
+//     MerchantScreen:41-43       TRADE_BUTTON_X 5 / WIDTH 88 / HEIGHT 20，首行 y = 18
+void testTradingGeometry() {
+    constexpr float kWidth = 1280.0F;
+    const mc::ui::HudLayout layout{kWidth, 720.0F, 3};   // 逻辑 427x240
+    // 面板 276x166 居中：x = (427-276)/2 = 75、y = (240-166)/2 = 37（整数除法）。
+    EXPECT_RECT(layout.tradingPanel(), 225.0F, 111.0F, 828.0F, 498.0F);
+    // 两个支付格与结果格。
+    EXPECT_RECT(layout.tradingPaymentSlot(0U), 633.0F, 222.0F, 48.0F, 48.0F);
+    EXPECT_RECT(layout.tradingPaymentSlot(1U), 711.0F, 222.0F, 48.0F, 48.0F);
+    EXPECT_RECT(layout.tradingResultSlot(), 885.0F, 222.0F, 48.0F, 48.0F);
+    // 七个交易行：x = 5，首行 y = 18，行距 20，88x20。
+    EXPECT_RECT(layout.tradingOffer(0U), 240.0F, 165.0F, 264.0F, 60.0F);
+    EXPECT_RECT(layout.tradingOffer(6U), 240.0F, 525.0F, 264.0F, 60.0F);
+    // ★ 背包网格锚在 **108**，不是 107。
+    //   107 是 `inventoryLabelX`（那行 "Inventory" 字的 x，MerchantScreen:58），
+    //   两个数都真实存在、只差 1 —— 抄错了看起来完全合理，而症状是 36 个槽位
+    //   一起左移一像素，肉眼看不出来。本作原来就是 107。
+    CHECK(layout.tradingInventorySlot(9U).x == 549.0F);   // 108 * 3 + 225
+    CHECK(layout.tradingInventorySlot(9U).y == 363.0F);   // 84 * 3 + 111
+    // 同一行往右一格是 +18 逻辑像素。
+    CHECK(layout.tradingInventorySlot(10U).x == 549.0F + 54.0F);
+    // 快捷栏在 top + 58 = 142。
+    CHECK(layout.tradingInventorySlot(0U).x == 549.0F);
+    CHECK(layout.tradingInventorySlot(0U).y == 537.0F);
+    // 主区第二行 +18。
+    CHECK(layout.tradingInventorySlot(18U).y == 363.0F + 54.0F);
+}
+
 // --- 6. 列表几何 -------------------------------------------------------------
 void testListGeometry() {
     constexpr float kWidth = 1280.0F;
@@ -209,6 +244,7 @@ int main() {
     testHudAnchorsEvenScale();
     testHudAnchorsOddScale();
     testMenuButtons();
+    testTradingGeometry();
     testListGeometry();
     testEverythingLandsOnTheGrid();
     if (failures != 0) {
