@@ -124,6 +124,10 @@ const float kGroundFacing = 1.0F;
 const float kSunOverhead = 1.0F;
 // RN-46a：头顶的水柱（格）。既有的每一条断言都在「不在水下」这一档上
 const float kDryLand = 0.0F;
+// RN-20f-0：光影包这一位（着色器里是 `lightingSettings.w`）。
+// 关 = 天光退回 vanilla 的 SKY_LIGHT_FACTOR x 天气昏暗，开 = 直射/散射那一整套。
+const float kPackOn = 1.0F;
+const float kPackOff = 0.0F;
 
 // RN-47：着色器不再存纹素常量，它从正在采的那张矩阵里推。测试这一侧因此取 C++ 的
 // 单一源——默认档（近段 8 格）下的两个值
@@ -737,9 +741,15 @@ void checkRendererSourceGuards() {
     REQUIRE(tables.find("shadowRead.subresourceRange.layerCount = 1;") != std::string::npos,
             "one barrier per cascade layer: a single barrier spanning both cannot be pruned with "
             "the near step when cascades are switched off");
-    REQUIRE(tables.find("const bool drawn = cascade == 0 ? sunShadowNearCascadeEnabled() : "
-                        "!shadowDisabled;") != std::string::npos,
+    // 逐级的屏障必须与**写那一层的那一步**同一个判据。RN-20f-0 之后两侧都从光影包
+    // 取（`activeShaderPack().sunShadowPasses`），而不是各自再读一次 `shadowDisabled`
+    // ——钉的是「同源」这件事，不是那一行的字面文本。
+    REQUIRE(tables.find("const bool drawn = cascade == 0 ? sunShadowNearCascadeEnabled()") !=
+                std::string::npos,
             "the per-cascade barrier must be pruned with the step that writes that layer");
+    REQUIRE(tables.find("activeShaderPack().sunShadowPasses") != std::string::npos &&
+                tables.find("!shadowDisabled") == std::string::npos,
+            "both the step and its barrier must read the shader pack, not shadowDisabled twice");
     REQUIRE(tables.find("render::kSunShadowCascadeCount") != std::string::npos,
             "the frame-graph tables must derive their cascade count from SunShadowMap.hpp");
 
@@ -1213,14 +1223,62 @@ void checkWeatherResponse() {
                 shaderBias::sunShadowOvercast(-1.0F, -1.0F) == 0.0F,
             "云量必须夹在 [0,1]");
 
+    // ---- 1b. RN-20f-0：不开光影包时，这整套模型必须不存在 ------------------
+    //
+    // 这是**数值证明**，不是源码护栏：`sun_shadow_bias.glsl` 在这个测试里是当 C++
+    // 编译进来的（见文件开头的 `namespace shaderBias`），所以下面跑的就是着色器
+    // 里那条公式本身。
+    //
+    // vanilla 的天光只有一个总量 `SKY_LIGHT_FACTOR x 天气昏暗`——没有直射/散射的
+    // 拆分，没有入射角，没有云量转移，没有水下衰减，也没有假反射光。所以不开包时
+    // `sunSkyFactor` 必须**对任意输入**都恰好返回前两个参数的乘积。
+    //
+    // ★ 这条断言钉的是那个会错的量：从前这一位只门控「采不采样阴影图」，这个函数
+    //   无条件就跑，于是正南/正北的墙全天只有 vanilla 的 42.5%、正东/正西的墙正午
+    //   只有 20.1%——一个默认关闭的特性把默认画面改掉了近八成。
+    {
+        int checked = 0;
+        for (const float sky : {0.05F, 0.5F, 1.0F}) {
+            for (const float dim : {0.3125F, 1.0F}) {           // vanilla 雨天的 5/16
+                for (const float visibility : {0.0F, 0.5F, 1.0F}) {
+                    for (const float incidence : {-1.0F, 0.0F, 0.2696F, 1.0F}) {
+                        for (const float sunUp : {0.0F, 0.2F, 0.963F}) {
+                            for (const float rain : {0.0F, 1.0F}) {
+                                for (const float depth : {0.0F, 15.0F}) {
+                                    const float off = shaderBias::sunSkyFactor(
+                                        sky, dim, visibility, rain, rain, incidence, sunUp,
+                                        depth, kPackOff);
+                                    if (std::abs(off - sky * dim) >= 1e-6F) {
+                                        REQUIRE(false,
+                                                "不开包时天光必须恰好是 SKY_LIGHT_FACTOR x "
+                                                "天气昏暗——一项都不许多");
+                                    }
+                                    ++checked;
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        }
+        REQUIRE(checked == 3 * 2 * 3 * 4 * 3 * 2 * 2, "整个网格都要走到，别让循环空转");
+
+        // 而开包时它**必须**是另一回事，否则上面那条断言等于什么都没证明——
+        // 一个恒返回 sky*dim 的函数会让它一路绿灯。正午的竖直墙就是那个分歧点。
+        const float noonWall = shaderBias::sunSkyFactor(1.0F, 1.0F, 1.0F, 0.0F, 0.0F, 0.2696F,
+                                                        0.963F, kDryLand, kPackOn);
+        REQUIRE(std::abs(noonWall - 1.0F) > 0.3F,
+                "开包时正午的竖直墙必须显著偏离 vanilla，否则这一组断言证不了任何事");
+    }
+
     // ---- 2. 天光的两项：直射被挡住、散射不受影响 ---------------------------
     //
     // RN-38：`sunShadowFactor` 现在回答的是**可见度**（1 = 太阳完全照到），
     // 「影子里该有多亮」由 sunSkyFactor 从散射的份额算出来，不再是一个烘在
     // 接收端里的 0.35。
     {
-        const float lit = shaderBias::sunSkyFactor(1.0F, 1.0F, 1.0F, 0.0F, 0.0F, kGroundFacing, kSunOverhead, kDryLand);
-        const float shadowed = shaderBias::sunSkyFactor(1.0F, 1.0F, 0.0F, 0.0F, 0.0F, kGroundFacing, kSunOverhead, kDryLand);
+        const float lit = shaderBias::sunSkyFactor(1.0F, 1.0F, 1.0F, 0.0F, 0.0F, kGroundFacing, kSunOverhead, kDryLand, kPackOn);
+        const float shadowed = shaderBias::sunSkyFactor(1.0F, 1.0F, 0.0F, 0.0F, 0.0F, kGroundFacing, kSunOverhead, kDryLand, kPackOn);
         REQUIRE(std::abs(lit - 1.0F) < 1e-6F,
                 "晴天全亮必须是 1.0——受光面的亮度一个字都不该动");
         // RN-46b：全影处 = 散射份额 + 假反射光。后者正比于**丢掉的直射**，所以它
@@ -1233,20 +1291,20 @@ void checkWeatherResponse() {
         REQUIRE(shadowed < 0.35F, "拆开之后影子必须比那个 0.35 的系数更暗");
 
         // 云把直射**转给**散射：全阴时阴影完全不起作用，而总亮度不变
-        const float overcastLit = shaderBias::sunSkyFactor(1.0F, 1.0F, 1.0F, 1.0F, 1.0F, kGroundFacing, kSunOverhead, kDryLand);
-        const float overcastShadowed = shaderBias::sunSkyFactor(1.0F, 1.0F, 0.0F, 1.0F, 1.0F, kGroundFacing, kSunOverhead, kDryLand);
+        const float overcastLit = shaderBias::sunSkyFactor(1.0F, 1.0F, 1.0F, 1.0F, 1.0F, kGroundFacing, kSunOverhead, kDryLand, kPackOn);
+        const float overcastShadowed = shaderBias::sunSkyFactor(1.0F, 1.0F, 0.0F, 1.0F, 1.0F, kGroundFacing, kSunOverhead, kDryLand, kPackOn);
         REQUIRE(std::abs(overcastLit - overcastShadowed) < 1e-6F,
                 "全阴时受光与全影必须一样亮——没有直射就没有影子");
         REQUIRE(std::abs(overcastLit - 1.0F) < 1e-6F,
                 "云只是把直射散开，不吸收：总量的下降归 weatherDimming 单独表达");
         // 纯下雨：直射还剩一成，影子的对比度因此也只剩一成
-        const float rainLit = shaderBias::sunSkyFactor(1.0F, 1.0F, 1.0F, 1.0F, 0.0F, kGroundFacing, kSunOverhead, kDryLand);
-        const float rainShadowed = shaderBias::sunSkyFactor(1.0F, 1.0F, 0.0F, 1.0F, 0.0F, kGroundFacing, kSunOverhead, kDryLand);
+        const float rainLit = shaderBias::sunSkyFactor(1.0F, 1.0F, 1.0F, 1.0F, 0.0F, kGroundFacing, kSunOverhead, kDryLand, kPackOn);
+        const float rainShadowed = shaderBias::sunSkyFactor(1.0F, 1.0F, 0.0F, 1.0F, 0.0F, kGroundFacing, kSunOverhead, kDryLand, kPackOn);
         const float clearContrast = lit - shadowed;
         REQUIRE(std::abs((rainLit - rainShadowed) - clearContrast * 0.1F) < 1e-6F,
                 "纯下雨的影子对比度应当是晴天的十分之一");
         // 天气的总量下降是**另一件事**，它对两项一视同仁
-        REQUIRE(std::abs(shaderBias::sunSkyFactor(1.0F, 0.5F, 0.0F, 0.0F, 0.0F, kGroundFacing, kSunOverhead, kDryLand) -
+        REQUIRE(std::abs(shaderBias::sunSkyFactor(1.0F, 0.5F, 0.0F, 0.0F, 0.0F, kGroundFacing, kSunOverhead, kDryLand, kPackOn) -
                          shadowed * 0.5F) < 1e-6F,
                 "weatherDimming 只缩放总量，不改变直射与散射的比例");
     }
@@ -1514,10 +1572,10 @@ void checkDirectWeight() {
     }
 
     // ---- 5. 接进了 sunSkyFactor，而受光地面一个字没动 --------------------
-    const float ground = shaderBias::sunSkyFactor(1.0F, 1.0F, 1.0F, 0.0F, 0.0F, 1.0F, 1.0F, kDryLand);
+    const float ground = shaderBias::sunSkyFactor(1.0F, 1.0F, 1.0F, 0.0F, 0.0F, 1.0F, 1.0F, kDryLand, kPackOn);
     REQUIRE(std::abs(ground - 1.0F) < 1e-6F, "受光的水平地面必须仍旧是 1.0");
     const float noonWall =
-        shaderBias::sunSkyFactor(1.0F, 1.0F, 1.0F, 0.0F, 0.0F, noonWallIncidence, noonSun, kDryLand);
+        shaderBias::sunSkyFactor(1.0F, 1.0F, 1.0F, 0.0F, 0.0F, noonWallIncidence, noonSun, kDryLand, kPackOn);
     REQUIRE(noonWall < 0.5F * ground,
             "正午的竖直面必须明显暗于地面——那正是这个节点买到的东西");
     // ★ 而且它不能低于散射那一份：竖直面丢的是直射，不是全部
@@ -1543,7 +1601,7 @@ void checkDirectWeight() {
         // 夜里：不管朝哪一面，天光通道必须是**满的**——与 RN-42 之前逐位相同
         for (const float incidence : {-1.0F, 0.0F, 0.5F, 1.0F}) {
             const float night =
-                shaderBias::sunSkyFactor(1.0F, 1.0F, 0.0F, 0.0F, 0.0F, incidence, sunUp, kDryLand);
+                shaderBias::sunSkyFactor(1.0F, 1.0F, 0.0F, 0.0F, 0.0F, incidence, sunUp, kDryLand, kPackOn);
             REQUIRE(std::abs(night - 1.0F) < 1e-6F,
                     "night must keep the whole sky channel: the direct share transfers to "
                     "ambient exactly the way an overcast sky does");
@@ -1572,7 +1630,7 @@ void checkBouncedLight() {
     const auto sky = [](float visibility, float incidence, float sunUp, float depth,
                         float rain, float thunder) {
         return shaderBias::sunSkyFactor(1.0F, 1.0F, visibility, rain, thunder, incidence, sunUp,
-                                        depth);
+                                        depth, kPackOn);
     };
     // ---- 1. 受光处仍旧恰好是 1.0 ------------------------------------------
     // ★ RN-42 立的锚。假反射光只加在**丢掉的**那部分直射上，所以全亮处一点不加
@@ -1644,7 +1702,7 @@ void checkWaterTransmittance() {
     for (const float depth : {0.0F, 2.0F, 6.0F, 15.0F}) {
         const float lit =
             shaderBias::sunSkyFactor(1.0F, 1.0F, 1.0F, 0.0F, 0.0F, kGroundFacing, kSunOverhead,
-                                     depth);
+                                     depth, kPackOn);
         REQUIRE(std::abs(lit - 1.0F) < 1e-6F,
                 "the lit sea floor must keep its brightness: water scatters the beam, it does "
                 "not delete it here");
@@ -1653,20 +1711,20 @@ void checkWaterTransmittance() {
     float previousContrast = 2.0F;
     for (const float depth : {0.0F, 1.0F, 4.0F, 8.0F, 15.0F}) {
         const float lit = shaderBias::sunSkyFactor(1.0F, 1.0F, 1.0F, 0.0F, 0.0F, kGroundFacing,
-                                                   kSunOverhead, depth);
+                                                   kSunOverhead, depth, kPackOn);
         const float shadowed = shaderBias::sunSkyFactor(1.0F, 1.0F, 0.0F, 0.0F, 0.0F,
-                                                        kGroundFacing, kSunOverhead, depth);
+                                                        kGroundFacing, kSunOverhead, depth, kPackOn);
         const float contrast = lit - shadowed;
         REQUIRE(contrast < previousContrast + 1e-6F && contrast >= 0.0F,
                 "shadow contrast must fall with depth");
         previousContrast = contrast;
     }
     const float deepContrast =
-        shaderBias::sunSkyFactor(1.0F, 1.0F, 1.0F, 0.0F, 0.0F, kGroundFacing, kSunOverhead, 15.0F) -
-        shaderBias::sunSkyFactor(1.0F, 1.0F, 0.0F, 0.0F, 0.0F, kGroundFacing, kSunOverhead, 15.0F);
+        shaderBias::sunSkyFactor(1.0F, 1.0F, 1.0F, 0.0F, 0.0F, kGroundFacing, kSunOverhead, 15.0F, kPackOn) -
+        shaderBias::sunSkyFactor(1.0F, 1.0F, 0.0F, 0.0F, 0.0F, kGroundFacing, kSunOverhead, 15.0F, kPackOn);
     const float dryContrast =
-        shaderBias::sunSkyFactor(1.0F, 1.0F, 1.0F, 0.0F, 0.0F, kGroundFacing, kSunOverhead, 0.0F) -
-        shaderBias::sunSkyFactor(1.0F, 1.0F, 0.0F, 0.0F, 0.0F, kGroundFacing, kSunOverhead, 0.0F);
+        shaderBias::sunSkyFactor(1.0F, 1.0F, 1.0F, 0.0F, 0.0F, kGroundFacing, kSunOverhead, 0.0F, kPackOn) -
+        shaderBias::sunSkyFactor(1.0F, 1.0F, 0.0F, 0.0F, 0.0F, kGroundFacing, kSunOverhead, 0.0F, kPackOn);
     REQUIRE(deepContrast < dryContrast * 0.15F,
             "at the mask's deepest the shadow must be nearly gone");
 

@@ -136,7 +136,9 @@ void main() {
                                             dot(normal, normalize(camera.sunDirection.xyz)),
                                             normalize(camera.sunDirection.xyz).y,
                                             // 下落的方块不带水柱这一位
-                                            0.0);
+                                            0.0,
+                                            // RN-20f-0：光影包这一位
+                                            camera.lightingSettings.w);
         } else {
             vec3 fixedLightDirection = normalize(vec3(-0.45, 0.85, 0.30));
             float diffuse = max(dot(normal, fixedLightDirection), 0.0);

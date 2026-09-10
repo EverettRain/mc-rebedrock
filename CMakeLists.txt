@@ -2382,6 +2382,18 @@ if(BUILD_TESTING)
         "MC_REBEDROCK_SOURCE_DIR=\"${CMAKE_CURRENT_SOURCE_DIR}\"")
     add_test(NAME frame_cpu_accounting COMMAND mc_rebedrock_frame_cpu_accounting_test)
 
+    # RN-20f-0: the shader pack boundary. Guards that turning the pack off really does
+    # return the sky term to vanilla's SKY_LIGHT_FACTOR — the export-side proof needs a
+    # GPU and cannot run in ctest, so what ctest holds is the wiring behind it.
+    add_executable(mc_rebedrock_shader_pack_test
+        tests/shader_pack_test.cpp
+    )
+    target_include_directories(mc_rebedrock_shader_pack_test PRIVATE src)
+    target_compile_definitions(mc_rebedrock_shader_pack_test PRIVATE
+        "MC_REBEDROCK_SOURCE_DIR=\"${CMAKE_CURRENT_SOURCE_DIR}\""
+        "MC_REBEDROCK_SHADER_SRC_DIR=\"${CMAKE_CURRENT_SOURCE_DIR}/resources/shaders/src\"")
+    add_test(NAME shader_pack COMMAND mc_rebedrock_shader_pack_test)
+
     # 一个 GpuMesh 拥有几条缓冲，只有一张表。释放路径有两条（运行期归还池、退出期销毁），
     # 各自手抄成员名就会漏——RN-22 添第三条缓冲时漏了退出期那条，症状是含半透明的场景
     # 退出时 VMA 断言，而八张预览图全部正常写出。读源码断言那张表覆盖全部成员。

@@ -129,7 +129,10 @@ void main() {
                                    normalize(camera.sunDirection.xyz).y,
                                    // RN-46a：头顶的水柱（格）。水把直射散成漫射，
                                    // 水下的影子因此是淡的，不是糊的
-                                   float((fragmentBiomeMask >> 4u) & 15u));
+                                   float((fragmentBiomeMask >> 4u) & 15u),
+                                   // RN-20f-0：光影包这一位。不开包时整套直射/散射
+                                   // 模型不存在，天光退回 vanilla 的 SKY_LIGHT_FACTOR
+                                   camera.lightingSettings.w);
     vec3 lightmap = sampleLightmap(skyLevel, blockLevel, skyFactor);
     // The sky half carries the time-of-day tint: cool blue moonlight, warm
     // sunlight. Block light brings its own tint inside the lightmap.

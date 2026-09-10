@@ -169,9 +169,22 @@ float sunWaterTransmittance(float submergedBlocks) {
 
 // 收的是**几何量**（面的入射角余弦、太阳的仰角余弦、头顶的水柱），不是已经算好的权重：
 // 三个采样者各自去算那个比值，就有三个地方可以算错。
+//
+// RN-20f-0：`shaderPack` 是光影包这一位（`lightingSettings.w`）。**不开包时这整套
+// 模型不存在**，天光就是 vanilla 的 `SKY_LIGHT_FACTOR x 天气昏暗`。
+//
+// 早退放在这里而不是三个调用点：三份手抄正是这条链子上反复出问题的形状
+// （RN-51 的法线表就是因此搬进共享 include 的）。
+//
+// ★ 这一位从前只门控「采不采样阴影图」，**这个函数无条件就跑**。后果是可量的：
+// 太阳阴影关着（`sunShadows` 默认 false）时，正南/正北的墙全天只有 vanilla 的
+// 42.5%、正东/正西的墙正午只有 20.1%——一个默认关闭的特性把默认画面改掉了近八成。
 float sunSkyFactor(float skyLightFactor, float weatherDimming, float visibility, float rain,
                    float thunder, float incidenceCosine, float sunUpCosine,
-                   float submergedBlocks) {
+                   float submergedBlocks, float shaderPack) {
+    if (shaderPack < 0.5F) {
+        return skyLightFactor * weatherDimming;
+    }
     float directShare = (1.0F - kSkyAmbientFraction) *
                         (1.0F - sunShadowOvercast(rain, thunder)) * sunPresence(sunUpCosine) *
                         sunWaterTransmittance(submergedBlocks);

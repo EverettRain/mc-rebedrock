@@ -3,6 +3,7 @@
 #include "render/vulkan/GpuSceneBuffer.hpp"
 #include "render/vulkan/HudRenderer.hpp"
 #include "render/vulkan/HudTypes.hpp"
+#include "render/ShaderPack.hpp"
 #include "render/vulkan/MenuBlur.hpp"
 #include "render/vulkan/TemporalResolve.hpp"
 #include "render/vulkan/OffscreenTarget.hpp"
@@ -6509,7 +6510,9 @@ struct VulkanRenderer::Impl final : public gameplay::SimulationHost {
     // RN-35：近段那一级跑不跑。太阳阴影整个关掉时它当然也不跑——两个步一起被剪，
     // 而接收端靠 lightingSettings.z 知道近段这一层这一帧有没有内容
     [[nodiscard]] bool sunShadowNearCascadeEnabled() const {
-        return !shadowDisabled && options.cascadedShadows;
+        // RN-20f-0：从包取，而不是再读一次 shadowDisabled——帧图的 pass 集合与
+        // 接收端的天光公式必须同源，否则会出现「图里没有阴影步、着色器却在采样」
+        return activeShaderPack().sunShadowPasses && options.cascadedShadows;
     }
 
     // TAA-1：抗锯齿三档里的第三档。它与 MSAA 互斥（同一个字段的两个取值），
@@ -6632,7 +6635,8 @@ struct VulkanRenderer::Impl final : public gameplay::SimulationHost {
         // 不必重建 image」那条结论的形状——变的字段不是 image 参数
         // 那一级的步被剪掉时没有任何 renderpass 在消费这一层，四个附件操作落不到实际
         // 对象上——与「关掉太阳阴影不必重建 image」是同一条判断
-        const bool drawn = cascade == 0 ? sunShadowNearCascadeEnabled() : !shadowDisabled;
+        const bool drawn = cascade == 0 ? sunShadowNearCascadeEnabled()
+                                        : activeShaderPack().sunShadowPasses;
         if (drawn) {
             const auto& ops =
                 resourcePlan_.ops(kShadowPassNames[cascade], kShadowDepthNames[cascade]);
@@ -7739,7 +7743,8 @@ struct VulkanRenderer::Impl final : public gameplay::SimulationHost {
         // 只是粒度从「整张图」细到了「一层」。
         tables.worldBarriers.clear();
         for (std::size_t cascade = 0; cascade < render::kSunShadowCascadeCount; ++cascade) {
-            const bool drawn = cascade == 0 ? sunShadowNearCascadeEnabled() : !shadowDisabled;
+            const bool drawn = cascade == 0 ? sunShadowNearCascadeEnabled()
+                                            : activeShaderPack().sunShadowPasses;
             if (!withHandles || !drawn) {
                 continue;
             }
@@ -7792,7 +7797,7 @@ struct VulkanRenderer::Impl final : public gameplay::SimulationHost {
              .clears = withHandles ? std::span<const VkClearValue>{tables.shadowClears}
                                    : std::span<const VkClearValue>{},
              .extent = {shadowTarget.width(), shadowTarget.height()},
-             .enabled = !shadowDisabled},
+             .enabled = activeShaderPack().sunShadowPasses},
             {.name = kWorldPassName,
              .attachments = tables.worldAttachments,
              .record = &WorldRenderer::graphWorldStep,
@@ -8468,9 +8473,12 @@ struct VulkanRenderer::Impl final : public gameplay::SimulationHost {
         // 关掉级联时层 0 那一步被剪，接收端必须跳过它直接用远段——否则它会去采样
         // 一张停在上一次内容上的图，脚下出现一片陈旧的影子
         uniform.lightingSettings.z = sunShadowNearCascadeEnabled() ? 1.0F : 0.0F;
-        // lightingSettings.w 是太阳阴影开关，本帧预通道跑过时为 1.0
-        // 地形着色器因此只在阴影图确实有效时才采样它
-        uniform.lightingSettings.w = shadowDisabled ? 0.0F : 1.0F;
+        // RN-20f-0：.w 现在是**光影包这一位**，不再只是「阴影预通道跑过没有」。
+        // 它同时门控两件事：采不采样阴影图，以及天光走不走直射/散射拆分。
+        // 合成一位是因为那两者本来就是一个整体（见 render/ShaderPack.hpp 抬头）——
+        // 从前只有前一半读它，后一半无条件跑，于是「关掉太阳阴影」并不能让画面
+        // 回到 vanilla：南北墙全天 42.5%、东西墙正午 20.1%。
+        uniform.lightingSettings.w = activeShaderPack().directSkyModel ? 1.0F : 0.0F;
         uniform.lightViewProj = shadowLightViewProj;
         std::memcpy(frame.uniformBuffer.mapped, &uniform, sizeof(uniform));
         checkVk(vmaFlushAllocation(allocator, frame.uniformBuffer.allocation, 0, sizeof(uniform)),
@@ -9004,6 +9012,17 @@ struct VulkanRenderer::Impl final : public gameplay::SimulationHost {
     std::array<glm::mat4, render::kSunShadowCascadeCount> shadowLightViewProj{glm::mat4{1.0F},
                                                                               glm::mat4{1.0F}};
     bool shadowDisabled = std::getenv("MC_REBEDROCK_SHADOW_DISABLE") != nullptr;
+
+    // RN-20f-0：本帧用哪个光影包。**单一源**——帧图的 pass 集合与接收端的天光公式
+    // 都从这里取，两者因此不可能各说各话（从前它们是两处各自读 shadowDisabled，
+    // 而接收端那条公式压根没读，无条件就跑）。
+    //
+    // `shadowDisabled` 是「这一帧到底跑没跑阴影预通道」，它比 `options.sunShadows`
+    // 多吃两个来源：`MC_REBEDROCK_SHADOW_DISABLE` 与烟测。两者的意思都是「别用我们
+    // 自研的那一套」，所以它们同样该退回 vanilla 口径，而不只是少画一张图。
+    [[nodiscard]] const render::ShaderPack& activeShaderPack() const noexcept {
+        return shadowDisabled ? render::kNoShaderPack : render::kBuiltinShaderPack;
+    }
     render::RainSystem rainSystem;
     RainMode rainMode_ = RainMode::Async;
     std::size_t rainCountOverride_ = 0U;
