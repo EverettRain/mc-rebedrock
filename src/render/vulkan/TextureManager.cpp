@@ -688,6 +688,13 @@ void TextureManager::createGuiTexture() {
                        static_cast<int>(piece.source.height),
                        static_cast<int>(piece.source.x), static_cast<int>(piece.source.y));
         }
+        // 那几张小精灵与面板同层——面板三块只用到左边 256x166 与下方 x<40 的一小条，
+        // 右下角整片空着。落位是 `tradingSpriteRect()`（绘制侧读的是同一张表）。
+        for (std::size_t index = 0; index < kTradingSpriteNames.size(); ++index) {
+            const auto rect = tradingSpriteRect(static_cast<TradingSprite>(index));
+            blit(tradingGui, sprite(std::string{kTradingSpriteNames[index]}),
+                 static_cast<int>(rect.x), static_cast<int>(rect.y));
+        }
     }
     const auto chestGui = singleChestGui(guiTex("container/generic_54.png"));
     auto furnaceGui = guiTex("container/furnace.png");

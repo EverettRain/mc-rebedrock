@@ -8,11 +8,13 @@
 #include "ui/ContainerPage.hpp"
 #include "ui/HudLayout.hpp"
 #include "ui/ScreenBackground.hpp"
+#include "ui/TradeRow.hpp"
 #include "world/ItemModel.hpp"
 
 #include <array>
 #include <cstddef>
 #include <cstdint>
+#include <string_view>
 
 #include <glm/mat4x4.hpp>
 #include <glm/vec3.hpp>
@@ -108,6 +110,52 @@ static_assert(kTradingPanelLeftWidth + kTradingPanelRightWidth == kTradingPanelW
 static_assert(kTradingPanelHeight + kTradingPanelRightHalfHeight <= 256,
               "右侧两半要塞得进左块下方那条空带");
 static_assert(kTradingPanelRightWidth * 2 <= 256, "右侧两半并排要放得下");
+
+// MERCH-1：交易屏那几张小精灵（26.1 `container/villager/*`）。它们与面板同层——
+// 面板三块只用到左边 256x166 与下方 x<40 的那一小条，右下角整片还空着。
+enum class TradingSprite : std::size_t {
+    Arrow,               // trade_arrow            10x9
+    ArrowOutOfStock,     // trade_arrow_out_of_stock 10x9
+    OutOfStock,          // out_of_stock           28x21
+    Scroller,            // scroller                6x27
+    ScrollerDisabled,    // scroller_disabled       6x27
+    LevelBarBackground,  // experience_bar_background 102x5
+    LevelBarCurrent,     // experience_bar_current    102x5
+    LevelBarResult,      // experience_bar_result     102x5
+    Count,
+};
+
+// 每张精灵在那一层里的像素矩形。
+//
+// ★ 抽成一张表而不是散在绘制侧的字面量：落位是**烘焙侧与绘制侧共用**的事实，
+//   两边各写一份就是同一个事实的两份表述，而错位的症状只是"画出来是隔壁那张图"。
+[[nodiscard]] constexpr ui::UiRect tradingSpriteRect(TradingSprite sprite) {
+    switch (sprite) {
+    case TradingSprite::Arrow:            return {40.0F, 166.0F, 10.0F, 9.0F};
+    case TradingSprite::ArrowOutOfStock:  return {52.0F, 166.0F, 10.0F, 9.0F};
+    case TradingSprite::OutOfStock:       return {64.0F, 166.0F, 28.0F, 21.0F};
+    case TradingSprite::Scroller:         return {96.0F, 166.0F, 6.0F, 27.0F};
+    case TradingSprite::ScrollerDisabled: return {104.0F, 166.0F, 6.0F, 27.0F};
+    case TradingSprite::LevelBarBackground: return {112.0F, 166.0F, 102.0F, 5.0F};
+    case TradingSprite::LevelBarCurrent:    return {112.0F, 174.0F, 102.0F, 5.0F};
+    case TradingSprite::LevelBarResult:     return {112.0F, 182.0F, 102.0F, 5.0F};
+    case TradingSprite::Count:            break;   // 哨兵，不是一张图
+    }
+    return {};
+}
+
+// 26.1 的资源名，与上面的枚举同序。烘焙侧照它取图。
+inline constexpr std::array<std::string_view, static_cast<std::size_t>(TradingSprite::Count)>
+    kTradingSpriteNames{{
+        "container/villager/trade_arrow",
+        "container/villager/trade_arrow_out_of_stock",
+        "container/villager/out_of_stock",
+        "container/villager/scroller",
+        "container/villager/scroller_disabled",
+        "container/villager/experience_bar_background",
+        "container/villager/experience_bar_current",
+        "container/villager/experience_bar_result",
+    }};
 
 // UI-9：四张页签精灵所在的层（`TextureManager` 的 images 数组最后一格）。
 // ★ 它们各 130x24，竖排要 96 高，`widgets` 那一层放不下——这是本作少数几次
