@@ -625,6 +625,17 @@ void readWeatherBlock(std::span<const std::uint8_t> payload, std::size_t& cursor
 //     i32 age             // version >= 4; absent (read as 0) in versions 1-3
 //     i32 loveTicks       // version >= 4
 //     u8  color           // version >= 6; absent (read as 0 = white) in versions 1-5
+//     u16 nameLen + name  // version >= 7; the custom name, empty when unnamed
+//     -- version >= 8, the per-species tail (AR-A2 / AR-M5 / AR-M6): --
+//     u8  sheared
+//     u16 nameLen + name  // villager profession, by NAME ("farmer" / "none")
+//     u8  villagerLevel
+//     i32 villagerTradeXp
+//     i32 jobSiteX, jobSiteY, jobSiteZ
+//     u8  hasJobSite
+//     u16 nameLen + name  // the carried item's registry path, empty when none
+//     u8  villagerCarryCount
+//     u8  offerUseCount + u8 offerUses[]
 //
 // Species are palette-encoded the same way blocks/items are, so a species that
 // is removed in a future build skips cleanly on load (the unknown name becomes
@@ -643,7 +654,7 @@ void readWeatherBlock(std::span<const std::uint8_t> payload, std::size_t& cursor
 // without a fixer.
 constexpr std::uint32_t kEntityBlockTag =
     'E' | ('N' << 8) | ('T' << 16) | ('Y' << 24);
-constexpr std::uint16_t kEntityBlockVersion = 7U;
+constexpr std::uint16_t kEntityBlockVersion = 8U;
 
 // An entity's active MobEffects, shared by the world.dat ENTITY block and the
 // per-chunk region record (both grew effects in the same version bump). Effects
@@ -672,6 +683,53 @@ void readEffectList(std::span<const std::uint8_t> payload, std::size_t& cursor,
         effect.durationTicks = readInteger<std::int32_t>(payload, cursor);
         effect.amplifier = readInteger<std::uint8_t>(payload, cursor);
         effects.push_back(std::move(effect));
+    }
+}
+
+// AR-A2 / AR-M5 / AR-M6: the per-species tail both entity records grew in the
+// same version bump (ENTITY block 8, region chunk 9). Written once and shared,
+// because the two records had already drifted apart field by field and a tail
+// spelled out twice is a tail that eventually differs.
+//
+// The profession and the carried item travel as NAMES — the rule the species,
+// effect and item palettes already follow, so a future profession never
+// renumbers the ones a saved world carries.
+void appendPerSpeciesTail(std::vector<std::uint8_t>& bytes, const PersistentEntity& entity) {
+    appendInteger(bytes, static_cast<std::uint8_t>(entity.sheared ? 1U : 0U));
+    appendString(bytes, entity.villagerProfession);
+    appendInteger(bytes, entity.villagerLevel);
+    appendInteger(bytes, entity.villagerTradeXp);
+    appendInteger(bytes, entity.jobSiteX);
+    appendInteger(bytes, entity.jobSiteY);
+    appendInteger(bytes, entity.jobSiteZ);
+    appendInteger(bytes, static_cast<std::uint8_t>(entity.hasJobSite ? 1U : 0U));
+    appendString(bytes, entity.villagerCarryItem);
+    appendInteger(bytes, entity.villagerCarryCount);
+    appendInteger(bytes, static_cast<std::uint8_t>(
+                             std::min<std::size_t>(entity.villagerOfferUses.size(), 255U)));
+    for (std::size_t offer = 0;
+         offer < std::min<std::size_t>(entity.villagerOfferUses.size(), 255U); ++offer) {
+        appendInteger(bytes, entity.villagerOfferUses[offer]);
+    }
+}
+
+void readPerSpeciesTail(std::span<const std::uint8_t> payload, std::size_t& cursor,
+                        PersistentEntity& entity) {
+    entity.sheared = readInteger<std::uint8_t>(payload, cursor) != 0U;
+    entity.villagerProfession = readString(payload, cursor);
+    entity.villagerLevel = readInteger<std::uint8_t>(payload, cursor);
+    entity.villagerTradeXp = readInteger<std::int32_t>(payload, cursor);
+    entity.jobSiteX = readInteger<std::int32_t>(payload, cursor);
+    entity.jobSiteY = readInteger<std::int32_t>(payload, cursor);
+    entity.jobSiteZ = readInteger<std::int32_t>(payload, cursor);
+    entity.hasJobSite = readInteger<std::uint8_t>(payload, cursor) != 0U;
+    entity.villagerCarryItem = readString(payload, cursor);
+    entity.villagerCarryCount = readInteger<std::uint8_t>(payload, cursor);
+    const auto offerCount = readInteger<std::uint8_t>(payload, cursor);
+    entity.villagerOfferUses.clear();
+    entity.villagerOfferUses.reserve(offerCount);
+    for (std::uint8_t offer = 0; offer < offerCount; ++offer) {
+        entity.villagerOfferUses.push_back(readInteger<std::uint8_t>(payload, cursor));
     }
 }
 
@@ -722,6 +780,7 @@ void appendEntityBlock(std::vector<std::uint8_t>& bytes,
         appendInteger(bytes, entity.loveTicks);  // version 4
         appendInteger(bytes, entity.color);      // version 6 (DYE-0)
         appendString(bytes, entity.customName);  // version 7 (I-3)
+        appendPerSpeciesTail(bytes, entity);     // version 8 (AR-A2 / AR-M5 / AR-M6)
     }
     const auto blockSize = static_cast<std::uint32_t>(bytes.size() - blockStart);
     for (std::size_t offset = 0; offset < sizeof(std::uint32_t); ++offset) {
@@ -814,6 +873,12 @@ void readEntityBlock(std::span<const std::uint8_t> payload, std::size_t& cursor,
         // name field and read back unnamed.
         if (blockVersion >= 7U) {
             entity.customName = readString(payload, cursor);
+        }
+        // AR-A2 / AR-M5 / AR-M6: the per-species tail arrived in version 8.
+        // Earlier records read back unsheared and unemployed — which is what
+        // every creature in a pre-AR-M5 world was.
+        if (blockVersion >= 8U) {
+            readPerSpeciesTail(payload, cursor, entity);
         }
         // A creature saved outside the world is legacy junk from a pre-fix build
         // whose void line disagreed with the -64 world floor (a mob that fell below
@@ -2210,7 +2275,7 @@ constexpr std::uint32_t kRegionChunkTag = blockTag("CCNK");
 // cleanly — version < 5 reads `populated = false`, version < 6 reads the low
 // 32 bits of rngState and zero-extends them, and version < 7 reads colour 0
 // (white).
-constexpr std::uint16_t kRegionChunkVersion = 8U;
+constexpr std::uint16_t kRegionChunkVersion = 9U;
 constexpr std::uint32_t kRegionWidth = 32U;  // chunks per region side
 
 // Floor division of a chunk coordinate by the region width, exactly like the
@@ -2484,6 +2549,7 @@ void appendRegionFile(std::vector<std::uint8_t>& bytes, const RegionData& region
             appendInteger(bytes, entity.loveTicks);  // version 4
             appendInteger(bytes, entity.color);      // version 7 (DYE-0)
             appendString(bytes, entity.customName);  // version 8 (I-3)
+            appendPerSpeciesTail(bytes, entity);     // version 9 (AR-A2 / AR-M5 / AR-M6)
         }
         // CS-5: version 5. A bare marker byte, independent of the edit/entity
         // counts above it — a chunk can be `populated == true` with both lists
@@ -2631,6 +2697,10 @@ void readRegionFile(std::span<const std::uint8_t> bytes, RegionData& region) {
             // I-3: the custom name arrived in version 8.
             if (header.version >= 8U) {
                 entity.customName = readString(payload, cursor);
+            }
+            // AR-A2 / AR-M5 / AR-M6: the per-species tail arrived in version 9.
+            if (header.version >= 9U) {
+                readPerSpeciesTail(payload, cursor, entity);
             }
             // A creature saved outside the world is a corrupt record.
             if (!(entity.y >= -64.0F && entity.y <= 384.0F)) {

@@ -21,6 +21,7 @@
 #include "world/gen/StructureGenerator.hpp"
 
 #include "core/FrameTrace.hpp"
+#include "core/PerfTrace.hpp"
 
 #include <algorithm>
 #include <cmath>
@@ -70,8 +71,32 @@ constexpr int kSpawnChunkRadius = 4;
     // nothing to a save file, so the boundary resolves it here and the loader
     // re-interns whatever it reads.
     record.customName = std::string{gameplay::customNameOf(entity.customNameId)};
+    record.sheared = entity.sheared;
+    // AR-M5/M6: the villager's own state. Profession and carried item travel as
+    // NAMES; everything else is a plain number.
+    record.villagerProfession =
+        std::string{gameplay::entities::professionName(entity.villagerProfession)};
+    record.villagerLevel = entity.villagerLevel;
+    record.villagerTradeXp = entity.villagerTradeXp;
+    record.jobSiteX = entity.jobSite.x;
+    record.jobSiteY = entity.jobSite.y;
+    record.jobSiteZ = entity.jobSite.z;
+    record.hasJobSite = entity.hasJobSite;
+    record.villagerCarryItem = entity.villagerCarryItem != nullptr
+                                   ? std::string{entity.villagerCarryItem->identifier.path}
+                                   : std::string{};
+    record.villagerCarryCount = entity.villagerCarryCount;
+    record.villagerOfferUses.assign(entity.villagerOfferUses.begin(),
+                                    entity.villagerOfferUses.end());
     return record;
 }
+
+// One save record back into the live restore state. Written once and shared by
+// both loaders (world.dat's herd and the per-chunk records) — they used to
+// spell the same thirteen positional arguments out twice, which is how a field
+// added to one and not the other goes unnoticed.
+[[nodiscard]] gameplay::EntitySystem::RestoreState toRestoreState(
+    const persistence::PersistentEntity& record);
 
 // The inverse: a save's effect list back into the live inline store, resolving
 // each name through the registry. A name this build no longer knows is dropped.
@@ -84,6 +109,47 @@ constexpr int kSpawnChunkRadius = 4;
     }
     return live;
 }
+gameplay::EntitySystem::RestoreState toRestoreState(
+    const persistence::PersistentEntity& record) {
+    gameplay::EntitySystem::RestoreState state;
+    state.yaw = record.yaw;
+    state.velocity = {record.vx, record.vy, record.vz};
+    state.health = record.health;
+    state.angerTicks = record.angerTicks;
+    state.ageTicks = record.ageTicks;
+    state.rngState = record.rngState;
+    state.fireTicks = record.fireTicks;
+    state.effects = toActiveEffects(record.effects);
+    state.age = record.age;
+    state.loveTicks = record.loveTicks;
+    state.color = gameplay::dyeColorFromId(record.color);
+    // I-3: the name arrives as a string and is re-interned into this session's
+    // table — an id means nothing across sessions.
+    state.customNameId = gameplay::customNames().intern(record.customName);
+    state.sheared = record.sheared;
+    // AR-M5/M6: the profession travels as its NAME, not its enum ordinal —
+    // the same rule blocks, items and effects already follow, so adding a
+    // profession never renumbers the ones a saved world already carries.
+    state.villagerProfession =
+        gameplay::entities::professionFromName(record.villagerProfession);
+    state.villagerLevel = record.villagerLevel;
+    state.villagerTradeXp = record.villagerTradeXp;
+    state.jobSite = {record.jobSiteX, record.jobSiteY, record.jobSiteZ};
+    state.hasJobSite = record.hasJobSite;
+    // Likewise the carried item, by identifier. An item this build no longer
+    // knows resolves to nothing and the carry empties, rather than restoring a
+    // count with no item behind it.
+    state.villagerCarryItem = record.villagerCarryItem.empty()
+                                  ? nullptr
+                                  : gameplay::itemFromIdentifier(record.villagerCarryItem);
+    state.villagerCarryCount = record.villagerCarryCount;
+    for (std::size_t offer = 0; offer < state.villagerOfferUses.size(); ++offer) {
+        state.villagerOfferUses[offer] =
+            offer < record.villagerOfferUses.size() ? record.villagerOfferUses[offer] : 0U;
+    }
+    return state;
+}
+
 }  // namespace
 
 GameRuntime::GameRuntime(gameplay::SimulationHost& host, world::ChunkStreamer& chunkStreamer,
@@ -128,19 +194,56 @@ void GameRuntime::stopSimulation() {
 }
 
 void GameRuntime::tick() {
-    const auto tickWrite = worldLock_.write();
-    drainClientCommands();
-    gameSession_.tick(serverWorld_, host_);
-    // PACK-2: `#minecraft:tick`'s members run once every authoritative tick,
-    // after gameplay has ticked (so a function that reads e.g. block state sees
-    // this tick's world) and before the snapshot publish (so a function's world
-    // edit reaches the client in the same tick it happened, exactly like any
-    // other in-tick mutation). A no-op when no function is tagged #tick — most
-    // ticks, most worlds.
-    applyCommandLimitRules();
-    functionManager_.runTick(commandDispatcher_, makeCommandSource());
-    publishSnapshotsToChannel();
-    processChatQueue();
+    auto& perfTrace = diag::PerfTrace::instance();
+    // This is a trace-local sequence, not the saved server tick. It is only
+    // touched by the thread currently executing GameRuntime::tick().
+    const std::uint64_t tickId = perfTrace.isEnabled() ? ++perfTraceTickSequence_ : 0U;
+    auto tickScope = perfTrace.scope("simulation.tick", tickId);
+    const bool perfEnabled = perfTrace.isEnabled();
+    const auto lockWaitStart = perfEnabled ? diag::PerfTrace::Clock::now()
+                                           : diag::PerfTrace::Clock::time_point{};
+    {
+        const auto tickWrite = worldLock_.write();
+        if (perfEnabled) {
+            perfTrace.recordSpan("simulation.world_lock_wait", lockWaitStart,
+                                 diag::PerfTrace::Clock::now(), tickId);
+        }
+        auto lockHoldScope = perfTrace.scope("simulation.world_lock_hold", tickId);
+        {
+            auto commandsScope = perfTrace.scope("simulation.commands", tickId);
+            drainClientCommands();
+        }
+        {
+            auto gameplayScope = perfTrace.scope("simulation.session", tickId);
+            gameSession_.tick(serverWorld_, host_);
+        }
+        if (perfEnabled) {
+            // Read the authoritative, persisted tick only while this write
+            // section owns the session; its value is deliberately separate
+            // from the scheduler and trace-local ids.
+            perfTrace.counter("simulation.server_tick",
+                              static_cast<double>(gameSession_.serverTick()), tickId);
+        }
+        // PACK-2: `#minecraft:tick`'s members run once every authoritative tick,
+        // after gameplay has ticked (so a function that reads e.g. block state sees
+        // this tick's world) and before the snapshot publish (so a function's world
+        // edit reaches the client in the same tick it happened, exactly like any
+        // other in-tick mutation). A no-op when no function is tagged #tick — most
+        // ticks, most worlds.
+        applyCommandLimitRules();
+        {
+            auto functionsScope = perfTrace.scope("simulation.functions", tickId);
+            functionManager_.runTick(commandDispatcher_, makeCommandSource());
+        }
+        {
+            auto publishScope = perfTrace.scope("simulation.publish", tickId);
+            publishSnapshotsToChannel();
+        }
+        {
+            auto chatScope = perfTrace.scope("simulation.chat", tickId);
+            processChatQueue();
+        }
+    }
 }
 
 void GameRuntime::publishSnapshotsToChannel() {
@@ -1105,13 +1208,8 @@ void GameRuntime::loadWorld(persistence::SaveGame save, int viewDistanceChunks) 
     // creature round-trips by name instead of vanishing from the world.
     for (const auto& record : currentSave_->entities) {
         const auto& type = gameplay::entities::resolveEntityTypeForRestore(record.species);
-        gameSession_.worldEntities().restore({record.x, record.y, record.z}, type, record.yaw,
-                                             {record.vx, record.vy, record.vz}, record.health,
-                                             record.angerTicks, record.ageTicks, record.rngState,
-                                             record.fireTicks, toActiveEffects(record.effects),
-                                             record.age, record.loveTicks,
-                                             gameplay::dyeColorFromId(record.color),
-                                             gameplay::customNames().intern(record.customName));
+        gameSession_.worldEntities().restore({record.x, record.y, record.z}, type,
+                                             toRestoreState(record));
     }
     // Format 16: dropped items and blocks mid-fall. Before it, everything a
     // player had thrown or mined but not picked up vanished on reload.
@@ -1530,6 +1628,10 @@ void GameRuntime::persistUnloadedChunk(world::ChunkPosition position) {
         persistIdentifier_ = currentSave_->summary.identifier;
         ++persistPending_[position];
         persistQueue_.push_back(std::move(record));
+        if (diag::PerfTrace::enabled()) {
+            diag::PerfTrace::instance().counter("persistence.queue_depth",
+                                                static_cast<double>(persistQueue_.size()));
+        }
     }
     persistWakeCv_.notify_one();
     if (diag::traceEnabled()) {
@@ -1576,10 +1678,14 @@ void GameRuntime::stopPersistenceWorker() {
 }
 
 void GameRuntime::persistenceWorkerLoop() {
+    diag::PerfTrace::instance().setThreadName("persistence");
     std::unique_lock<std::mutex> lock{persistMutex_};
     while (true) {
-        persistWakeCv_.wait(lock,
-                            [this] { return persistStopping_ || !persistQueue_.empty(); });
+        {
+            auto waitScope = diag::PerfTrace::instance().scope("persistence.wait");
+            persistWakeCv_.wait(lock,
+                                [this] { return persistStopping_ || !persistQueue_.empty(); });
+        }
         if (persistQueue_.empty()) {
             // Only stop once the backlog is drained, so a shutdown still lands
             // every queued chunk on disk.
@@ -1600,9 +1706,15 @@ void GameRuntime::persistenceWorkerLoop() {
             std::make_move_iterator(persistQueue_.end())};
         persistQueue_.clear();
         const std::string identifier = persistIdentifier_;
+        if (diag::PerfTrace::enabled()) {
+            diag::PerfTrace::instance().counter("persistence.batch_records",
+                                                static_cast<double>(batch.size()));
+            diag::PerfTrace::instance().counter("persistence.queue_depth", 0.0);
+        }
         persistBusy_ = true;
         lock.unlock();
         try {
+            auto saveScope = diag::PerfTrace::instance().scope("persistence.save_chunks");
             saveRepository_.saveChunks(identifier, std::move(batch));
         } catch (const std::exception&) {
             // A failed region write is non-fatal: the data is still in the
@@ -1649,13 +1761,8 @@ void GameRuntime::restoreLoadedChunk(world::ChunkPosition position) {
                                                                 position.x, position.z);
         for (const auto& record : records) {
             const auto& type = gameplay::entities::resolveEntityTypeForRestore(record.species);
-            gameSession_.worldEntities().restore(
-                {record.x, record.y, record.z}, type, record.yaw,
-                {record.vx, record.vy, record.vz}, record.health, record.angerTicks,
-                record.ageTicks, record.rngState, record.fireTicks,
-                toActiveEffects(record.effects), record.age, record.loveTicks,
-                gameplay::dyeColorFromId(record.color),
-                gameplay::customNames().intern(record.customName));
+            gameSession_.worldEntities().restore({record.x, record.y, record.z}, type,
+                                                 toRestoreState(record));
         }
         // A chunk this session unloaded already had (or explicitly did not
         // have) its generation-time pass long before this unload — mark it so

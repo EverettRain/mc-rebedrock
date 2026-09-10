@@ -968,6 +968,12 @@ if(BUILD_TESTING)
     )
     add_test(NAME chunk_streaming_trace COMMAND mc_rebedrock_chunk_streaming_trace_test)
 
+    add_executable(mc_rebedrock_perf_trace_test
+        tests/perf_trace_test.cpp
+    )
+    target_include_directories(mc_rebedrock_perf_trace_test PRIVATE src)
+    add_test(NAME perf_trace COMMAND mc_rebedrock_perf_trace_test)
+
     add_executable(mc_rebedrock_section_delivery_queue_test
         tests/section_delivery_queue_test.cpp
     )

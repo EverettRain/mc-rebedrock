@@ -1,5 +1,7 @@
 #include "world/ChunkStreamer.hpp"
 
+#include "core/PerfTrace.hpp"
+
 #include "world/ChunkMesher.hpp"
 #include "world/DimensionChunkGenerator.hpp"
 #include "world/SkyColumn.hpp"
@@ -337,6 +339,7 @@ std::optional<ChunkStreamBatch> ChunkStreamer::poll() {
 }
 
 void ChunkStreamer::workerLoop() {
+    diag::PerfTrace::instance().setThreadName("chunk_streamer");
     World world;
     WorldLightEngine lightEngine{&stopping_, &parallelWorkers_};
     ChunkPosition currentCenter{};
@@ -344,6 +347,7 @@ void ChunkStreamer::workerLoop() {
     std::unordered_map<EditPosition, std::size_t, EditPositionHash> persistentEditIndices;
     std::uint64_t currentEpoch = 0U;
     while (true) {
+        auto workerCycle = diag::PerfTrace::instance().scope("chunk.worker_cycle");
         std::optional<WorldReset> reset;
         std::optional<ChunkPosition> requestedCenter;
         std::vector<BlockEdit> edits;
@@ -394,6 +398,7 @@ void ChunkStreamer::workerLoop() {
         if (stopping_.load(std::memory_order_relaxed)) return;
         bool editsApplied = false;
         if (!edits.empty() && world.chunkCount() != 0U) {
+            auto editScope = diag::PerfTrace::instance().scope("chunk.worker_edit_batch");
             for (const auto& edit : edits) {
                 const PersistentBlockEdit saved{edit.worldX, edit.y, edit.worldZ, edit.state};
                 const EditPosition position{edit.worldX, edit.y, edit.worldZ};
@@ -411,6 +416,7 @@ void ChunkStreamer::workerLoop() {
             if (stopping_.load(std::memory_order_relaxed)) return;
         }
         if (requestedCenter.has_value()) {
+            auto updateScope = diag::PerfTrace::instance().scope("chunk.worker_update_world");
             currentCenter = *requestedCenter;
             // updateWorld publishes each nearest-first batch as it completes,
             // so poll() sees the player's surroundings while the far edge is
@@ -548,10 +554,15 @@ void ChunkStreamer::remeshAll(World& world, ChunkPosition center, std::uint64_t 
 }
 
 void ChunkStreamer::publish(ChunkStreamBatch batch) {
+    auto publishScope = diag::PerfTrace::instance().scope("chunk.worker_publish");
+    std::size_t completedCount = 0U;
     {
         std::scoped_lock lock{mutex_};
         completed_.push_back(std::move(batch));
+        completedCount = completed_.size();
     }
+    diag::PerfTrace::instance().counter("chunk.completed_queue",
+                                        static_cast<double>(completedCount));
     // Wake any requestSync caller waiting on this delivery.
     completedCv_.notify_all();
 }
@@ -769,6 +780,7 @@ void ChunkStreamer::updateWorld(
     std::uint64_t epoch) {
     // Saved worlds can contain many edits. Index them once per stream batch
     // instead of rescanning the entire save history for every generated chunk.
+    auto reconcileScope = diag::PerfTrace::instance().scope("chunk.worker_reconcile");
     std::unordered_map<ChunkPosition, std::vector<const PersistentBlockEdit*>, ChunkPositionHash>
         editsByChunk;
     editsByChunk.reserve(persistentEdits.size());
@@ -889,8 +901,10 @@ void ChunkStreamer::updateWorld(
                     : std::span<const PersistentBlockEdit*>{},
             });
         }
+        auto generateScope = diag::PerfTrace::instance().scope("chunk.worker_generate");
         auto generated = generateChunksParallel(
             parallelWorkers_, generators, requests, stopping_);
+        generateScope = {};
         for (const auto& result : generated) {
             rememberBorderBlocks(result.borderBlocks);
         }
@@ -932,7 +946,9 @@ void ChunkStreamer::updateWorld(
                               &borderStateUpdates);
         }
 
+        auto lightScope = diag::PerfTrace::instance().scope("chunk.worker_light");
         lightEngine.initializeChunks(world, batchPositions);
+        lightScope = {};
 
         ChunkStreamBatch batch;
         batch.worldEpoch = epoch;
@@ -969,8 +985,10 @@ void ChunkStreamer::updateWorld(
         for (const auto position : dirty) {
             meshRequests.push_back({position, newlySet.contains(position), {}});
         }
+        auto meshScope = diag::PerfTrace::instance().scope("chunk.worker_mesh");
         auto meshUpdates = buildChunkMeshesParallel(
             world, meshRequests, stopping_, *this, parallelWorkers_);
+        meshScope = {};
         for (auto& update : meshUpdates) update.revision = ++nextMeshRevision_;
         batch.sectionUpdates.insert(batch.sectionUpdates.end(),
                                     std::make_move_iterator(meshUpdates.begin()),
@@ -1026,6 +1044,7 @@ ChunkStreamBatch ChunkStreamer::applyBlockEdits(World& world,
                                                 ChunkPosition center,
                                                 std::uint64_t epoch,
                                                 std::vector<BlockEdit> edits) const {
+    auto editBatchScope = diag::PerfTrace::instance().scope("chunk.worker_apply_edits");
     ChunkStreamBatch batch;
     batch.worldEpoch = epoch;
     batch.center = center;

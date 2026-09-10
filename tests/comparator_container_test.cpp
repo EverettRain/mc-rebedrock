@@ -129,5 +129,49 @@ int main() {
         assert(comparatorInputSignal(world, pos, comparator, 7) == 7);
     }
 
+    // --- AR-M4: the composter answers from its own STATE, with no block entity
+    // and no analog-output callback behind it. `ComposterBlock#
+    // getAnalogOutputSignal` returns LEVEL directly, so the signal is the fill
+    // itself (0..8) and not the container formula's 0..15 rescale. ---
+    {
+        using mc::gameplay::redstone::comparatorInputSignal;
+        using mc::gameplay::redstone::stateAnalogOutput;
+        World world = floored();
+        const mc::world::BlockPos pos{8, 1, 8};
+        const BlockState comparator{Block::Comparator, mc::world::BlockOrientation::North};
+        world.setState(pos.x, pos.y, pos.z, comparator);
+
+        // Every level reads back as itself — exact values, because a "rises with
+        // the fill" check would pass the container rescale too, and that is the
+        // wrong answer for a composter (it would read 15 when full, not 8).
+        for (int level = 0; level <= mc::world::kComposterReadyLevel; ++level) {
+            const auto composter =
+                BlockState{Block::Composter}.withComposterLevel(level);
+            world.setState(pos.x, pos.y, pos.z - 1, composter);
+            assert(stateAnalogOutput(composter) == level);
+            assert(comparatorInputSignal(world, pos, comparator, -1) == level);
+        }
+
+        // An EMPTY composter still overrides an ordinary input, exactly as an
+        // empty chest does — that is the difference between "an analog source
+        // reading 0" and "not an analog source", and it is what a plain `max`
+        // gets wrong.
+        world.setState(pos.x, pos.y, pos.z - 1, BlockState{Block::Composter});
+        assert(comparatorInputSignal(world, pos, comparator, -1) == 0);
+
+        // A block that is not an analog source at all leaves the ordinary diode
+        // input alone.
+        world.setState(pos.x, pos.y, pos.z - 1, BlockState{Block::RedstoneBlock});
+        assert(stateAnalogOutput(BlockState{Block::RedstoneBlock}) < 0);
+        assert(comparatorInputSignal(world, pos, comparator, -1) == 15);
+
+        // A container behind it still wins over the state-derived path: the
+        // callback is checked first, so a block that is BOTH would not go
+        // silently to the wrong answer.
+        world.setState(pos.x, pos.y, pos.z - 1,
+                       BlockState{Block::Composter}.withComposterLevel(3));
+        assert(comparatorInputSignal(world, pos, comparator, 11) == 11);
+    }
+
     return 0;
 }

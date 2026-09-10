@@ -16,10 +16,12 @@
 // the render snapshot (Step 5) or the world lock (Step 4).
 
 #include "gameplay/PlayerController.hpp"
+#include "core/PerfTrace.hpp"
 
 #include <algorithm>
 #include <atomic>
 #include <chrono>
+#include <cstdint>
 #include <functional>
 #include <stop_token>
 #include <thread>
@@ -57,6 +59,7 @@ class SimulationDriver final {
         stop();
         thread_ = std::jthread{[this, tick = std::move(tickOnce),
                                 active = std::move(running)](std::stop_token token) {
+            diag::PerfTrace::instance().setThreadName("simulation");
             auto next = std::chrono::steady_clock::now();
             const auto step = std::chrono::duration_cast<std::chrono::steady_clock::duration>(
                 std::chrono::duration<float>{PlayerController::kTickSeconds});
@@ -71,10 +74,22 @@ class SimulationDriver final {
                     publishAlpha();
                     continue;
                 }
+                std::uint64_t traceTickId = 0U;
+                if (diag::PerfTrace::enabled()) {
+                    traceTickId = ++traceTickSequence_;
+                    const double latenessUs =
+                        std::chrono::duration<double, std::micro>(now - next).count();
+                    diag::PerfTrace::instance().counter("simulation.schedule_lateness_us", latenessUs,
+                                                        traceTickId);
+                }
                 // A thread that fell far behind (a stall, a long chunk load)
                 // resynchronises instead of chasing every missed deadline.
                 if (now - next > std::chrono::duration_cast<std::chrono::steady_clock::duration>(
                                       std::chrono::duration<float>{kMaximumBacklogSeconds})) {
+                    if (diag::PerfTrace::enabled()) {
+                        diag::PerfTrace::instance().counter("simulation.backlog_reset", 1.0,
+                                                            traceTickId);
+                    }
                     next = now;
                 }
                 tick();
@@ -132,6 +147,9 @@ class SimulationDriver final {
     float accumulator_ = 0.0F;
     std::atomic<float> alpha_{0.0F};
     std::atomic<std::chrono::steady_clock::rep> lastTick_{0};
+    // Only assigned by the simulation thread, and only while the opt-in trace
+    // is active. It identifies scheduler samples without a process-global id.
+    std::uint64_t traceTickSequence_ = 0U;
     std::jthread thread_;
 };
 

@@ -170,8 +170,8 @@ int main() {
         // A live creature, restored the way loadWorld restores a saved herd.
         const auto* pigType = gameplay::entities::entityTypeRegistry().byId("pig");
         assert(pigType != nullptr);
-        runtime.gameSession().worldEntities().restore({24.0F, 83.0F, 24.0F}, *pigType, 0.0F,
-                                                      {0.0F, 0.0F, 0.0F}, 10.0F, 0, 0, 12345U);
+        runtime.gameSession().worldEntities().restore({24.0F, 83.0F, 24.0F}, *pigType,
+            gameplay::EntitySystem::RestoreState{.yaw = 0.0F, .velocity = {0.0F, 0.0F, 0.0F}, .health = 10.0F, .angerTicks = 0, .ageTicks = 0, .rngState = 12345U});
 
         // Flush the queued world-edit events to the host (under the write
         // section, the same discipline the renderer's drain pass keeps).
@@ -686,12 +686,12 @@ int main() {
         // reproduce, and one in chunk (2,2) that must survive the unload.
         const auto* pigType = gameplay::entities::entityTypeRegistry().byId("pig");
         assert(pigType != nullptr);
-        runtime.gameSession().worldEntities().restore({24.0F, 83.0F, 24.0F}, *pigType, 0.5F,
-                                                      {0.1F, 0.0F, 0.0F}, 7.5F, 3, 42, 0xABABU);
+        runtime.gameSession().worldEntities().restore({24.0F, 83.0F, 24.0F}, *pigType,
+            gameplay::EntitySystem::RestoreState{.yaw = 0.5F, .velocity = {0.1F, 0.0F, 0.0F}, .health = 7.5F, .angerTicks = 3, .ageTicks = 42, .rngState = 0xABABU});
         const auto* zombieType = gameplay::entities::entityTypeRegistry().byId("zombie");
         assert(zombieType != nullptr);
-        runtime.gameSession().worldEntities().restore({40.0F, 64.0F, 40.0F}, *zombieType, 0.0F,
-                                                      {0.0F, 0.0F, 0.0F}, 20.0F, 0, 0, 0U);
+        runtime.gameSession().worldEntities().restore({40.0F, 64.0F, 40.0F}, *zombieType,
+            gameplay::EntitySystem::RestoreState{.yaw = 0.0F, .velocity = {0.0F, 0.0F, 0.0F}, .health = 20.0F, .angerTicks = 0, .ageTicks = 0, .rngState = 0U});
         {
             const auto drainWrite = runtime.lock().write();
             static_cast<void>(runtime.gameSession().drainEvents());
@@ -1025,12 +1025,12 @@ int main() {
             }
             return count;
         };
-        runtime.gameSession().worldEntities().restore({10.0F, 64.0F, 0.0F}, *pigType, 0.0F,
-                                                      {0.0F, 0.0F, 0.0F}, 10.0F, 0, 0, 1U);
-        runtime.gameSession().worldEntities().restore({12.0F, 64.0F, 0.0F}, *pigType, 0.0F,
-                                                      {0.0F, 0.0F, 0.0F}, 10.0F, 0, 0, 2U);
-        runtime.gameSession().worldEntities().restore({14.0F, 64.0F, 0.0F}, *zombieType, 0.0F,
-                                                      {0.0F, 0.0F, 0.0F}, 20.0F, 0, 0, 3U);
+        runtime.gameSession().worldEntities().restore({10.0F, 64.0F, 0.0F}, *pigType,
+            gameplay::EntitySystem::RestoreState{.yaw = 0.0F, .velocity = {0.0F, 0.0F, 0.0F}, .health = 10.0F, .angerTicks = 0, .ageTicks = 0, .rngState = 1U});
+        runtime.gameSession().worldEntities().restore({12.0F, 64.0F, 0.0F}, *pigType,
+            gameplay::EntitySystem::RestoreState{.yaw = 0.0F, .velocity = {0.0F, 0.0F, 0.0F}, .health = 10.0F, .angerTicks = 0, .ageTicks = 0, .rngState = 2U});
+        runtime.gameSession().worldEntities().restore({14.0F, 64.0F, 0.0F}, *zombieType,
+            gameplay::EntitySystem::RestoreState{.yaw = 0.0F, .velocity = {0.0F, 0.0F, 0.0F}, .health = 20.0F, .angerTicks = 0, .ageTicks = 0, .rngState = 3U});
         assert(liveOf("pig") == 2U && liveOf("zombie") == 1U);
 
         // type= restricts the kill to the species — the zombie dies, pigs survive.
@@ -1313,14 +1313,14 @@ int main() {
         const auto* pigType = gameplay::entities::entityTypeRegistry().byId("pig");
         const auto* zombieType = gameplay::entities::entityTypeRegistry().byId("zombie");
         assert(pigType != nullptr && zombieType != nullptr);
-        runtime.gameSession().worldEntities().restore({20.0F, 90.0F, 20.0F}, *pigType, 0.0F,
-                                                      {0.0F, 0.0F, 0.0F}, 10.0F, 0, 0, 1U);
-        runtime.gameSession().worldEntities().restore({21.0F, 90.0F, 21.0F}, *pigType, 0.0F,
-                                                      {0.0F, 0.0F, 0.0F}, 10.0F, 0, 0, 2U);
-        runtime.gameSession().worldEntities().restore({22.0F, 90.0F, 22.0F}, *pigType, 0.0F,
-                                                      {0.0F, 0.0F, 0.0F}, 10.0F, 0, 0, 3U);
-        runtime.gameSession().worldEntities().restore({24.0F, 90.0F, 24.0F}, *zombieType, 0.0F,
-                                                      {0.0F, 0.0F, 0.0F}, 20.0F, 0, 0, 4U);
+        runtime.gameSession().worldEntities().restore({20.0F, 90.0F, 20.0F}, *pigType,
+            gameplay::EntitySystem::RestoreState{.yaw = 0.0F, .velocity = {0.0F, 0.0F, 0.0F}, .health = 10.0F, .angerTicks = 0, .ageTicks = 0, .rngState = 1U});
+        runtime.gameSession().worldEntities().restore({21.0F, 90.0F, 21.0F}, *pigType,
+            gameplay::EntitySystem::RestoreState{.yaw = 0.0F, .velocity = {0.0F, 0.0F, 0.0F}, .health = 10.0F, .angerTicks = 0, .ageTicks = 0, .rngState = 2U});
+        runtime.gameSession().worldEntities().restore({22.0F, 90.0F, 22.0F}, *pigType,
+            gameplay::EntitySystem::RestoreState{.yaw = 0.0F, .velocity = {0.0F, 0.0F, 0.0F}, .health = 10.0F, .angerTicks = 0, .ageTicks = 0, .rngState = 3U});
+        runtime.gameSession().worldEntities().restore({24.0F, 90.0F, 24.0F}, *zombieType,
+            gameplay::EntitySystem::RestoreState{.yaw = 0.0F, .velocity = {0.0F, 0.0F, 0.0F}, .health = 20.0F, .angerTicks = 0, .ageTicks = 0, .rngState = 4U});
         assert(liveOf("pig") == 3U && liveOf("zombie") == 1U);
 
         // as: each pig becomes @s in turn, so `kill @s` kills every pig (not the
@@ -1699,6 +1699,86 @@ int main() {
         const auto allowed = runtime.takeChatResult();
         assert(allowed.has_value() && allowed->success);
         runtime.stopSimulation();
+    }
+
+    // AR-A2 / AR-M5 / AR-M6: the per-species state survives a real save/reopen,
+    // through GameRuntime's OWN conversion (toPersistentEntity / toRestoreState)
+    // rather than the save format alone.
+    //
+    // The two are separate failure surfaces and both have to be checked: the
+    // save layer can round-trip a field perfectly while the conversion that
+    // fills it never sets it — a field written by nobody reads back as its
+    // default, and every assertion in the save-format test still passes. This
+    // is exactly how the trade snapshot shipped a codec nothing exercised.
+    {
+        world::ChunkStreamer streamer{0U, 4, 4};
+        RecordingHost host;
+        runtime::GameRuntime runtime{host, streamer, saveRoot};
+        host.save = &runtime.currentSaveSlot();
+        auto save = runtime.createWorld("VillagerReopen", 77U, gameplay::GameMode::Survival);
+        const auto identifier = save.summary.identifier;
+        runtime.loadWorld(std::move(save), 4);
+
+        const auto* villagerType = gameplay::entities::entityTypeRegistry().byId("villager");
+        const auto* sheepType = gameplay::entities::entityTypeRegistry().byId("sheep");
+        assert(villagerType != nullptr && sheepType != nullptr);
+        runtime.gameSession().worldEntities().spawn({24.0F, 80.0F, 24.0F}, *villagerType, 5U);
+        runtime.gameSession().worldEntities().spawn({25.0F, 80.0F, 24.0F}, *sheepType, 6U);
+        auto& live = runtime.gameSession().worldEntities();
+        const std::uint64_t villagerId = live.entities()[0].id;
+        const std::uint64_t sheepId = live.entities()[1].id;
+        {
+            auto* villager = live.byId(villagerId);
+            villager->villagerProfession = gameplay::entities::VillagerProfession::Farmer;
+            villager->villagerLevel = 3U;
+            villager->villagerTradeXp = 91;
+            villager->jobSite = {23, 79, 25};
+            villager->hasJobSite = true;
+            villager->villagerCarryItem = &gameplay::items::Potato;
+            villager->villagerCarryCount = 6U;
+            villager->villagerOfferUses[0] = 9U;
+            villager->villagerOfferUses[4] = 2U;
+            live.byId(sheepId)->sheared = true;
+        }
+        runtime.save();
+        runtime.stopSimulation();
+
+        world::ChunkStreamer streamer2{0U, 4, 4};
+        RecordingHost host2;
+        runtime::GameRuntime runtime2{host2, streamer2, saveRoot};
+        host2.save = &runtime2.currentSaveSlot();
+        auto reopened = runtime2.saveRepository().load(identifier);
+        runtime2.loadWorld(std::move(reopened), 4);
+
+        const gameplay::SimpleEntity* villagerBack = nullptr;
+        const gameplay::SimpleEntity* sheepBack = nullptr;
+        for (const auto& entity : runtime2.gameSession().worldEntities().entities()) {
+            if (entity.type->id().matches("villager")) villagerBack = &entity;
+            if (entity.type->id().matches("sheep")) sheepBack = &entity;
+        }
+        assert(villagerBack != nullptr && sheepBack != nullptr);
+        // The farmer reopened a farmer, at its level, with its job site, its
+        // carry and its use counts — before this it came back an unemployed
+        // novice and every offer was restocked by restarting the game.
+        assert(villagerBack->villagerProfession ==
+               gameplay::entities::VillagerProfession::Farmer);
+        assert(villagerBack->villagerLevel == 3U);
+        assert(villagerBack->villagerTradeXp == 91);
+        assert(villagerBack->hasJobSite);
+        assert(villagerBack->jobSite == glm::ivec3(23, 79, 25));
+        assert(villagerBack->villagerCarryItem == &gameplay::items::Potato);
+        assert(villagerBack->villagerCarryCount == 6U);
+        assert(villagerBack->villagerOfferUses[0] == 9U);
+        assert(villagerBack->villagerOfferUses[4] == 2U);
+        // And the sheared sheep is still shorn — wool used to grow back on
+        // every reload.
+        assert(sheepBack->sheared);
+        // The villager fields idle at their defaults on a creature that is not
+        // one: the restore path gates them on the species, so a stray record
+        // cannot make a sheep a master farmer.
+        assert(sheepBack->villagerProfession == gameplay::entities::VillagerProfession::None);
+        assert(sheepBack->villagerLevel == 1U);
+        runtime2.stopSimulation();
     }
 
     std::filesystem::remove_all(saveRoot);

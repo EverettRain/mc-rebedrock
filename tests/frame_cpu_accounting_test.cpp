@@ -100,7 +100,7 @@ void testBeforeDrawStartsAtIterationStart(const std::string& source) {
     // drawStart 必须就是 drawFrame() 的调用前一刻——中间不许插别的工作
     const std::string_view block =
         sliceFrom(source, "const auto drawStart = std::chrono::steady_clock::now();",
-                  "static_cast<void>(drawFrame());");
+                  "static_cast<void>(drawFrame(perfFrameId));");
     check(!block.empty(), "找得到 drawStart 到 drawFrame 之间那一段");
     check(block.find("frameCpuStart") != std::string_view::npos,
           "那一段里累加 beforeDrawMs，用的是 frameCpuStart");
@@ -113,7 +113,7 @@ void testBeforeDrawStartsAtIterationStart(const std::string& source) {
 
 // ---- 3. afterDrawMs 的起点在 drawFrame 返回之后 ----------------------------
 void testAfterDrawStartsWhenDrawFrameReturns(const std::string& source) {
-    const std::string_view block = sliceFrom(source, "static_cast<void>(drawFrame());",
+    const std::string_view block = sliceFrom(source, "static_cast<void>(drawFrame(perfFrameId));",
                                              "++renderedFrames;");
     check(!block.empty(), "找得到 drawFrame 之后那一段");
     check(block.find("afterDrawStart = std::chrono::steady_clock::now();") !=
@@ -128,6 +128,28 @@ void testAfterDrawStartsWhenDrawFrameReturns(const std::string& source) {
     // 而一个未初始化的时间点会让 afterDrawMs 变成垃圾。
     check(source.find("auto afterDrawStart = frameCpuStart;") != std::string::npos,
           "afterDrawStart 初值是 frameCpuStart，不是默认构造的时间点");
+}
+
+// ---- 5. 新 trace 的帧边界是本帧开始到下一帧开始 ----------------------------
+//
+// 这两条 span 不能从 frameCpuStart 起：它会漏掉本轮尾部的 pacing、存档加载钩子及
+// smoke 脚本。frame.work 则必须在 limiter 前收口，才能把工作时间与限帧等待分开。
+void testPerfFrameBoundaryAndWorkCut(const std::string& source) {
+    check(source.find("const auto frameBoundary = diag::PerfTrace::Clock::now();") !=
+              std::string::npos,
+          "PerfTrace 在循环开头取唯一 frameBoundary");
+    check(source.find("recordSpan(\"frame.wall\", *previousFrameStart,\n"
+                      "                                                        frameBoundary, perfFrameId)") !=
+              std::string::npos,
+          "frame.wall 是前一次起点到本次起点的闭合墙钟 span");
+    check(source.find("recordSpan(\"frame.work\", *previousFrameStart,\n"
+                      "                                                            *previousFrameWorkEnd, perfFrameId)") !=
+              std::string::npos,
+          "frame.work 使用同一帧起点并在 work 结束处收口");
+    const auto workEnd = source.find("previousFrameWorkEnd = diag::PerfTrace::Clock::now();");
+    const auto pacing = source.find("scope(\"frame_pacing\", perfFrameId)");
+    check(workEnd != std::string::npos && pacing != std::string::npos && workEnd < pacing,
+          "frame.work 在 frame_pacing 之前收口，limiter 只计入 frame.wall 与 pacing span");
 }
 
 // ---- 4. 四项都进报告，且 unaccMs 是那条恒等式的余项 -------------------------
@@ -164,6 +186,7 @@ int main() {
         testBeforeDrawStartsAtIterationStart(source);
         testAfterDrawStartsWhenDrawFrameReturns(source);
         testReportCarriesAllFourAndTheIdentity(source);
+        testPerfFrameBoundaryAndWorkCut(source);
     }
     if (failures != 0) {
         std::cerr << failures << " check(s) failed\n";
