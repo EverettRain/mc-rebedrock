@@ -3220,13 +3220,21 @@ class HudRenderer final {
     void drawWorkContainer(VkCommandBuffer commandBuffer, VkDescriptorSet descriptorSet,
                            const ui::HudLayout& layout) const {
         // 底衬由 drawHud 一处按档位表画（容器类走 Transparent 那一档），这里不再自己铺
-        // AR-M6：交易屏的版面是 276x166 而不是这里的 176x166，它自己的面板贴图
-        // （vanilla 的 container/villager.png，512x256）也还没有进 GUI 图集——
-        // 那张图集要求所有层同尺寸，加它是渲染侧的一节。面板层号为负就表示
-        // 「这一屏还没有底图」，于是底衬跳过，其余（槽位、悬停、光标层）照常。
         const bool trading = containerKind() == ui::ContainerPageKind::Trading;
         const auto panel = trading ? layout.tradingPanel() : layout.inventoryPanel();
-        if (const float panelLayer = containerPanelLayer(containerKind()); panelLayer >= 0.0F) {
+        const float panelLayer = containerPanelLayer(containerKind());
+        if (trading) {
+            // MERCH-1：交易屏的面板是 276x166，塞不进 256 宽的图集层，所以按
+            // `tradingPanelPieces()` 拆成三块画。拆法与烘焙侧共用那一个纯函数
+            // （那里有 static_assert 钉住"不重叠、不留缝、放得下"）。
+            const float scale = layout.scale();
+            for (const auto& piece : tradingPanelPieces()) {
+                drawGuiSprite(commandBuffer,
+                              {panel.x + piece.offsetX * scale, panel.y + piece.offsetY * scale,
+                               piece.source.width * scale, piece.source.height * scale},
+                              panelLayer, piece.source);
+            }
+        } else {
             drawGuiSprite(commandBuffer, panel, panelLayer, {0.0F, 0.0F, 176.0F, 166.0F});
         }
         const auto hoveredClue = drawWorkContainerChrome(commandBuffer, layout, panel);

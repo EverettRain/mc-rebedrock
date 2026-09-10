@@ -58,7 +58,56 @@ inline constexpr float kAnvilGuiLayer = 15.0F;
 // 负值是**约定**而不是随手取的数：`drawWorkContainer` 见到负层号就跳过底图，
 // 于是这一屏的槽位、悬停与光标层照常工作，只是没有背景。前端把贴图接进图集后，
 // 把这里换成真的层号，绘制侧那个判断自然失效。
-inline constexpr float kTradingGuiLayer = -1.0F;
+inline constexpr float kTradingGuiLayer = 22.0F;
+
+// MERCH-1：交易屏的面板是 **276x166**（26.1 `MerchantScreen:57`
+// `super(menu, inventory, title, 276, 166)`，从 512x256 的 `container/villager.png`
+// 左上角一次 blit 出来）。
+//
+// ★ **276 > 256**，它塞不进任何一个 GUI 图集层——这不是"把图集扩宽"能绕过去的，
+//   必须拆成几块画。拆法是：左边 256x166 整块，右边剩下的 20x166 竖着劈成两半
+//   （83 + 83），塞进同一层下方那条 90 高的空带。**一层三块**，而不是两层两块：
+//   加层要同步改三处，能少加一层就少加一层。
+//
+// ★ 这段算术抽成纯函数而不是写在绘制侧，理由与 `iconButtonIconRect` 同：
+//   拼错了**不改变任何别的返回值**，画出来只是面板右边少一条或错位一条，
+//   而无头测试进不了 Vulkan 头。放在这里，"三块拼回去正好是 276x166"才有地方断言。
+inline constexpr int kTradingPanelWidth = 276;
+inline constexpr int kTradingPanelHeight = 166;
+// 左边那块的宽度就是图集层的边长；右边剩下的部分劈成上下两半。
+inline constexpr int kTradingPanelLeftWidth = 256;
+inline constexpr int kTradingPanelRightWidth = kTradingPanelWidth - kTradingPanelLeftWidth;
+inline constexpr int kTradingPanelRightHalfHeight = kTradingPanelHeight / 2;
+
+// 一块：`source` 是它在图集层里的像素矩形，`offsetX/offsetY` 是它在面板里的落点。
+struct TradingPanelPiece final {
+    ui::UiRect source{};
+    float offsetX = 0.0F;
+    float offsetY = 0.0F;
+};
+
+// 面板拆成的三块，次序与烘焙侧一致。
+[[nodiscard]] constexpr std::array<TradingPanelPiece, 3> tradingPanelPieces() {
+    const auto left = static_cast<float>(kTradingPanelLeftWidth);
+    const auto right = static_cast<float>(kTradingPanelRightWidth);
+    const auto half = static_cast<float>(kTradingPanelRightHalfHeight);
+    const auto full = static_cast<float>(kTradingPanelHeight);
+    return {{
+        {{0.0F, 0.0F, left, full}, 0.0F, 0.0F},
+        {{0.0F, full, right, half}, left, 0.0F},
+        {{right, full, right, half}, left, half},
+    }};
+}
+
+// ★ 三块拼回去必须**正好**是 276x166：不重叠、不留缝、不超出 256x256 的层。
+//   这三条是拼图唯一会出错的地方，钉在编译期。
+static_assert(kTradingPanelRightHalfHeight * 2 == kTradingPanelHeight,
+              "面板右侧那条要能被劈成等高的两半");
+static_assert(kTradingPanelLeftWidth + kTradingPanelRightWidth == kTradingPanelWidth,
+              "左右两块加起来要正好是面板宽");
+static_assert(kTradingPanelHeight + kTradingPanelRightHalfHeight <= 256,
+              "右侧两半要塞得进左块下方那条空带");
+static_assert(kTradingPanelRightWidth * 2 <= 256, "右侧两半并排要放得下");
 
 // UI-9：四张页签精灵所在的层（`TextureManager` 的 images 数组最后一格）。
 // ★ 它们各 130x24，竖排要 96 高，`widgets` 那一层放不下——这是本作少数几次
