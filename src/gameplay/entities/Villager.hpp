@@ -23,6 +23,7 @@
 #include <array>
 #include <cstdint>
 #include <span>
+#include <string_view>
 
 namespace mc::gameplay::entities {
 
@@ -62,6 +63,16 @@ enum class VillagerProfession : std::uint8_t {
     case VillagerProfession::None: break;
     }
     return "none";
+}
+
+// The inverse, for the save reader. A name this build has no profession for
+// reads back as unemployed rather than refusing the world — the same "skip what
+// you do not know" rule the block and effect palettes follow. Storing the name
+// (never the enum ordinal) is what lets a future profession be inserted without
+// renumbering the ones a saved world already carries.
+[[nodiscard]] constexpr VillagerProfession professionFromName(std::string_view name) {
+    if (name == "farmer") return VillagerProfession::Farmer;
+    return VillagerProfession::None;
 }
 
 // How much a farmer carries back to its composter before it stops reaping.
