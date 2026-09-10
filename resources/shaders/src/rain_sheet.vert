@@ -5,15 +5,7 @@
 // 64x256 environment/rain.png repeats every four blocks and scrolls downward;
 // it is not a water tile stretched over a camera-facing square.
 
-layout(binding = 0) uniform CameraUniform {
-    mat4 model;
-    mat4 view;
-    mat4 projection;
-    vec4 cameraPosition;
-    vec4 sunDirection;
-    vec4 horizonFog;
-    vec4 renderSettings;
-} camera;
+#include "include/camera_uniform.glsl"
 
 // CPU 侧对应 render/vulkan/GpuSceneBuffer.hpp 的 RainColumnRecord，字段名逐一对应
 // 该结构与 ParticleRecord 共用同一个 48 字节槽位，布局由那边的 static_assert 钉住

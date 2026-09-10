@@ -1,14 +1,6 @@
 #version 450
 
-layout(binding = 0) uniform CameraUniform {
-    mat4 model;
-    mat4 view;
-    mat4 projection;
-    vec4 cameraPosition;
-    vec4 sunDirection;
-    vec4 horizonFog;
-    vec4 renderSettings;
-} camera;
+#include "include/camera_uniform.glsl"
 
 layout(location = 0) out vec3 worldDirection;
 layout(location = 1) out vec2 screenNdc;

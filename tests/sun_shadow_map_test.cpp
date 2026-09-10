@@ -806,11 +806,18 @@ void checkShaderSourceGuards() {
                                     "hand-copied tap");
         REQUIRE(source.find("0.002") == std::string::npos,
                 std::string{name} + " still carries the old constant 0.002 depth bias");
-        // RN-35：UBO 里的光源矩阵是**两个**。三个 .frag 与 item_entity.vert 的声明必须
-        // 逐字节一致——漏一处就是一次静默的 std140 错位，而 block_cutout.frag 的抬头
-        // 记着上一次同样的事故（lightViewProj 早了 64 字节）
-        REQUIRE(source.find("mat4 lightViewProj[2];") != std::string::npos,
-                std::string{name} + " must declare the cascade light matrices as an array of two");
+        // RN-35：UBO 里的光源矩阵是**两个**。这里从前要求每个 .frag 自己声明
+        // `mat4 lightViewProj[2];`，理由是「三处声明必须逐字节一致，漏一处就是一次
+        // 静默的 std140 错位」（block_cutout.frag 的抬头记着那次事故）。
+        //
+        // ★ RN-20f-0b 把那个问题**从根上消除了**：整个 UBO 只剩一份声明
+        // （`include/camera_uniform.glsl`），13 个着色器 include 它。所以这条断言
+        // 跟着升级——钉的不再是「每一份都写对了」，而是「不存在第二份」。
+        // 那一份与 C++ struct 的逐字段对齐由 camera_uniform_contract_test 守着。
+        REQUIRE(source.find("#include \"include/camera_uniform.glsl\"") != std::string::npos,
+                std::string{name} + " must take the camera UBO from the single shared contract");
+        REQUIRE(source.find("uniform CameraUniform {") == std::string::npos,
+                std::string{name} + " must not hand-copy the block again");
     }
 
     const std::string include = stripLineComments(readFile(shaderDir / "include/sun_shadow.glsl"));

@@ -22,32 +22,7 @@ layout(location = 13) flat in float fragmentThinPlane;
 
 layout(location = 0) out vec4 outColor;
 
-layout(binding = 0) uniform CameraUniform {
-    mat4 model;
-    mat4 view;
-    mat4 projection;
-    vec4 cameraPosition;
-    vec4 sunDirection;
-    vec4 horizonFog;
-    vec4 renderSettings;
-    vec4 pointLights[8];
-    vec4 lightColors[8];
-    // x = 点光源数量, y = 平滑光照开关, z = 保留位（恒 0，见 RN-19b）, w = 阴影图有效
-    vec4 lightingSettings;
-    vec4 celestialLayers;
-    vec4 weatherSettings;
-    vec4 fluidAnimationLayers;
-    vec4 fluidAnimationFrameCounts;
-    vec4 fluidAnimationFrameTimes;
-    vec4 fluidAnimationSettings;
-    // RN-35：级联的两个光源矩阵（0 = 近段 16 格框，1 = 远段 128 格框）。
-    // 数组而不是两个具名字段：std140 下 mat4 数组的元素间距就是 64 字节，
-    // 与两个相邻的 mat4 逐字节相同，而数组让「加一级」是改一个数字
-    mat4 lightViewProj[2];
-    // RN-4b: appended after lightViewProj so earlier offsets are unchanged.
-    vec4 blockAnimationSettings;      // x = active animation count
-    vec4 blockAnimations[16];         // x=base layer, y=frame count, z=frame time
-} camera;
+#include "include/camera_uniform.glsl"
 
 layout(binding = 1) uniform sampler2DArray blockTextures;
 // The sun shadow depth map written by the pre-pass (binding 8). lightingSettings.w

@@ -1,14 +1,6 @@
 #version 450
 
-layout(binding = 0) uniform CameraUniform {
-    mat4 model;
-    mat4 view;
-    mat4 projection;
-    vec4 cameraPosition;
-    vec4 sunDirection;
-    vec4 horizonFog;
-    vec4 renderSettings;
-} camera;
+#include "include/camera_uniform.glsl"
 
 // Kept in lockstep with `struct OutlinePush` in src/render/vulkan/HudTypes.hpp by
 // hud_push_constant_test, and filled only by makeOutlineSegmentPush.

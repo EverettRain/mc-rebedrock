@@ -15,20 +15,7 @@ layout(location = 0) out vec4 outColor;
 // The full camera block: the tail (point lights, lighting settings) is the same
 // buffer grass_block.frag reads, so particles can use the terrain's lighting
 // terms verbatim.
-layout(binding = 0) uniform CameraUniform {
-    mat4 model;
-    mat4 view;
-    mat4 projection;
-    vec4 cameraPosition;
-    vec4 sunDirection;
-    vec4 horizonFog;
-    vec4 renderSettings;
-    vec4 pointLights[8];
-    vec4 lightColors[8];
-    vec4 lightingSettings;
-    vec4 celestialLayers;
-    vec4 weatherSettings;
-} camera;
+#include "include/camera_uniform.glsl"
 
 layout(binding = 1) uniform sampler2DArray blockTextures;
 

@@ -1,14 +1,6 @@
 #version 450
 
-layout(binding = 0) uniform CameraUniform {
-    mat4 model;
-    mat4 view;
-    mat4 projection;
-    vec4 cameraPosition;
-    vec4 sunDirection;
-    vec4 horizonFog;
-    vec4 renderSettings;
-} camera;
+#include "include/camera_uniform.glsl"
 
 // The per-particle records written by the CPU each frame. A single unsized
 // array of a std430 struct mirrors ParticleRecord in GpuSceneBuffer.hpp (three

@@ -5,18 +5,7 @@
 // the depth test against the terrain already drawn this frame. A nonzero count
 // means part of the section is in front of the scene, so it stays visible;
 // a zero count means the section is buried and its mesh can be culled.
-layout(binding = 0) uniform CameraUniform {
-    mat4 model;
-    mat4 view;
-    mat4 projection;
-    vec4 cameraPosition;
-    vec4 sunDirection;
-    vec4 horizonFog;
-    vec4 renderSettings;
-    vec4 pointLights[8];
-    vec4 lightColors[8];
-    vec4 lightingSettings;
-} camera;
+#include "include/camera_uniform.glsl"
 
 layout(push_constant) uniform PushConstants {
     vec4 aabbMinimum;

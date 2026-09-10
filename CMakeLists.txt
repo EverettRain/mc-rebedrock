@@ -685,10 +685,17 @@ if(MC_REBEDROCK_STAGE_RUNTIME AND GLSLC_EXECUTABLE)
     # pipeline-creation crash once already. Every one of these MUST be listed in
     # DEPENDS below — glslc will not tell CMake what it included, so an unlisted
     # header edits without rebuilding anything.
+    # RN-20f-0b: shadow_map.glsl and vertex_normals.glsl were missing here — editing
+    # either rebuilt nothing, which is exactly the failure the comment above warns
+    # about. shader_include_deps_test now walks include/ and fails if a header is not
+    # listed, so the list cannot silently fall behind again.
     set(MC_REBEDROCK_SHADER_INCLUDES
+        "${MC_REBEDROCK_SHADER_SOURCE_DIR}/include/camera_uniform.glsl"
         "${MC_REBEDROCK_SHADER_SOURCE_DIR}/include/lightmap.glsl"
+        "${MC_REBEDROCK_SHADER_SOURCE_DIR}/include/shadow_map.glsl"
         "${MC_REBEDROCK_SHADER_SOURCE_DIR}/include/sun_shadow.glsl"
         "${MC_REBEDROCK_SHADER_SOURCE_DIR}/include/sun_shadow_bias.glsl"
+        "${MC_REBEDROCK_SHADER_SOURCE_DIR}/include/vertex_normals.glsl"
     )
 
     foreach(shader IN LISTS MC_REBEDROCK_SHADER_SOURCES)
@@ -2495,6 +2502,17 @@ if(BUILD_TESTING)
         "MC_REBEDROCK_SOURCE_DIR=\"${CMAKE_CURRENT_SOURCE_DIR}\""
         "MC_REBEDROCK_SHADER_SRC_DIR=\"${CMAKE_CURRENT_SOURCE_DIR}/resources/shaders/src\"")
     add_test(NAME shader_pack COMMAND mc_rebedrock_shader_pack_test)
+
+    # RN-20f-0b: the camera UBO contract. The C++ struct and the single GLSL declaration
+    # have no compile-time link, so this compares the two field sequences directly —
+    # and walks include/ to catch a header missing from the DEPENDS list above.
+    add_executable(mc_rebedrock_camera_uniform_contract_test
+        tests/camera_uniform_contract_test.cpp
+    )
+    target_compile_definitions(mc_rebedrock_camera_uniform_contract_test PRIVATE
+        "MC_REBEDROCK_SOURCE_DIR=\"${CMAKE_CURRENT_SOURCE_DIR}\""
+        "MC_REBEDROCK_SHADER_SRC_DIR=\"${CMAKE_CURRENT_SOURCE_DIR}/resources/shaders/src\"")
+    add_test(NAME camera_uniform_contract COMMAND mc_rebedrock_camera_uniform_contract_test)
 
     # 一个 GpuMesh 拥有几条缓冲，只有一张表。释放路径有两条（运行期归还池、退出期销毁），
     # 各自手抄成员名就会漏——RN-22 添第三条缓冲时漏了退出期那条，症状是含半透明的场景

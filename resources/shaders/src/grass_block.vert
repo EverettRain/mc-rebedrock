@@ -1,17 +1,6 @@
 #version 450
 
-layout(binding = 0) uniform CameraUniform {
-    mat4 model;
-    mat4 view;
-    mat4 projection;
-    vec4 cameraPosition;
-    vec4 sunDirection;
-    vec4 horizonFog;
-    vec4 renderSettings;
-    vec4 pointLights[8];
-    vec4 lightColors[8];
-    vec4 lightingSettings;
-} camera;
+#include "include/camera_uniform.glsl"
 
 // PackedVoxelVertex: 20 bytes, five 4-byte-aligned integer attributes.
 // Positions are local to the section; the section origin arrives per-draw in a

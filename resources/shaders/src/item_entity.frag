@@ -27,28 +27,7 @@ layout(location = 0) out vec4 outColor;
 // The full camera block: the tail (point lights, lighting settings) is the same
 // buffer grass_block.frag reads, so lit entities can use the terrain's lighting
 // terms verbatim.
-layout(binding = 0) uniform CameraUniform {
-    mat4 model;
-    mat4 view;
-    mat4 projection;
-    vec4 cameraPosition;
-    vec4 sunDirection;
-    vec4 horizonFog;
-    vec4 renderSettings;
-    vec4 pointLights[8];
-    vec4 lightColors[8];
-    vec4 lightingSettings;
-    vec4 celestialLayers;
-    vec4 weatherSettings;
-    vec4 fluidAnimationLayers;
-    vec4 fluidAnimationFrameCounts;
-    vec4 fluidAnimationFrameTimes;
-    vec4 fluidAnimationSettings;
-    // RN-35：级联的两个光源矩阵（0 = 近段 16 格框，1 = 远段 128 格框）。
-    // 数组而不是两个具名字段：std140 下 mat4 数组的元素间距就是 64 字节，
-    // 与两个相邻的 mat4 逐字节相同，而数组让「加一级」是改一个数字
-    mat4 lightViewProj[2];
-} camera;
+#include "include/camera_uniform.glsl"
 
 layout(binding = 1) uniform sampler2DArray blockTextures;
 // Dedicated entity/creature skins, box-UV mapped (one layer per species).

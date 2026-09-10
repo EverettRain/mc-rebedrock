@@ -4,20 +4,7 @@ layout(location = 0) in vec3 worldDirection;
 layout(location = 1) in vec2 screenNdc;
 layout(location = 0) out vec4 outColor;
 
-layout(binding = 0) uniform CameraUniform {
-    mat4 model;
-    mat4 view;
-    mat4 projection;
-    vec4 cameraPosition;
-    vec4 sunDirection;
-    vec4 horizonFog;
-    vec4 renderSettings;
-    vec4 pointLights[8];
-    vec4 lightColors[8];
-    vec4 lightingSettings;
-    vec4 celestialLayers; // x = sun atlas layer, y = first moon-phase atlas layer
-    vec4 weatherSettings; // rain, thunder, visual sky-light factor, celestial visibility
-} camera;
+#include "include/camera_uniform.glsl"
 
 layout(binding = 1) uniform sampler2DArray blockTextures;
 

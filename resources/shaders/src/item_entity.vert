@@ -1,25 +1,6 @@
 #version 450
 
-layout(binding = 0) uniform CameraUniform {
-    mat4 model;
-    mat4 view;
-    mat4 projection;
-    vec4 cameraPosition;
-    vec4 sunDirection;
-    vec4 horizonFog;
-    vec4 renderSettings;
-    vec4 pointLights[8];
-    vec4 lightColors[8];
-    vec4 lightingSettings;
-    vec4 celestialLayers;
-    vec4 weatherSettings;
-    vec4 fluidAnimationLayers;
-    vec4 fluidAnimationFrameCounts;
-    vec4 fluidAnimationFrameTimes;
-    vec4 fluidAnimationSettings;
-    // RN-35：级联的两个光源矩阵。声明必须与三个 .frag 逐字节一致（std140）
-    mat4 lightViewProj[2];
-} camera;
+#include "include/camera_uniform.glsl"
 
 // 同一份几何程序，两条管线只在最终投影上分歧。
 // RN-35：级联之后这一档从 bool 变 int——阴影那一趟要按级别选矩阵，而 ItemPush 正好

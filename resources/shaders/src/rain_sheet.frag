@@ -6,20 +6,7 @@
 // per precipitation column, matching the lightmap treatment of the vanilla
 // renderer without changing any world light value.
 
-layout(binding = 0) uniform CameraUniform {
-    mat4 model;
-    mat4 view;
-    mat4 projection;
-    vec4 cameraPosition;
-    vec4 sunDirection;
-    vec4 horizonFog;
-    vec4 renderSettings;
-    vec4 pointLights[8];
-    vec4 lightColors[8];
-    vec4 lightingSettings;
-    vec4 celestialLayers;
-    vec4 weatherSettings;
-} camera;
+#include "include/camera_uniform.glsl"
 
 layout(binding = 9) uniform sampler2D rainTexture;
 
