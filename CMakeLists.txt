@@ -1872,6 +1872,15 @@ if(BUILD_TESTING)
         MC_REBEDROCK_RENDERER_SRC="${CMAKE_CURRENT_SOURCE_DIR}/src/render/vulkan/VulkanRenderer.cpp")
     add_test(NAME world_list_row COMMAND mc_rebedrock_world_list_row_test)
 
+    # MERCH-1：交易屏一行交易的几何、面板三块的拆法、八张小精灵的落位。
+    add_executable(mc_rebedrock_trade_row_test
+        tests/trade_row_test.cpp
+        src/ui/HudLayout.cpp
+    )
+    target_include_directories(mc_rebedrock_trade_row_test PRIVATE src)
+    target_link_libraries(mc_rebedrock_trade_row_test PRIVATE glm::glm)
+    add_test(NAME trade_row COMMAND mc_rebedrock_trade_row_test)
+
     add_executable(mc_rebedrock_tab_bar_test tests/tab_bar_test.cpp)
     target_include_directories(mc_rebedrock_tab_bar_test PRIVATE src)
     target_link_libraries(mc_rebedrock_tab_bar_test PRIVATE glm::glm)
