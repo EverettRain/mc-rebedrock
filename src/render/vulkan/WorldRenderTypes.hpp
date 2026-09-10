@@ -2,6 +2,8 @@
 
 #include "render/SunShadowMap.hpp"
 
+#include "core/FrameTrace.hpp"
+
 // 渲染器内核（VulkanRenderer.cpp）与世界渲染子系统（WorldRenderer.hpp）共用的世界渲染类型与常量
 // 放在 mc::render 而不是某个 .cpp 的匿名命名空间里，两边才能指同一份定义
 
@@ -188,6 +190,13 @@ struct FrameContext final {
     // 图会随画质开关重编译，多读出来的是上一轮的陈值。
     std::uint32_t timestampSlots = 0U;
     std::vector<std::uint64_t> timestampResults;
+    // Capture the labels at record time: frameGraph_ may be rebuilt before the
+    // same in-flight slot's fence makes these results readable.
+    std::array<std::string_view, diag::FrameTrace::kMaxGpuSteps> gpuTimestampStepNames{};
+    // The render-loop frame which recorded the queries in this slot.  Timestamp
+    // results are read only after this slot's fence signals, so any result belongs
+    // to this producer, never to the frame doing the readback.
+    std::uint64_t gpuTimestampProducerFrameId = 0U;
 };
 
 // 可复用的流式网格缓冲：按尺寸档分的空闲表，加上逐帧的延迟归还队列

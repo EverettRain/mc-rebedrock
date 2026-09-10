@@ -21,6 +21,7 @@
 #include "world/gen/StructureGenerator.hpp"
 
 #include "core/FrameTrace.hpp"
+#include "core/PerfTrace.hpp"
 
 #include <algorithm>
 #include <cmath>
@@ -128,19 +129,56 @@ void GameRuntime::stopSimulation() {
 }
 
 void GameRuntime::tick() {
-    const auto tickWrite = worldLock_.write();
-    drainClientCommands();
-    gameSession_.tick(serverWorld_, host_);
-    // PACK-2: `#minecraft:tick`'s members run once every authoritative tick,
-    // after gameplay has ticked (so a function that reads e.g. block state sees
-    // this tick's world) and before the snapshot publish (so a function's world
-    // edit reaches the client in the same tick it happened, exactly like any
-    // other in-tick mutation). A no-op when no function is tagged #tick — most
-    // ticks, most worlds.
-    applyCommandLimitRules();
-    functionManager_.runTick(commandDispatcher_, makeCommandSource());
-    publishSnapshotsToChannel();
-    processChatQueue();
+    auto& perfTrace = diag::PerfTrace::instance();
+    // This is a trace-local sequence, not the saved server tick. It is only
+    // touched by the thread currently executing GameRuntime::tick().
+    const std::uint64_t tickId = perfTrace.isEnabled() ? ++perfTraceTickSequence_ : 0U;
+    auto tickScope = perfTrace.scope("simulation.tick", tickId);
+    const bool perfEnabled = perfTrace.isEnabled();
+    const auto lockWaitStart = perfEnabled ? diag::PerfTrace::Clock::now()
+                                           : diag::PerfTrace::Clock::time_point{};
+    {
+        const auto tickWrite = worldLock_.write();
+        if (perfEnabled) {
+            perfTrace.recordSpan("simulation.world_lock_wait", lockWaitStart,
+                                 diag::PerfTrace::Clock::now(), tickId);
+        }
+        auto lockHoldScope = perfTrace.scope("simulation.world_lock_hold", tickId);
+        {
+            auto commandsScope = perfTrace.scope("simulation.commands", tickId);
+            drainClientCommands();
+        }
+        {
+            auto gameplayScope = perfTrace.scope("simulation.session", tickId);
+            gameSession_.tick(serverWorld_, host_);
+        }
+        if (perfEnabled) {
+            // Read the authoritative, persisted tick only while this write
+            // section owns the session; its value is deliberately separate
+            // from the scheduler and trace-local ids.
+            perfTrace.counter("simulation.server_tick",
+                              static_cast<double>(gameSession_.serverTick()), tickId);
+        }
+        // PACK-2: `#minecraft:tick`'s members run once every authoritative tick,
+        // after gameplay has ticked (so a function that reads e.g. block state sees
+        // this tick's world) and before the snapshot publish (so a function's world
+        // edit reaches the client in the same tick it happened, exactly like any
+        // other in-tick mutation). A no-op when no function is tagged #tick — most
+        // ticks, most worlds.
+        applyCommandLimitRules();
+        {
+            auto functionsScope = perfTrace.scope("simulation.functions", tickId);
+            functionManager_.runTick(commandDispatcher_, makeCommandSource());
+        }
+        {
+            auto publishScope = perfTrace.scope("simulation.publish", tickId);
+            publishSnapshotsToChannel();
+        }
+        {
+            auto chatScope = perfTrace.scope("simulation.chat", tickId);
+            processChatQueue();
+        }
+    }
 }
 
 void GameRuntime::publishSnapshotsToChannel() {
@@ -1530,6 +1568,10 @@ void GameRuntime::persistUnloadedChunk(world::ChunkPosition position) {
         persistIdentifier_ = currentSave_->summary.identifier;
         ++persistPending_[position];
         persistQueue_.push_back(std::move(record));
+        if (diag::PerfTrace::enabled()) {
+            diag::PerfTrace::instance().counter("persistence.queue_depth",
+                                                static_cast<double>(persistQueue_.size()));
+        }
     }
     persistWakeCv_.notify_one();
     if (diag::traceEnabled()) {
@@ -1576,10 +1618,14 @@ void GameRuntime::stopPersistenceWorker() {
 }
 
 void GameRuntime::persistenceWorkerLoop() {
+    diag::PerfTrace::instance().setThreadName("persistence");
     std::unique_lock<std::mutex> lock{persistMutex_};
     while (true) {
-        persistWakeCv_.wait(lock,
-                            [this] { return persistStopping_ || !persistQueue_.empty(); });
+        {
+            auto waitScope = diag::PerfTrace::instance().scope("persistence.wait");
+            persistWakeCv_.wait(lock,
+                                [this] { return persistStopping_ || !persistQueue_.empty(); });
+        }
         if (persistQueue_.empty()) {
             // Only stop once the backlog is drained, so a shutdown still lands
             // every queued chunk on disk.
@@ -1600,9 +1646,15 @@ void GameRuntime::persistenceWorkerLoop() {
             std::make_move_iterator(persistQueue_.end())};
         persistQueue_.clear();
         const std::string identifier = persistIdentifier_;
+        if (diag::PerfTrace::enabled()) {
+            diag::PerfTrace::instance().counter("persistence.batch_records",
+                                                static_cast<double>(batch.size()));
+            diag::PerfTrace::instance().counter("persistence.queue_depth", 0.0);
+        }
         persistBusy_ = true;
         lock.unlock();
         try {
+            auto saveScope = diag::PerfTrace::instance().scope("persistence.save_chunks");
             saveRepository_.saveChunks(identifier, std::move(batch));
         } catch (const std::exception&) {
             // A failed region write is non-fatal: the data is still in the

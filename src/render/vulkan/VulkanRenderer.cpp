@@ -24,6 +24,7 @@
 
 #include "core/EnvFlags.hpp"
 #include "core/FrameTrace.hpp"
+#include "core/PerfTrace.hpp"
 
 #include "animation/AnimationAssets.hpp"
 #include "animation/DisplayEntityAnimation.hpp"
@@ -1776,9 +1777,27 @@ struct VulkanRenderer::Impl final : public gameplay::SimulationHost {
         // 烟测与压测同样要走这条路径
         // MC_REBEDROCK_SYNC_TICK 保留了确定性的单线程回退，供排查故障时使用
         startSimulationThread();
+        diag::PerfTrace::instance().setThreadName("render");
         std::size_t renderedFrames = 0;
+        std::uint64_t perfFrameId = 0U;
+        std::optional<diag::PerfTrace::Clock::time_point> previousFrameStart;
+        std::optional<diag::PerfTrace::Clock::time_point> previousFrameWorkEnd;
         auto previousFrameTime = std::chrono::steady_clock::now();
         while (glfwWindowShouldClose(window) == GLFW_FALSE) {
+            // One common boundary closes the previous pacing span and opens this
+            // frame, so no lock/recorder overhead falls into an unaccounted gap.
+            const auto frameBoundary = diag::PerfTrace::Clock::now();
+            if (previousFrameStart.has_value()) {
+                diag::PerfTrace::instance().recordSpan("frame.wall", *previousFrameStart,
+                                                        frameBoundary, perfFrameId);
+                if (previousFrameWorkEnd.has_value()) {
+                    diag::PerfTrace::instance().recordSpan("frame.work", *previousFrameStart,
+                                                            *previousFrameWorkEnd, perfFrameId);
+                }
+            }
+            ++perfFrameId;
+            previousFrameStart = frameBoundary;
+            previousFrameWorkEnd.reset();
             const auto frameCpuStart = std::chrono::steady_clock::now();
             // RN-54：drawFrame 返回的时刻。声明在这里而不是那个作用域内，因为报告
             // （在它之后）才需要它——afterDrawMs 量的正是「返回之后还花了多少」。
@@ -1790,6 +1809,7 @@ struct VulkanRenderer::Impl final : public gameplay::SimulationHost {
             // 嫌疑。单独量它，而不是把它混进 beforeDrawMs 的余量里——两者是包含关系，
             // 报告里一起看才分得出「等在事件循环」与「循环前半真有工作」。
             {
+                auto perfScope = diag::PerfTrace::instance().scope("pre_draw_poll_events", perfFrameId);
                 const auto pollStart = std::chrono::steady_clock::now();
                 glfwPollEvents();
                 if (diag::traceEnabled()) {
@@ -1827,6 +1847,7 @@ struct VulkanRenderer::Impl final : public gameplay::SimulationHost {
                 // 输入准备写的是暂存的玩家输入，由 GameSession 自己的输入互斥量保护
                 // 读的是已发布的快照与渲染器本地状态，两者都不需要世界锁
                 {
+                    auto perfScope = diag::PerfTrace::instance().scope("pre_draw_input", perfFrameId);
                     const auto inputStart = std::chrono::steady_clock::now();
                     processInput();
                     if (diag::traceEnabled()) {
@@ -1839,6 +1860,7 @@ struct VulkanRenderer::Impl final : public gameplay::SimulationHost {
                 // 副作用含对客户端缓存的世界编辑、音效、粒子、容器与进食反应
                 // 每帧都排空，通道才不会积压
                 {
+                    auto perfScope = diag::PerfTrace::instance().scope("pre_draw_client_pump", perfFrameId);
                     const auto pumpStart = std::chrono::steady_clock::now();
                     static_cast<void>(clientMirror_.pump(runtime.clientChannel(), *this));
                     if (diag::traceEnabled()) {
@@ -1864,6 +1886,8 @@ struct VulkanRenderer::Impl final : public gameplay::SimulationHost {
                 playerWalking = playerSnap.stride > 0.002F ||
                                 playerSnap.previousStride > 0.002F;
             }
+            auto visualSimulationScope =
+                diag::PerfTrace::instance().scope("pre_draw_visual_simulation", perfFrameId);
             playerModelAnimator.update(deltaSeconds, playerWalking);
             // 头先动、身体跟：头在限度内自由转动，到达限度才拖着身体转
             // 行走时身体缓慢转向视线方向，使移动保持面朝前方——与 vanilla 一致
@@ -2056,6 +2080,8 @@ struct VulkanRenderer::Impl final : public gameplay::SimulationHost {
                 // processInput() 已经把本帧的移动经通道送出
                 // 服务端在 tick 读取之前把它暂存好，因此不再需要单独的提交发布步骤
                 if (!simulationDriver.threaded()) {
+                    auto syncTickScope =
+                        diag::PerfTrace::instance().scope("pre_draw_sync_tick", perfFrameId);
                     // 同步回退（MC_REBEDROCK_SYNC_TICK=1）
                     // 保留它，因为这是把线程问题与已知正确行为做二分对照的唯一手段
                     static_cast<void>(
@@ -2146,8 +2172,11 @@ struct VulkanRenderer::Impl final : public gameplay::SimulationHost {
             audioSystem.updateListener(camera.position(), camera.direction(), {0.0F, 1.0F, 0.0F});
             audioSystem.update();
             driveAmbientMusic(deltaSeconds);
-            if (worldSessionActive)
+            visualSimulationScope = {};
+            if (worldSessionActive) {
+                auto streamingScope = diag::PerfTrace::instance().scope("pre_draw_chunk_streaming", perfFrameId);
                 world_.processChunkStreaming();
+            }
             {
                 // 权威交互跑在模拟 tick 内（那里持有世界写区间）
                 // 本帧只做瞄准目标的射线检测，供输入处理封装成命令，另加独立的 Q 丢弃
@@ -2155,7 +2184,10 @@ struct VulkanRenderer::Impl final : public gameplay::SimulationHost {
                 updateInteractionTarget();
             }
             {
+                auto dropWait = diag::PerfTrace::instance().scope("pre_draw_drop_write_wait", perfFrameId);
                 const auto dropWrite = worldLock.write();
+                dropWait = {};
+                auto dropHold = diag::PerfTrace::instance().scope("pre_draw_drop_write_hold", perfFrameId);
                 world_.updateItemDrop();
             }
             // 对客户端缓存的世界编辑、音效、粒子、容器与进食反应都是模拟的副作用
@@ -2172,7 +2204,7 @@ struct VulkanRenderer::Impl final : public gameplay::SimulationHost {
                 // UI-13：存档缩略图的时机。★ 必须在 drawFrame **之前**决定，
                 // 因为决定的结果（这一帧不画 HUD）要影响的就是这一帧。
                 updateWorldIconRequest();
-                static_cast<void>(drawFrame());
+                static_cast<void>(drawFrame(perfFrameId));
                 writeWorldIconIfRequested();
                 if (diag::traceEnabled()) {
                     diag::frameTrace().drawFrameMs += diag::msSince(drawStart);
@@ -2181,6 +2213,7 @@ struct VulkanRenderer::Impl final : public gameplay::SimulationHost {
             }
             ++renderedFrames;
             if (diag::traceEnabled()) {
+                auto traceLogScope = diag::PerfTrace::instance().scope("frame_trace_log", perfFrameId);
                 const double frameMs = diag::msSince(frameCpuStart);
                 if (frameMs >= diag::traceThresholdMs()) {
                     diag::frameTrace().cpuMs = frameMs;
@@ -2248,6 +2281,8 @@ struct VulkanRenderer::Impl final : public gameplay::SimulationHost {
                     static float memoryReportAccum = 0.0F;
                     memoryReportAccum += deltaSeconds;
                     if (memoryReportAccum >= 2.0F) {
+                        auto memoryReportScope =
+                            diag::PerfTrace::instance().scope("frame_memory_report", perfFrameId);
                         memoryReportAccum = 0.0F;
                         std::size_t serverBytes = 0;
                         std::size_t serverUnique = 0;
@@ -2325,7 +2360,12 @@ struct VulkanRenderer::Impl final : public gameplay::SimulationHost {
             if (testScene.has_value() && testScene->occlusionScene && renderedFrames >= 30U) {
                 glfwSetWindowShouldClose(window, GLFW_TRUE);
             }
+            // `frame.work` intentionally stops before the rate limiter.  Work
+            // after it is reported by its own tail spans, while `frame` remains
+            // the inclusive start-to-start wall-clock interval.
+            previousFrameWorkEnd = diag::PerfTrace::Clock::now();
             if (options.frameRateLimit > 0) {
+                auto pacingScope = diag::PerfTrace::instance().scope("frame_pacing", perfFrameId);
                 const auto targetFrameDuration = std::chrono::duration<double>(
                     1.0 / static_cast<double>(options.frameRateLimit));
                 const auto deadline =
@@ -2337,8 +2377,10 @@ struct VulkanRenderer::Impl final : public gameplay::SimulationHost {
                 // 因此先睡到接近目标，最后两毫秒忙等，让节奏落在目标值上而不是操作系统的唤醒粒度上
                 const auto spinStart = deadline - std::chrono::milliseconds(2);
                 if (std::chrono::steady_clock::now() < spinStart) {
+                    auto sleepScope = diag::PerfTrace::instance().scope("frame_pacing_sleep", perfFrameId);
                     std::this_thread::sleep_until(spinStart);
                 }
+                auto spinScope = diag::PerfTrace::instance().scope("frame_pacing_spin", perfFrameId);
                 while (std::chrono::steady_clock::now() < deadline) {
                     // 尾段忙等，换取精确的节奏
                 }
@@ -2346,6 +2388,7 @@ struct VulkanRenderer::Impl final : public gameplay::SimulationHost {
             // 复现用钩子 MC_REBEDROCK_LOAD_SAVE 跳过菜单直接载入第一个真实存档
             // 随后由压测相机带着飞
             if (std::getenv("MC_REBEDROCK_LOAD_SAVE") != nullptr && !loadSaveStarted) {
+                auto loadSaveScope = diag::PerfTrace::instance().scope("frame_load_save", perfFrameId);
                 loadSaveStarted = true;
                 const auto summaries = saveRepository.list();
                 if (summaries.empty()) {
@@ -2354,6 +2397,7 @@ struct VulkanRenderer::Impl final : public gameplay::SimulationHost {
                 startWorld(saveRepository.load(summaries.front().identifier));
             }
             if (smokeScript.has_value()) {
+                auto smokeScope = diag::PerfTrace::instance().scope("frame_smoke_script", perfFrameId);
                 smokeScript->advance(renderedFrames, worldReady);
             }
             // LOAD_SAVE 运行在渲染满 stressFrames 帧后结束
@@ -2361,6 +2405,9 @@ struct VulkanRenderer::Impl final : public gameplay::SimulationHost {
                 renderedFrames >= smokeFrameLimit) {
                 glfwSetWindowShouldClose(window, GLFW_TRUE);
             }
+        }
+        if (previousFrameStart.has_value()) {
+            diag::PerfTrace::instance().counter("frame_partial", 1.0, perfFrameId);
         }
         checkVk(vkDeviceWaitIdle(device), "vkDeviceWaitIdle");
         std::cout << "Rendered 3D frames: " << renderedFrames << '\n';
@@ -5384,6 +5431,25 @@ struct VulkanRenderer::Impl final : public gameplay::SimulationHost {
         // 必须赶在 tick 会碰到的任何东西被销毁之前停下
         // jthread 析构时本来也会 join，但那发生在下面的 Vulkan 销毁之后
         runtime.stopSimulation();
+        chunkStreamer.stop();
+        if (diag::PerfTrace::enabled()) {
+            // stopSimulation() does not own the asynchronous persistence worker.
+            // With simulation and streaming stopped, no producer can add another
+            // unload record; drain its last save scope before sealing the trace.
+            // GameRuntime's destructor still joins that idle worker later.
+            try {
+                runtime.flushChunkPersistence();
+                // All known trace producers are quiescent now.  Never flush from
+                // a frame: I/O must not become a measurement artifact or race a
+                // streaming or persistence producer.
+                static_cast<void>(diag::PerfTrace::instance().flush());
+            } catch (const std::exception& exception) {
+                // Shutdown is noexcept; tracing cannot prevent resource teardown.
+                std::cerr << "PerfTrace shutdown flush failed: " << exception.what() << '\n';
+            } catch (...) {
+                std::cerr << "PerfTrace shutdown flush failed\n";
+            }
+        }
         if (window != nullptr) {
             captureWindowPlacement();
             persistOptions();
@@ -8434,8 +8500,35 @@ struct VulkanRenderer::Impl final : public gameplay::SimulationHost {
     //
     // 容量按 FrameTrace 的报告上限来，不按今天的步数：图会随画质开关重编译
     // （关太阳阴影少一步），池不该跟着重建。
+    [[nodiscard]] static bool perfTraceGpuEnabled() {
+        static const bool enabled =
+            std::getenv("MC_REBEDROCK_PERF_TRACE_GPU") != nullptr;
+        return diag::PerfTrace::enabled() && enabled;
+    }
+
+    [[nodiscard]] static bool gpuTimestampTracingEnabled() {
+        return diag::traceEnabled() || perfTraceGpuEnabled();
+    }
+
+    // PerfTrace retains C-string pointers.  Keep its GPU names separate from
+    // BakedGraph's diagnostic string_views, and make the mapping explicit in
+    // the event name so a capture remains readable after graph recompilation.
+    [[nodiscard]] static const char* gpuTraceStepName(std::string_view name) {
+        if (name == "upload") return "gpu.step.upload";
+        if (name == "shadow_near") return "gpu.step.shadow_near";
+        if (name == "shadow_far") return "gpu.step.shadow_far";
+        if (name == "world") return "gpu.step.world";
+        if (name == "taa_resolve") return "gpu.step.taa_resolve";
+        if (name == "probe_after_world") return "gpu.step.probe_after_world";
+        if (name == "menu_background") return "gpu.step.menu_background";
+        if (name == "probe_before_gui") return "gpu.step.probe_before_gui";
+        if (name == "gui") return "gpu.step.gui";
+        if (name == "present_blit") return "gpu.step.present_blit";
+        return "gpu.step.unknown";
+    }
+
     void createGpuTimestampPools() {
-        if (!diag::traceEnabled()) {
+        if (!gpuTimestampTracingEnabled()) {
             return;
         }
         if (!vulkanDevice_.timestampScale.usable()) {
@@ -8476,18 +8569,29 @@ struct VulkanRenderer::Impl final : public gameplay::SimulationHost {
             return;
         }
         const auto& scale = vulkanDevice_.timestampScale;
-        const auto names = frameGraph_.stepNames();
         const std::uint32_t steps = slots - 1U;
         const auto reported =
             std::min<std::uint32_t>(steps, static_cast<std::uint32_t>(diag::FrameTrace::kMaxGpuSteps));
         for (std::uint32_t index = 0; index < reported; ++index) {
             trace.gpuStepMs[index] = scale.millisecondsBetween(frame.timestampResults[index],
                                                                frame.timestampResults[index + 1U]);
-            trace.gpuStepName[index] = index < names.size() ? names[index] : std::string_view{};
+            trace.gpuStepName[index] = frame.gpuTimestampStepNames[index];
         }
         trace.gpuStepCount = reported;
         trace.gpuFrameMs =
             scale.millisecondsBetween(frame.timestampResults.front(), frame.timestampResults.back());
+        if (perfTraceGpuEnabled()) {
+            diag::PerfTrace::instance().counter("gpu.frame_ms", trace.gpuFrameMs,
+                                                frame.gpuTimestampProducerFrameId);
+            // The labels belong to this slot's producer graph, not the graph
+            // currently installed after a settings-triggered rebuild.  The
+            // counter names themselves are static NUL-terminated literals.
+            for (std::uint32_t index = 0; index < reported; ++index) {
+                diag::PerfTrace::instance().counter(gpuTraceStepName(trace.gpuStepName[index]),
+                                                    trace.gpuStepMs[index],
+                                                    frame.gpuTimestampProducerFrameId);
+            }
+        }
     }
 
     void createSyncObjects() {
@@ -8856,17 +8960,20 @@ struct VulkanRenderer::Impl final : public gameplay::SimulationHost {
     // Returns the swapchain image index the frame was drawn into, so a caller
     // that wants the pixels knows which scene target holds them (RN-15d). A
     // nullopt means the swapchain was recreated instead of a frame being drawn.
-    std::optional<std::uint32_t> drawFrame() {
+    std::optional<std::uint32_t> drawFrame(std::uint64_t perfFrameId = 0U) {
+        auto drawScope = diag::PerfTrace::instance().scope("draw_frame", perfFrameId);
         // 这里不持有世界锁
         // 绘制通道采样的东西都是无锁的：渲染侧自有的客户端缓存、原子发布的快照、GPU 网格状态
         // 而下面的围栏等待、提交和呈现绝不能阻塞模拟线程的写区间
         auto& frame = frames[currentFrame];
+        auto fenceScope = diag::PerfTrace::instance().scope("draw_fence_wait", perfFrameId);
         const auto fenceWaitStart = std::chrono::steady_clock::now();
         checkVk(vkWaitForFences(device, 1, &frame.inFlight, VK_TRUE, UINT64_MAX),
                 "vkWaitForFences");
         if (diag::traceEnabled()) {
             diag::frameTrace().fenceWaitMs += diag::msSince(fenceWaitStart);
         }
+        fenceScope = {};
         // 告诉 VMA 当前是第几帧，它才能复用一个帧窗口之前释放的分配
         // 否则每来一波突发就得新开内存块
         vmaSetCurrentFrameIndex(allocator, frameNumber_);
@@ -8878,6 +8985,7 @@ struct VulkanRenderer::Impl final : public gameplay::SimulationHost {
             diag::frameTrace().occlusionReadbackMs += diag::msSince(occReadStart);
         }
         std::uint32_t imageIndex = 0;
+        auto acquireScope = diag::PerfTrace::instance().scope("draw_acquire", perfFrameId);
         const auto acquireStart = std::chrono::steady_clock::now();
         const auto acquire = vkAcquireNextImageKHR(
             device, swapchain, UINT64_MAX, frame.imageAvailable, VK_NULL_HANDLE, &imageIndex);
@@ -8891,7 +8999,9 @@ struct VulkanRenderer::Impl final : public gameplay::SimulationHost {
         if (acquire != VK_SUCCESS && acquire != VK_SUBOPTIMAL_KHR) {
             checkVk(acquire, "vkAcquireNextImageKHR");
         }
+        acquireScope = {};
         const auto imageWaitStart = std::chrono::steady_clock::now();
+        auto imageWaitScope = diag::PerfTrace::instance().scope("draw_image_wait", perfFrameId);
         if (imagesInFlight[imageIndex] != VK_NULL_HANDLE) {
             checkVk(vkWaitForFences(device, 1, &imagesInFlight[imageIndex], VK_TRUE, UINT64_MAX),
                     "vkWaitForFences(swapchain image)");
@@ -8900,7 +9010,9 @@ struct VulkanRenderer::Impl final : public gameplay::SimulationHost {
             diag::frameTrace().imageWaitMs += diag::msSince(imageWaitStart);
         }
         imagesInFlight[imageIndex] = frame.inFlight;
+        imageWaitScope = {};
         {
+            auto uploadScope = diag::PerfTrace::instance().scope("draw_upload", perfFrameId);
             const auto uploadStart = std::chrono::steady_clock::now();
             world_.prepareStreamingUpdates(frame);
             if (diag::traceEnabled()) {
@@ -8933,7 +9045,17 @@ struct VulkanRenderer::Impl final : public gameplay::SimulationHost {
         checkVk(vkResetFences(device, 1, &frame.inFlight), "vkResetFences");
         checkVk(vkResetCommandBuffer(frame.commandBuffer, 0), "vkResetCommandBuffer");
         const auto recordStart = std::chrono::steady_clock::now();
+        auto recordScope = diag::PerfTrace::instance().scope("draw_record", perfFrameId);
         const std::size_t visibleCount = world_.recordCommandBuffer(frame, imageIndex);
+        recordScope = {};
+        frame.gpuTimestampStepNames.fill(std::string_view{});
+        const auto recordedStepNames = frameGraph_.stepNames();
+        const std::size_t recordedCount = std::min(
+            recordedStepNames.size(), frame.gpuTimestampStepNames.size());
+        for (std::size_t index = 0; index < recordedCount; ++index) {
+            frame.gpuTimestampStepNames[index] = recordedStepNames[index];
+        }
+        frame.gpuTimestampProducerFrameId = perfFrameId;
         if (diag::traceEnabled()) {
             diag::frameTrace().recordMs += diag::msSince(recordStart);
             diag::frameTrace().visibleSections = static_cast<std::uint32_t>(visibleCount);
@@ -8982,13 +9104,16 @@ struct VulkanRenderer::Impl final : public gameplay::SimulationHost {
         submit.signalSemaphoreCount = 1;
         submit.pSignalSemaphores = &presentSemaphore;
         const auto presentStart = std::chrono::steady_clock::now();
+        auto submitScope = diag::PerfTrace::instance().scope("draw_submit", perfFrameId);
         checkVk(vkQueueSubmit(graphicsQueue, 1, &submit, frame.inFlight), "vkQueueSubmit");
+        submitScope = {};
         auto present = vkStructure<VkPresentInfoKHR>(VK_STRUCTURE_TYPE_PRESENT_INFO_KHR);
         present.waitSemaphoreCount = 1;
         present.pWaitSemaphores = &presentSemaphore;
         present.swapchainCount = 1;
         present.pSwapchains = &swapchain;
         present.pImageIndices = &imageIndex;
+        auto presentScope = diag::PerfTrace::instance().scope("draw_present", perfFrameId);
         const auto result = vkQueuePresentKHR(presentQueue, &present);
         if (result == VK_ERROR_OUT_OF_DATE_KHR || result == VK_SUBOPTIMAL_KHR ||
             framebufferResized) {

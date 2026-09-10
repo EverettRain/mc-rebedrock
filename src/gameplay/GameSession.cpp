@@ -12,6 +12,7 @@
 #include "gameplay/Random.hpp"
 #include "gameplay/RangedEnchantment.hpp"
 #include "gameplay/StatusEffect.hpp"
+#include "core/PerfTrace.hpp"
 
 #include "world/DayNightCycle.hpp"
 #include "world/World.hpp"
@@ -174,6 +175,7 @@ void GameSession::tick(world::World& world, SimulationHost& host) {
     // it, so everything timed against it (mining, cooldowns, scheduled work)
     // keeps running even when the sun is frozen.
     ++serverTick_;
+    auto gameplayScope = diag::PerfTrace::instance().scope("simulation.gameplay", serverTick_);
     // The action timeline (swing arc, ongoing use) advances once per tick, so
     // an action consumes the same ticks at any frame rate.
     primaryPlayer().actions.tick();
@@ -311,7 +313,11 @@ void GameSession::tick(world::World& world, SimulationHost& host) {
     worldSimulation_.setSimulationCenterBlock(static_cast<int>(std::floor(simFeet.x)),
                                               static_cast<int>(std::floor(simFeet.y)),
                                               static_cast<int>(std::floor(simFeet.z)));
-    for (const auto& change : worldSimulation_.tick(world, !fluidUpdatePhaseConsumed)) {
+    const auto worldChanges = [&] {
+        auto worldSimulationScope = diag::PerfTrace::instance().scope("simulation.world", serverTick_);
+        return worldSimulation_.tick(world, !fluidUpdatePhaseConsumed);
+    }();
+    for (const auto& change : worldChanges) {
         // A simulated break previews too (it used to do so further down, just
         // before its sound), so the edit's immediacy is decided once, here.
         const bool simulatedBreak =

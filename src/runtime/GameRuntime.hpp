@@ -427,6 +427,10 @@ class GameRuntime final {
     world::World serverWorld_;
     gameplay::GameSession gameSession_;
     gameplay::SimulationDriver simulationDriver_;
+    // Per-runtime diagnostic sequence. Unlike GameSession::serverTick_ this is
+    // neither saved nor read outside GameRuntime::tick(), and only advances for
+    // an enabled performance trace.
+    std::uint64_t perfTraceTickSequence_ = 0U;
     world::WorldLock worldLock_;
     std::atomic_bool simulationActive_{false};
     std::optional<persistence::SaveGame> currentSave_;

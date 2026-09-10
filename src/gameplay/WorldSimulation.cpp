@@ -8,6 +8,7 @@
 #include "gameplay/RedstoneObserver.hpp"
 #include "gameplay/RedstoneSignal.hpp"
 #include "gameplay/RedstoneWire.hpp"
+#include "core/PerfTrace.hpp"
 #include "world/BlockPlacement.hpp"
 #include "world/World.hpp"
 #include "world/WorldConstants.hpp"
@@ -459,6 +460,8 @@ int WorldSimulation::localBrightnessAt(
 }
 
 void WorldSimulation::randomTicks(world::World& world, std::vector<BlockChange>& changes) {
+    auto randomTickScope = diag::PerfTrace::instance().scope("simulation.random_ticks", tickCount_);
+    const bool perfEnabled = diag::PerfTrace::enabled();
     // No early return on randomTickSpeed here any more: freezing is part of
     // vanilla's tickChunk but not one of its random ticks, so /gamerule
     // randomTickSpeed 0 must not also stop water from icing over.
@@ -468,10 +471,12 @@ void WorldSimulation::randomTicks(world::World& world, std::vector<BlockChange>&
     // player's chunk) and the unbounded fallback (headless tests that never set
     // a centre).
     const auto tickChunkAt = [&](world::ChunkPosition chunkPosition) {
+        if (perfEnabled) ++randomTickCandidateChunksThisTick_;
         const world::Chunk* chunk = world.chunk(chunkPosition);
         if (chunk == nullptr) {
             return;
         }
+        if (perfEnabled) ++randomTickLoadedChunksThisTick_;
         precipitationTick(world, *chunk, chunkPosition, changes);
         if (randomTickSpeed_ <= 0) {
             return;
@@ -480,6 +485,13 @@ void WorldSimulation::randomTicks(world::World& world, std::vector<BlockChange>&
             const world::ChunkSection& section = chunk->section(sectionY);
             if (section.empty()) {
                 continue;
+            }
+            if (perfEnabled) {
+                ++randomTickNonemptySectionsThisTick_;
+                // This is the number of sections actually sampled by this
+                // implementation, not a vanilla-style random-ticking-section
+                // count. The loop is never reached when speed is zero.
+                randomTickAttemptsThisTick_ += static_cast<std::size_t>(randomTickSpeed_);
             }
             // Read the drawn cell straight out of the held section. Going back
             // through world.block() would re-resolve the chunk hash map for
@@ -500,12 +512,15 @@ void WorldSimulation::randomTicks(world::World& world, std::vector<BlockChange>&
                 if (!isRandomlyTicking(drawn)) {
                     continue;
                 }
+                if (perfEnabled) ++randomTickHandlerHitsThisTick_;
                 const SimulationPosition position{
                     chunkPosition.x * world::kChunkWidth + localX,
                     world::sectionOriginY(sectionY) + localY,
                     chunkPosition.z * world::kChunkDepth + localZ,
                 };
+                const std::size_t changesBefore = perfEnabled ? changes.size() : 0U;
                 randomTickBlock(world, position, drawn, changes);
+                if (perfEnabled) randomTickChangesThisTick_ += changes.size() - changesBefore;
             }
         }
     };
@@ -1994,12 +2009,34 @@ std::vector<BlockChange> WorldSimulation::tick(
     lastWaterUpdatesProcessed_ = 0U;
     lastTreeGrowthsProcessed_ = 0U;
     randomTickConversionsThisTick_ = 0U;
+    const bool perfEnabled = diag::PerfTrace::enabled();
+    if (perfEnabled) {
+        randomTickCandidateChunksThisTick_ = 0U;
+        randomTickLoadedChunksThisTick_ = 0U;
+        randomTickNonemptySectionsThisTick_ = 0U;
+        randomTickAttemptsThisTick_ = 0U;
+        randomTickHandlerHitsThisTick_ = 0U;
+        randomTickChangesThisTick_ = 0U;
+    }
     leafDecayChecksThisTick_ = 0U;
     cropStateWritesThisTick_ = 0U;
     std::vector<BlockChange> changes;
     breakUnsupportedBlocks(world, changes);
     decayLeaves(world, changes);
     randomTicks(world, changes);
+    if (perfEnabled) {
+        auto& perfTrace = diag::PerfTrace::instance();
+        perfTrace.counter("random.candidate_chunks",
+                          static_cast<double>(randomTickCandidateChunksThisTick_), tickCount_);
+        perfTrace.counter("random.loaded_chunks", static_cast<double>(randomTickLoadedChunksThisTick_),
+                          tickCount_);
+        perfTrace.counter("random.sampled_sections",
+                          static_cast<double>(randomTickNonemptySectionsThisTick_), tickCount_);
+        perfTrace.counter("random.attempts", static_cast<double>(randomTickAttemptsThisTick_), tickCount_);
+        perfTrace.counter("random.handler_hits", static_cast<double>(randomTickHandlerHitsThisTick_),
+                          tickCount_);
+        perfTrace.counter("random.changes", static_cast<double>(randomTickChangesThisTick_), tickCount_);
+    }
     growTrees(world, changes);
     ripenComposters(world, changes);
     constexpr std::size_t kMaximumSandUpdates = 64;
