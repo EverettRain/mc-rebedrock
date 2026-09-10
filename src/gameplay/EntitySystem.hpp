@@ -361,16 +361,52 @@ class EntitySystem final {
     // which registered types (static storage) always do.
     void spawn(glm::vec3 position, const entities::EntityType& type, std::uint64_t seed = 0U);
 
-    // Restores a creature from a save record: spawns it and overwrites the pose
-    // and fields a fresh spawn would not reproduce (velocity, health, yaw, the
-    // wander rng and the timers), so a loaded world reopens with its herd where
+    // Everything a save record carries about one creature beyond its position
+    // and species — the pose and the fields a fresh spawn would not reproduce.
+    //
+    // A struct, not a parameter list: this was thirteen positional arguments and
+    // the villager needed eight more. Past about six, "which zero is which"
+    // stops being answerable at the call site, and a new field silently shifts
+    // every argument after it — the same failure mode `ScreenContext`'s comment
+    // warns about. Named initialisers make an added field a diff of one line at
+    // each call.
+    struct RestoreState final {
+        float yaw = 0.0F;
+        glm::vec3 velocity{0.0F};
+        float health = 0.0F;
+        int angerTicks = 0;
+        unsigned int ageTicks = 0U;
+        std::uint64_t rngState = 0U;
+        int fireTicks = 0;
+        ActiveEffects effects{};
+        int age = 0;
+        int loveTicks = 0;
+        DyeColor color = kDefaultDyeColor;
+        std::uint16_t customNameId = 0U;
+        // AR-A2: a sheared sheep reopens sheared. Before this it grew its wool
+        // back on every reload, which made shears a renewable-by-restart
+        // resource.
+        bool sheared = false;
+        // AR-M5/M6: the villager's own state. Without it a farmer traded up to
+        // level 3 reopened as an unemployed novice standing next to a composter
+        // it no longer owned, and every offer's use count reset — reopening the
+        // world was an infinite restock.
+        entities::VillagerProfession villagerProfession =
+            entities::VillagerProfession::None;
+        std::uint8_t villagerLevel = 1U;
+        int villagerTradeXp = 0;
+        glm::ivec3 jobSite{0};
+        bool hasJobSite = false;
+        const Item* villagerCarryItem = nullptr;
+        std::uint8_t villagerCarryCount = 0U;
+        std::array<std::uint8_t, entities::kMaxVillagerOffers> villagerOfferUses{};
+    };
+
+    // Restores a creature from a save record: spawns it and overwrites
+    // everything `state` carries, so a loaded world reopens with its herd where
     // it left off. Returns the stable id the restored creature holds.
-    std::uint64_t restore(glm::vec3 position, const entities::EntityType& type, float yaw,
-                          glm::vec3 velocity, float health, int angerTicks,
-                          unsigned int ageTicks, std::uint64_t rngState, int fireTicks = 0,
-                          const ActiveEffects& effects = {}, int age = 0, int loveTicks = 0,
-                          DyeColor color = kDefaultDyeColor,
-                          std::uint16_t customNameId = 0U);
+    std::uint64_t restore(glm::vec3 position, const entities::EntityType& type,
+                          const RestoreState& state);
 
     // Advances every creature one 20 TPS tick against the world: target/action
     // selectors, land navigation, gravity, collision, pushing and damage timers.

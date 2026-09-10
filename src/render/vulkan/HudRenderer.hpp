@@ -3220,19 +3220,173 @@ class HudRenderer final {
     void drawWorkContainer(VkCommandBuffer commandBuffer, VkDescriptorSet descriptorSet,
                            const ui::HudLayout& layout) const {
         // 底衬由 drawHud 一处按档位表画（容器类走 Transparent 那一档），这里不再自己铺
-        // AR-M6：交易屏的版面是 276x166 而不是这里的 176x166，它自己的面板贴图
-        // （vanilla 的 container/villager.png，512x256）也还没有进 GUI 图集——
-        // 那张图集要求所有层同尺寸，加它是渲染侧的一节。面板层号为负就表示
-        // 「这一屏还没有底图」，于是底衬跳过，其余（槽位、悬停、光标层）照常。
         const bool trading = containerKind() == ui::ContainerPageKind::Trading;
         const auto panel = trading ? layout.tradingPanel() : layout.inventoryPanel();
-        if (const float panelLayer = containerPanelLayer(containerKind()); panelLayer >= 0.0F) {
+        const float panelLayer = containerPanelLayer(containerKind());
+        if (trading) {
+            // MERCH-1：交易屏的面板是 276x166，塞不进 256 宽的图集层，所以按
+            // `tradingPanelPieces()` 拆成三块画。拆法与烘焙侧共用那一个纯函数
+            // （那里有 static_assert 钉住"不重叠、不留缝、放得下"）。
+            const float scale = layout.scale();
+            for (const auto& piece : tradingPanelPieces()) {
+                drawGuiSprite(commandBuffer,
+                              {panel.x + piece.offsetX * scale, panel.y + piece.offsetY * scale,
+                               piece.source.width * scale, piece.source.height * scale},
+                              panelLayer, piece.source);
+            }
+        } else {
             drawGuiSprite(commandBuffer, panel, panelLayer, {0.0F, 0.0F, 176.0F, 166.0F});
         }
         const auto hoveredClue = drawWorkContainerChrome(commandBuffer, layout, panel);
         const auto hoveredStack = drawContainerSlots(commandBuffer, containerPage(layout), layout);
         drawContainerCursorLayer(commandBuffer, layout, hoveredStack, hoveredClue);
         static_cast<void>(descriptorSet);
+    }
+
+    // MERCH-1：交易屏的全部装饰——两行铭牌、七行交易、滚动条、等级条、缺货的大叉。
+    //
+    // ★ 数据一律来自 `clientMirror.world()` 的 trade* 字段（**解码侧**的快照），
+    //   不去读 `GameSession`：那是渲染线程，跨线程/双端的正路是快照。
+    //   `locked` 与 `outOfStock` 是后端算好的，这里**不重算**——重算就是同一事实的
+    //   第二份表述（AR-M6 接口文档里也这么写着）。
+    void drawTradingScreen(VkCommandBuffer commandBuffer, const ui::HudLayout& layout,
+                           const ui::UiRect& panel) const {
+        const float scale = layout.scale();
+        const auto& snapshot = clientMirror.world();
+        const auto cursor = currentFramebufferCursor();
+        const glm::vec4 labelColor{0.25F, 0.25F, 0.25F, 1.0F};
+        const auto at = [&](float x, float y, float w, float h) {
+            return ui::UiRect{panel.x + x * scale, panel.y + y * scale, w * scale, h * scale};
+        };
+
+        // ---- 铭牌三行（26.1 `MerchantScreen.extractLabels():86-99`）----
+        //
+        // ★ 交易屏的标题**不在**通用位置：右半边那行是"村民名 - 等级"，居中于
+        //   `49 + imageWidth/2`（那个 49 是左边交易栏的宽度补偿）；左栏顶上另有一行
+        //   "Trades"，居中于 `5 + 48`。两行都是 0xFF404040、**不带阴影**。
+        {
+            const std::string level = snapshot.tradeVillagerLevel > 0U
+                                          ? translated("merchant.level." +
+                                                           std::to_string(
+                                                               snapshot.tradeVillagerLevel),
+                                                       "Novice")
+                                          : std::string{};
+            const std::string name = translated("entity.minecraft.villager", "Villager");
+            const std::array<std::string_view, 2> parts{name, level};
+            const std::string heading =
+                level.empty() ? name
+                              : ui::formatTranslation(translated("merchant.title", "%s - %s"),
+                                                      parts);
+            const float headingWidth = hudTextWidth(heading, scale);
+            drawHudText(commandBuffer, heading,
+                        panel.x +
+                            (49.0F + static_cast<float>(kTradingPanelWidth) * 0.5F) * scale -
+                            headingWidth * 0.5F,
+                        panel.y + 6.0F * scale, scale, labelColor, false);
+            const std::string trades = translated("merchant.trades", "Trades");
+            drawHudText(commandBuffer, trades,
+                        panel.x + (5.0F + 48.0F) * scale - hudTextWidth(trades, scale) * 0.5F,
+                        panel.y + 6.0F * scale, scale, labelColor, false);
+            drawHudText(commandBuffer, translated("container.inventory", "Inventory"),
+                        panel.x + 107.0F * scale, panel.y + 72.0F * scale, scale, labelColor,
+                        false);
+        }
+
+        // ---- 七行交易 ----
+        const std::size_t rows =
+            std::min<std::size_t>(snapshot.tradeOfferCount,
+                                  static_cast<std::size_t>(ui::kTradeVisibleRows));
+        for (std::size_t row = 0; row < rows; ++row) {
+            const auto parts = ui::tradeRowParts(static_cast<int>(row));
+            const bool locked = snapshot.tradeOfferLocked[row] != 0U;
+            const bool outOfStock = snapshot.tradeOfferOutOfStock[row] != 0U;
+            const auto button = at(parts.button.x, parts.button.y, parts.button.width,
+                                   parts.button.height);
+            // 26.1 的交易行就是一个 `Button.Plain`（`TradeOfferButton`：88x20）：
+            // 悬停换 highlighted，等级不够画成禁用态。**没有"选中"那一档**——
+            // 选中的表现是右半边那三个格子变了，不是这一行变样。
+            const auto state = ui::buttonVisualState(button, cursor.x, cursor.y, !locked,
+                                                     /*pressed=*/false, /*focused=*/false);
+            const GuiWidgetSprite face =
+                state == ui::ButtonVisualState::Disabled
+                    ? GuiWidgetSprite::ButtonDisabled
+                    : (state == ui::ButtonVisualState::Normal ? GuiWidgetSprite::Button
+                                                              : GuiWidgetSprite::ButtonHighlighted);
+            drawScaledGuiSprite(commandBuffer, button, 0.0F,
+                                guiWidgetSprite(guiWidgetSprites, face), scale, glm::vec4{1.0F});
+            drawHudSlot(commandBuffer,
+                        at(parts.wantsA.x, parts.wantsA.y, parts.wantsA.width,
+                           parts.wantsA.height),
+                        snapshot.tradeWantsA[row]);
+            if (!snapshot.tradeWantsB[row].empty()) {
+                drawHudSlot(commandBuffer,
+                            at(parts.wantsB.x, parts.wantsB.y, parts.wantsB.width,
+                               parts.wantsB.height),
+                            snapshot.tradeWantsB[row]);
+            }
+            drawGuiSprite(commandBuffer,
+                          at(parts.arrow.x, parts.arrow.y, parts.arrow.width, parts.arrow.height),
+                          kTradingGuiLayer,
+                          outOfStock ? tradingSpriteRect(TradingSprite::ArrowOutOfStock)
+                                     : tradingSpriteRect(TradingSprite::Arrow));
+            drawHudSlot(commandBuffer,
+                        at(parts.gives.x, parts.gives.y, parts.gives.width, parts.gives.height),
+                        snapshot.tradeGives[row]);
+        }
+
+        // ---- 滚动条 ----
+        // 26.1：能滚才画实心滑块，否则画 `scroller_disabled`（`extractScroller`）。
+        // 本作今天的报价表最多 7 条，恒走 disabled 那一支——留着完整判断，
+        // 换职业多出第 8 条时它自然生效。
+        const bool scrollable =
+            snapshot.tradeOfferCount > static_cast<std::uint8_t>(ui::kTradeVisibleRows);
+        drawGuiSprite(commandBuffer,
+                      at(static_cast<float>(ui::kTradeScrollerX),
+                         static_cast<float>(ui::kTradeScrollerY),
+                         static_cast<float>(ui::kTradeScrollerWidth),
+                         static_cast<float>(ui::kTradeScrollerHeight)),
+                      kTradingGuiLayer,
+                      tradingSpriteRect(scrollable ? TradingSprite::Scroller
+                                                   : TradingSprite::ScrollerDisabled));
+
+        // ---- 等级条 ----
+        // `traderLevel < 5` 才画（满级不画）。分母 0 同样不画——那是后端说的"到顶了"。
+        if (snapshot.tradeVillagerLevel < ui::kTradeMaxVillagerLevel &&
+            snapshot.tradeXpForNextLevel > 0) {
+            const auto bar = at(static_cast<float>(ui::kTradeLevelBarX),
+                                static_cast<float>(ui::kTradeLevelBarY),
+                                static_cast<float>(ui::kTradeLevelBarWidth),
+                                static_cast<float>(ui::kTradeLevelBarHeight));
+            drawGuiSprite(commandBuffer, bar, kTradingGuiLayer,
+                          tradingSpriteRect(TradingSprite::LevelBarBackground));
+            // `w = min(floor(102 / (max - min) * (xp - min)), 102)` —— 这里的分子分母
+            // 后端已经折算成 `xpInLevel / xpForNextLevel`，所以只剩这一次乘除。
+            const int filled = std::min(
+                ui::kTradeLevelBarWidth,
+                snapshot.tradeXpInLevel * ui::kTradeLevelBarWidth / snapshot.tradeXpForNextLevel);
+            if (filled > 0) {
+                auto source = tradingSpriteRect(TradingSprite::LevelBarCurrent);
+                source.width = static_cast<float>(filled);
+                drawGuiSprite(commandBuffer,
+                              at(static_cast<float>(ui::kTradeLevelBarX),
+                                 static_cast<float>(ui::kTradeLevelBarY),
+                                 static_cast<float>(filled),
+                                 static_cast<float>(ui::kTradeLevelBarHeight)),
+                              kTradingGuiLayer, source);
+            }
+        }
+
+        // ---- 选中那条缺货时的大叉 ----
+        // ★ 它是**整屏一个**、只属于选中的那一条，不是逐行的（`extractBackground`）。
+        if (snapshot.tradeSelectedOffer < snapshot.tradeOfferCount &&
+            snapshot.tradeOfferOutOfStock[snapshot.tradeSelectedOffer] != 0U) {
+            drawGuiSprite(commandBuffer,
+                          at(static_cast<float>(ui::kTradeOutOfStockX),
+                             static_cast<float>(ui::kTradeOutOfStockY),
+                             static_cast<float>(ui::kTradeOutOfStockWidth),
+                             static_cast<float>(ui::kTradeOutOfStockHeight)),
+                          kTradingGuiLayer, tradingSpriteRect(TradingSprite::OutOfStock));
+        }
     }
 
     // 这一屏的“铭牌”：标题文字、熔炉的两条进度、附魔的三条选项条、铁砧的名字框与价格。
@@ -3260,17 +3414,7 @@ class HudRenderer final {
             title("container.crafting", "Crafting");
             return std::nullopt;
         case ui::ContainerPageKind::Trading:
-            // AR-M6 —— ★ **这里是交易界面的接入点，后端已经全部就绪，绘制未做。**
-            //
-            // 现在只画屏名。要画的东西全在 `clientMirror.world()` 的 trade* 字段里：
-            // 三个格子（tradePaymentA/B、tradeResult）、逐行的 tradeWantsA/WantsB/
-            // Gives + Levels/Uses/MaxUses/Locked/OutOfStock、tradeOfferCount、
-            // tradeSelectedOffer、以及等级条的 tradeVillagerLevel/tradeXpInLevel/
-            // tradeXpForNextLevel。几何锚点在 `HudLayout::tradingPanel/
-            // tradingPaymentSlot/tradingResultSlot/tradingOffer`。
-            // 契约见 docs/content-dev/AR-content-realization/
-            // AR-M6-trading-backend-interface.md。
-            title("merchant.trades", "Trades");
+            drawTradingScreen(commandBuffer, layout, panel);
             return std::nullopt;
         case ui::ContainerPageKind::EnchantingTable:
             return drawEnchantingScreen(commandBuffer, layout, panel);

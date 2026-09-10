@@ -369,6 +369,71 @@ void testRightClickOpensTheTradeScreen() {
     REQUIRE(!session.tradingMenu().offers[6].unlocked);
 }
 
+// --- 6) restoring --------------------------------------------------------
+
+// The villager fields are gated on the species at restore: a save record that
+// claims a pig is a master farmer restores a pig. Its own test because the
+// end-to-end reopen in game_runtime_test writes each record from the creature
+// it belongs to, so it can never produce a mismatched one — and a gate nothing
+// exercises is a gate that quietly stops working.
+void testRestoreGatesVillagerFieldsOnTheSpecies() {
+    gameplay::EntitySystem entities;
+    const auto* pigType = gameplay::entities::entityTypeRegistry().byId("pig");
+    REQUIRE(pigType != nullptr);
+
+    gameplay::EntitySystem::RestoreState claimed;
+    claimed.health = 10.0F;
+    claimed.villagerProfession = VillagerProfession::Farmer;
+    claimed.villagerLevel = 5U;
+    claimed.villagerTradeXp = 999;
+    claimed.jobSite = {1, 2, 3};
+    claimed.hasJobSite = true;
+    claimed.villagerCarryItem = &gameplay::items::Wheat;
+    claimed.villagerCarryCount = 4U;
+    claimed.villagerOfferUses[0] = 7U;
+
+    const std::uint64_t pigId = entities.restore({0.0F, 1.0F, 0.0F}, *pigType, claimed);
+    const auto* pig = entities.byId(pigId);
+    REQUIRE(pig != nullptr);
+    REQUIRE(pig->villagerProfession == VillagerProfession::None);
+    REQUIRE(pig->villagerLevel == 1U);
+    REQUIRE(pig->villagerTradeXp == 0);
+    REQUIRE(!pig->hasJobSite);
+    REQUIRE(pig->villagerCarryItem == nullptr);
+    REQUIRE(pig->villagerCarryCount == 0U);
+    REQUIRE(pig->villagerOfferUses[0] == 0U);
+
+    // The same record on a real villager restores every field — so the gate is
+    // a species check and not a blanket "drop these".
+    const std::uint64_t villagerId =
+        entities.restore({2.0F, 1.0F, 0.0F}, villagerType(), claimed);
+    const auto* restored = entities.byId(villagerId);
+    REQUIRE(restored->villagerProfession == VillagerProfession::Farmer);
+    REQUIRE(restored->villagerLevel == 5U);
+    REQUIRE(restored->villagerTradeXp == 999);
+    REQUIRE(restored->hasJobSite);
+    REQUIRE(restored->villagerCarryItem == &gameplay::items::Wheat);
+    REQUIRE(restored->villagerOfferUses[0] == 7U);
+
+    // A carry count with no item behind it is dropped rather than restored as a
+    // phantom stack.
+    gameplay::EntitySystem::RestoreState orphanCount = claimed;
+    orphanCount.villagerCarryItem = nullptr;
+    orphanCount.villagerCarryCount = 6U;
+    const std::uint64_t orphanId =
+        entities.restore({4.0F, 1.0F, 0.0F}, villagerType(), orphanCount);
+    REQUIRE(entities.byId(orphanId)->villagerCarryCount == 0U);
+
+    // And the level is clamped into 1..5, so a corrupt record cannot restore a
+    // villager past the ceiling.
+    gameplay::EntitySystem::RestoreState overLevel = claimed;
+    overLevel.villagerLevel = 200U;
+    const std::uint64_t clampedId =
+        entities.restore({6.0F, 1.0F, 0.0F}, villagerType(), overLevel);
+    REQUIRE(entities.byId(clampedId)->villagerLevel ==
+            static_cast<std::uint8_t>(gameplay::entities::kVillagerMaxLevel));
+}
+
 } // namespace
 
 int main() {
@@ -382,5 +447,6 @@ int main() {
     testUnripeCropIsLeftAlone();
     testCarriedProduceGoesIntoTheComposter();
     testRightClickOpensTheTradeScreen();
+    testRestoreGatesVillagerFieldsOnTheSpecies();
     return 0;
 }

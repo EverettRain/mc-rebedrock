@@ -231,10 +231,38 @@ inline constexpr std::array<Direction, 6> kAllDirections{{
 // (vanilla's `hasAnalogOutputSignal() == false`), which is not the same as an
 // empty container reading 0: an empty chest overrides a signal, a stone block
 // does not.
+// AR-M4: a block whose analog output is a plain function of its own STATE,
+// needing neither a block entity nor the session that owns them.
+//
+// The composter is the first: `ComposterBlock#getAnalogOutputSignal` returns
+// LEVEL, 0..8, directly. That is why it is answered here rather than through the
+// analog-output callback the chest and the furnace use — those have to reach
+// into a block-entity store the redstone layer cannot see, and routing a value
+// that is already in the state through a session callback would be paying for a
+// lookup to read something the caller already holds.
+//
+// Returns < 0 for a block with no state-derived analog output, the same "not an
+// analog source at all" answer the callback gives.
+[[nodiscard]] inline int stateAnalogOutput(world::BlockState state) {
+    if (state.block() == world::Block::Composter) {
+        return state.composterLevel();
+    }
+    return -1;
+}
+
 [[nodiscard]] inline int comparatorInputSignal(const world::World& world, world::BlockPos pos,
                                                world::BlockState state, int analogOutput) {
     if (analogOutput >= 0) {
         return analogOutput;
+    }
+    // AR-M4: a state-derived analog source behind the comparator replaces the
+    // ordinary diode input exactly as a container does — a full composter reads
+    // 8 even with a redstone block beside it.
+    const world::BlockPos behind = relative(pos, facingOf(state));
+    if (const int stateOutput =
+            stateAnalogOutput(world.state(behind.x, behind.y, behind.z));
+        stateOutput >= 0) {
+        return stateOutput;
     }
     return diodeInputSignal(world, pos, state);
 }

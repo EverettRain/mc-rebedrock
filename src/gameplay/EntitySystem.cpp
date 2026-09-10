@@ -500,43 +500,59 @@ void EntitySystem::spawn(glm::vec3 position, const entities::EntityType& type, s
 }
 
 std::uint64_t EntitySystem::restore(glm::vec3 position, const entities::EntityType& type,
-                                    float yaw, glm::vec3 velocity, float health,
-                                    int angerTicks, unsigned int ageTicks,
-                                    std::uint64_t rngState, int fireTicks,
-                                    const ActiveEffects& effects, int age, int loveTicks,
-                                    DyeColor color, std::uint16_t customNameId) {
+                                    const RestoreState& state) {
     SimpleEntity entity;
-    entity.customNameId = customNameId;
+    entity.customNameId = state.customNameId;
     entity.type = &type;
     entity.id = nextEntityId_++;
     entity.position = position;
     entity.previousPosition = position;
-    entity.velocity = velocity;
-    entity.yaw = yaw;
-    entity.previousYaw = yaw;
-    entity.lookYaw = yaw;
-    entity.ageTicks = ageTicks;
-    entity.angerTicks = angerTicks;
-    entity.rngState = rngState;
+    entity.velocity = state.velocity;
+    entity.yaw = state.yaw;
+    entity.previousYaw = state.yaw;
+    entity.lookYaw = state.yaw;
+    entity.ageTicks = state.ageTicks;
+    entity.angerTicks = state.angerTicks;
+    entity.rngState = state.rngState;
     // A fire-immune species can never be ablaze; drop a stray record on restore.
-    entity.fireTicks = type.fireImmune() ? 0 : std::max(fireTicks, 0);
+    entity.fireTicks = type.fireImmune() ? 0 : std::max(state.fireTicks, 0);
     // The active MobEffects travel with the save (a poisoned creature reopens
     // still poisoned with its remaining duration intact).
-    entity.effects = effects;
+    entity.effects = state.effects;
     // AgeableMob age/love travel with the save: a baby reopens a baby with its
     // remaining growth, an adult keeps its breed cooldown, love survives. A
     // non-breedable species is forced to adult, so a stray record cannot leave it
     // a permanent baby with no way to grow up.
-    entity.age = type.breedable() ? age : 0;
-    entity.loveTicks = type.breedable() ? std::max(loveTicks, 0) : 0;
+    entity.age = type.breedable() ? state.age : 0;
+    entity.loveTicks = type.breedable() ? std::max(state.loveTicks, 0) : 0;
     // DYE-0: the dye colour travels with the save (a dyed sheep reopens the
     // colour it was dyed). A coloured-species field on every creature; a species
     // with no colour semantics simply idles at the restored default white.
-    entity.color = color;
+    entity.color = state.color;
+    // AR-A2: shearing survives the reload. Deliberately NOT gated on the
+    // species: `shear()` itself does not gate on one either (its guard is
+    // dead/already-sheared/baby), and two different answers to "can this be
+    // shorn" is how a creature ends up shearable but not restorable.
+    entity.sheared = state.sheared;
+    // AR-M5/M6: the villager's own state, likewise gated on the species. A
+    // record that claims a pig is a master farmer restores a pig.
+    if (type.villager()) {
+        entity.villagerProfession = state.villagerProfession;
+        entity.villagerLevel = std::clamp(state.villagerLevel,
+                                          static_cast<std::uint8_t>(entities::kVillagerMinLevel),
+                                          static_cast<std::uint8_t>(entities::kVillagerMaxLevel));
+        entity.villagerTradeXp = std::max(state.villagerTradeXp, 0);
+        entity.jobSite = state.jobSite;
+        entity.hasJobSite = state.hasJobSite;
+        entity.villagerCarryItem = state.villagerCarryItem;
+        entity.villagerCarryCount =
+            state.villagerCarryItem != nullptr ? state.villagerCarryCount : std::uint8_t{0U};
+        entity.villagerOfferUses = state.villagerOfferUses;
+    }
     // The species owns the max; the save's health is the current value, clamped
     // so a corrupt record cannot restore a creature over its cap.
     entity.damage.maxHealth = type.attributes().maxHealth();
-    entity.damage.health = std::min(health, entity.damage.maxHealth);
+    entity.damage.health = std::min(state.health, entity.damage.maxHealth);
     // AR-A4: eggLayTimer is not part of the save record (like
     // ambientSoundChance/stepAccumulator above it), so a reopened world simply
     // rerolls a fresh countdown off the restored rngState — a laying species

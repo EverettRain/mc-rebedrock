@@ -196,6 +196,68 @@ void writeLegacyVersion4RegionWithEntity(const std::filesystem::path& path,
                  static_cast<std::streamsize>(writer.bytes.size()));
 }
 
+// AR-A2 / AR-M5 / AR-M6: a region file written by hand at CCNK version 8 — the
+// last version BEFORE the per-species tail. Reading it on this build must stop
+// exactly where version 8 stops, leave the tail's fields at their defaults, and
+// go on to find the `populated` byte where it actually is.
+//
+// That last clause is the whole point. A reader whose version gate is off by one
+// consumes the tail that is not there, walks off the end of the record, and the
+// first thing it lands on is the populated marker — so the symptom of the bug is
+// not "a villager lost its level" (it never had one) but "an old world's chunks
+// all read as unpopulated" or a hard parse failure two records later. Nothing
+// short of a hand-written old record can catch that.
+void writeLegacyVersion8RegionWithEntity(const std::filesystem::path& path,
+                                         std::int32_t regionX, std::int32_t regionZ,
+                                         std::int32_t chunkX, std::int32_t chunkZ) {
+    LegacyWriter writer;
+    for (const char character : std::string_view{"MCRBREG"}) {
+        writer.bytes.push_back(static_cast<std::uint8_t>(character));
+    }
+    writer.bytes.push_back(0U);          // magic's 8th byte
+    writer.integer<std::uint32_t>(1U);   // kRegionFileVersion
+    writer.integer<std::int32_t>(regionX);
+    writer.integer<std::int32_t>(regionZ);
+    writer.integer<std::uint32_t>(1U);   // chunk count
+    writer.integer<std::uint16_t>(1U);   // state palette: air only
+    writer.stringValue("air");
+    writer.integer<std::uint8_t>(0U);
+    writer.integer<std::uint16_t>(1U);   // species palette
+    writer.stringValue("villager");
+    writer.block(fourCC("CCNK"), 8U, [&] {
+        writer.integer<std::int32_t>(chunkX);
+        writer.integer<std::int32_t>(chunkZ);
+        writer.integer<std::uint32_t>(0U);  // edit count
+        writer.integer<std::uint32_t>(1U);  // entity count
+        writer.integer<std::uint16_t>(0U);            // species index -> "villager"
+        writer.floating(static_cast<float>(chunkX) * 16.0F + 8.0F);
+        writer.floating(70.0F);
+        writer.floating(static_cast<float>(chunkZ) * 16.0F + 8.0F);
+        writer.floating(0.25F);                        // yaw
+        writer.floating(0.0F);
+        writer.floating(0.0F);
+        writer.floating(0.0F);
+        writer.floating(17.5F);                        // health
+        writer.integer<std::int32_t>(0);               // angerTicks
+        writer.integer<std::uint32_t>(9U);             // ageTicks
+        writer.integer<std::uint64_t>(0xDEADBEEFULL);  // rngState — u64 since version 6
+        writer.integer<std::int32_t>(0);               // fireTicks (version >= 2)
+        writer.integer<std::uint8_t>(0U);              // flags
+        writer.integer<std::uint8_t>(0U);              // effect count (version >= 3)
+        writer.integer<std::int32_t>(0);               // age (version >= 4)
+        writer.integer<std::int32_t>(0);               // loveTicks (version >= 4)
+        writer.integer<std::uint8_t>(0U);              // color (version >= 7)
+        writer.stringValue("Olav");                    // customName (version >= 8)
+        // version 8 stops here — no per-species tail.
+        writer.integer<std::uint8_t>(1U);              // populated (version >= 5)
+    });
+    writer.finish();
+    std::filesystem::create_directories(path.parent_path());
+    std::ofstream output{path, std::ios::binary | std::ios::trunc};
+    output.write(reinterpret_cast<const char*>(writer.bytes.data()),
+                 static_cast<std::streamsize>(writer.bytes.size()));
+}
+
 } // namespace
 
 int main() {
@@ -429,6 +491,22 @@ int main() {
     // (0) to prove the default round-trips as itself, not just non-defaults.
     save.entities[0].color =
         gameplay::dyeColorId(gameplay::DyeColor::Magenta);
+    // AR-A2 / AR-M5 / AR-M6: the per-species tail (entity block 8 / region 9).
+    // Every field gets a NON-DEFAULT value, because the round-trip assertions
+    // below compare against these — a field the codec drops still reads back
+    // equal when both sides are the default, which is exactly how the trade
+    // snapshot's twelve fields were written and shipped untested.
+    save.entities[0].sheared = true;
+    save.entities[1].villagerProfession = "farmer";
+    save.entities[1].villagerLevel = 3U;
+    save.entities[1].villagerTradeXp = 84;
+    save.entities[1].jobSiteX = -17;
+    save.entities[1].jobSiteY = 71;
+    save.entities[1].jobSiteZ = 240;
+    save.entities[1].hasJobSite = true;
+    save.entities[1].villagerCarryItem = "wheat";
+    save.entities[1].villagerCarryCount = 5U;
+    save.entities[1].villagerOfferUses = {4U, 0U, 11U, 0U, 0U, 2U, 0U};
     repository.save(save);
     const auto listed = repository.list();
     assert(listed.size() == 1U);
@@ -722,6 +800,25 @@ int main() {
     // the default white (0), proving the default is a real round-trip value.
     assert(pig->color == gameplay::dyeColorId(gameplay::DyeColor::Magenta));
     assert(zombie->color == gameplay::dyeColorId(gameplay::DyeColor::White));
+    // AR-A2 / AR-M5 / AR-M6: the per-species tail survived, field by field. The
+    // pig carries the sheared flag and nothing else; the zombie carries the
+    // villager block — deliberately on two different creatures, so a tail
+    // written from the wrong record would land visibly on the wrong one.
+    assert(pig->sheared);
+    assert(!zombie->sheared);
+    assert(pig->villagerProfession.empty());
+    assert(zombie->villagerProfession == "farmer");
+    assert(zombie->villagerLevel == 3U);
+    assert(zombie->villagerTradeXp == 84);
+    // Negative and large coordinates both, so a sign or width slip shows.
+    assert(zombie->jobSiteX == -17 && zombie->jobSiteY == 71 && zombie->jobSiteZ == 240);
+    assert(zombie->hasJobSite);
+    assert(!pig->hasJobSite);
+    assert(zombie->villagerCarryItem == "wheat");
+    assert(zombie->villagerCarryCount == 5U);
+    assert((zombie->villagerOfferUses ==
+            std::vector<std::uint8_t>{4U, 0U, 11U, 0U, 0U, 2U, 0U}));
+    assert(pig->villagerOfferUses.empty());
 
     // Blocks travel as namespaced identifiers now, so the payload literally
     // contains them and a renumbered enum cannot silently reinterpret an old
@@ -2054,6 +2151,87 @@ int main() {
         // current flag, it does not OR with whatever was already there.
         repository.saveChunk(id, 5, 5, {}, {}, /*populated=*/false);
         assert(!repository.isChunkPopulated(id, 5, 5));
+    }
+
+    // --- AR-A2 / AR-M5 / AR-M6: the per-species tail on the OTHER entity path.
+    //     world.dat's herd is asserted above; a creature saved through a region
+    //     chunk record takes a completely separate writer and reader, and the
+    //     two have drifted apart field by field before. Every field non-default
+    //     again, for the same reason. ---
+    {
+        auto game = repository.create("PerSpeciesTail", 33ULL);
+        const auto id = game.summary.identifier;
+        repository.save(game);
+
+        mc::persistence::PersistentEntity villager;
+        villager.species = "villager";
+        villager.x = 40.5F;
+        villager.y = 70.0F;
+        villager.z = -8.5F;
+        villager.health = 20.0F;
+        villager.sheared = true;
+        villager.villagerProfession = "farmer";
+        villager.villagerLevel = 4U;
+        villager.villagerTradeXp = 173;
+        villager.jobSiteX = 39;
+        villager.jobSiteY = 69;
+        villager.jobSiteZ = -9;
+        villager.hasJobSite = true;
+        villager.villagerCarryItem = "carrot";
+        villager.villagerCarryCount = 7U;
+        villager.villagerOfferUses = {1U, 2U, 3U};
+        repository.saveChunk(id, 2, -1, {}, {villager}, /*populated=*/true);
+
+        const auto reloaded = repository.loadChunkEntities(id, 2, -1);
+        assert(reloaded.size() == 1U);
+        const auto& back = reloaded.front();
+        assert(back.sheared);
+        assert(back.villagerProfession == "farmer");
+        assert(back.villagerLevel == 4U);
+        assert(back.villagerTradeXp == 173);
+        assert(back.jobSiteX == 39 && back.jobSiteY == 69 && back.jobSiteZ == -9);
+        assert(back.hasJobSite);
+        assert(back.villagerCarryItem == "carrot");
+        assert(back.villagerCarryCount == 7U);
+        assert((back.villagerOfferUses == std::vector<std::uint8_t>{1U, 2U, 3U}));
+    }
+
+    // --- AR-A2 / AR-M5 / AR-M6 backward compatibility: a region written at
+    //     CCNK version 8, the last version before the per-species tail. ---
+    {
+        auto game = repository.create("PerSpeciesLegacy", 34ULL);
+        const auto id = game.summary.identifier;
+        repository.save(game);
+        const auto regionPath =
+            repository.dimensionRegionDirectory(id, world::DimensionId::Overworld) /
+            "r.0.0.cache";
+        writeLegacyVersion8RegionWithEntity(regionPath, 0, 0, 4, 6);
+
+        const auto entities = repository.loadChunkEntities(id, 4, 6);
+        assert(entities.size() == 1U);
+        const auto& legacy = entities.front();
+        // The version-8 fields all read correctly — the record was not
+        // mis-parsed on the way to the tail that is not there.
+        assert(legacy.species == "villager");
+        assert(legacy.health == 17.5F);
+        assert(legacy.yaw == 0.25F);
+        assert(legacy.rngState == 0xDEADBEEFULL);
+        assert(legacy.customName == "Olav");
+        // The tail's fields default: unsheared, unemployed, no job site, nothing
+        // carried, no use counts. That is what every creature in a pre-AR-M5
+        // world actually was.
+        assert(!legacy.sheared);
+        assert(legacy.villagerProfession.empty());
+        assert(legacy.villagerLevel == 1U);
+        assert(legacy.villagerTradeXp == 0);
+        assert(!legacy.hasJobSite);
+        assert(legacy.villagerCarryItem.empty());
+        assert(legacy.villagerCarryCount == 0U);
+        assert(legacy.villagerOfferUses.empty());
+        // ★ The desync probe: the populated byte sits immediately after the
+        //   version-8 record. A reader that consumed a tail here would have
+        //   eaten it, and this chunk would read as never populated.
+        assert(repository.isChunkPopulated(id, 4, 6));
     }
 
     // --- CS-5 backward compatibility: a region file written at CCNK version 4

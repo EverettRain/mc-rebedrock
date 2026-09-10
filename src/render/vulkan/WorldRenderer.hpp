@@ -18,6 +18,7 @@
 
 #include "core/EnvFlags.hpp"
 #include "core/FrameTrace.hpp"
+#include "core/PerfTrace.hpp"
 
 #include "render/graph/FrameGraph.hpp"
 
@@ -332,6 +333,7 @@ class WorldRenderer final {
 
 
     void queueStreamBatch(world::ChunkStreamBatch batch) {
+        auto batchScope = diag::PerfTrace::instance().scope("chunk.batch_commit");
         if (batch.worldEpoch != worldEpoch)
             return;
         // 逐帧流送耗时的前一半，后一半在 prepareStreamingUpdates 的上传侧
@@ -363,7 +365,10 @@ class WorldRenderer final {
         // 它负责装入与移除权威区块、应用带保护的跨区块地物写入、执行持久化与实体回调
         // 客户端缓存、光照和网格簿记归渲染侧所有，特意留在临界区之外
         {
+            auto lockWait = diag::PerfTrace::instance().scope("chunk.commit_world_lock_wait");
             const auto batchWrite = worldLock.write();
+            lockWait = {};
+            auto lockHold = diag::PerfTrace::instance().scope("chunk.commit_world_lock_hold");
             const auto lockHoldStart = std::chrono::steady_clock::now();
             for (auto& update : batch.chunkUpdates) {
                 if (update.remove) {
@@ -443,6 +448,7 @@ class WorldRenderer final {
         // 第二阶段完全归渲染侧
         // 把工作线程的区块搬进客户端缓存，只发生在服务端已经复制走其权威值之后
         // 20 TPS 的 tick 不会为客户端重新光照或网格队列等待
+        auto clientCacheScope = diag::PerfTrace::instance().scope("chunk.commit_client_cache");
         for (auto& update : batch.chunkUpdates) {
             if (update.remove) {
                 clientCache.removeChunk(update.position);
@@ -525,6 +531,8 @@ class WorldRenderer final {
             pendingSectionUpdates.insert_or_assign(update.position, std::move(update));
         }
         peakPendingSectionCount = std::max(peakPendingSectionCount, pendingSectionUpdates.size());
+        diag::PerfTrace::instance().counter("chunk.pending_sections",
+                                            static_cast<double>(pendingSectionUpdates.size()));
         lastVisibleMeshCount = std::numeric_limits<std::size_t>::max();
         if (chunkTrace) {
             // 逐帧流送耗时的前一半，即本批次落地的开销
@@ -637,10 +645,17 @@ class WorldRenderer final {
                 traceArmedEpoch_ = worldEpoch;
             }
         }
+        auto requestScope = diag::PerfTrace::instance().scope("chunk.stream_request");
         chunkStreamer.request(requestCenter);
+        requestScope = {};
+        std::size_t drainedBatches = 0U;
+        auto drainScope = diag::PerfTrace::instance().scope("chunk.completed_drain");
         while (auto batch = chunkStreamer.poll()) {
             queueStreamBatch(std::move(*batch));
+            ++drainedBatches;
         }
+        diag::PerfTrace::instance().counter("chunk.completed_drained",
+                                            static_cast<double>(drainedBatches));
     }
 
     // 玩家移动绝不为地形生成阻塞，processChunkStreaming 已经让请求中心沿行进方向前探
@@ -937,6 +952,7 @@ class WorldRenderer final {
 
 
     void prepareStreamingUpdates(FrameContext& frame) {
+        auto streamingScope = diag::PerfTrace::instance().scope("chunk.upload_prepare");
         uploadedSectionsThisFrame = 0;
         uploadedBytesThisFrame = 0;
         std::size_t processedUpdates = 0;
@@ -1017,6 +1033,7 @@ class WorldRenderer final {
                 continue;
             }
 
+            auto sectionUploadScope = diag::PerfTrace::instance().scope("chunk.upload_section");
             GpuMesh gpuMesh;
             gpuMesh.bounds = update.mesh.bounds;
             gpuMesh.sectionOrigin = {static_cast<float>(position.chunkX) * world::kChunkWidth,
@@ -1058,7 +1075,14 @@ class WorldRenderer final {
             diag::chunkStreamingMetrics().recordFrameCost(
                 0.0, diag::msSince(uploadPrepStart), tracedUploads);
         }
-        scheduleTranslucentResorts(frame);
+        diag::PerfTrace::instance().counter("chunk.uploaded_sections",
+                                            static_cast<double>(uploadedSectionsThisFrame));
+        diag::PerfTrace::instance().counter("chunk.uploaded_bytes",
+                                            static_cast<double>(uploadedBytesThisFrame));
+        {
+            auto resortScope = diag::PerfTrace::instance().scope("chunk.translucent_resort");
+            scheduleTranslucentResorts(frame);
+        }
     }
 
 

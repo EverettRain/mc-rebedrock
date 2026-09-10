@@ -483,6 +483,24 @@ class WorldSimulation final {
     [[nodiscard]] std::size_t lastRandomTickConversions() const {
         return randomTickConversionsThisTick_;
     }
+    [[nodiscard]] std::size_t lastRandomTickCandidateChunks() const {
+        return randomTickCandidateChunksThisTick_;
+    }
+    [[nodiscard]] std::size_t lastRandomTickLoadedChunks() const {
+        return randomTickLoadedChunksThisTick_;
+    }
+    [[nodiscard]] std::size_t lastRandomTickNonemptySections() const {
+        return randomTickNonemptySectionsThisTick_;
+    }
+    [[nodiscard]] std::size_t lastRandomTickAttempts() const {
+        return randomTickAttemptsThisTick_;
+    }
+    [[nodiscard]] std::size_t lastRandomTickHandlerHits() const {
+        return randomTickHandlerHitsThisTick_;
+    }
+    [[nodiscard]] std::size_t lastRandomTickChanges() const {
+        return randomTickChangesThisTick_;
+    }
 
   private:
     // AR-B4-3: see synchronousWriteMark() above.
@@ -687,6 +705,14 @@ class WorldSimulation final {
     std::uint32_t precipitationRandomState_ = 0x7F4A7C15U;
     std::size_t lastTreeGrowthsProcessed_ = 0U;
     std::size_t randomTickConversionsThisTick_ = 0U;
+    // Perf-trace aggregates: updated only by the simulation thread and emitted
+    // once per game tick, never once per random draw.
+    std::size_t randomTickCandidateChunksThisTick_ = 0U;
+    std::size_t randomTickLoadedChunksThisTick_ = 0U;
+    std::size_t randomTickNonemptySectionsThisTick_ = 0U;
+    std::size_t randomTickAttemptsThisTick_ = 0U;
+    std::size_t randomTickHandlerHitsThisTick_ = 0U;
+    std::size_t randomTickChangesThisTick_ = 0U;
     std::size_t leafDecayChecksThisTick_ = 0U;
     std::size_t cropStateWritesThisTick_ = 0U;
     std::vector<FallingBlockEntity> fallingBlocks_;

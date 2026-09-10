@@ -12,6 +12,7 @@
 #include "gameplay/Random.hpp"
 #include "gameplay/RangedEnchantment.hpp"
 #include "gameplay/StatusEffect.hpp"
+#include "core/PerfTrace.hpp"
 
 #include "world/DayNightCycle.hpp"
 #include "world/World.hpp"
@@ -174,6 +175,7 @@ void GameSession::tick(world::World& world, SimulationHost& host) {
     // it, so everything timed against it (mining, cooldowns, scheduled work)
     // keeps running even when the sun is frozen.
     ++serverTick_;
+    auto gameplayScope = diag::PerfTrace::instance().scope("simulation.gameplay", serverTick_);
     // The action timeline (swing arc, ongoing use) advances once per tick, so
     // an action consumes the same ticks at any frame rate.
     primaryPlayer().actions.tick();
@@ -311,7 +313,11 @@ void GameSession::tick(world::World& world, SimulationHost& host) {
     worldSimulation_.setSimulationCenterBlock(static_cast<int>(std::floor(simFeet.x)),
                                               static_cast<int>(std::floor(simFeet.y)),
                                               static_cast<int>(std::floor(simFeet.z)));
-    for (const auto& change : worldSimulation_.tick(world, !fluidUpdatePhaseConsumed)) {
+    const auto worldChanges = [&] {
+        auto worldSimulationScope = diag::PerfTrace::instance().scope("simulation.world", serverTick_);
+        return worldSimulation_.tick(world, !fluidUpdatePhaseConsumed);
+    }();
+    for (const auto& change : worldChanges) {
         // A simulated break previews too (it used to do so further down, just
         // before its sound), so the edit's immediacy is decided once, here.
         const bool simulatedBreak =
@@ -726,13 +732,35 @@ GameSession::CrossDimLoadRouting GameSession::resolvePendingCrossDimLoads() {
 
 namespace {
 // Re-creates a detached creature in a target Level's entity system at `position`,
-// preserving the state and RNG stream a save round-trip preserves (velocity,
-// health, anger, age, rng, fire, effects, love). Returns the new stable id.
+// preserving everything a save round-trip preserves. Returns the new stable id.
+//
+// It goes through the SAME RestoreState a load does, so a field that survives a
+// save/load survives a dimension change too — the two used to be separate
+// argument lists, and a field added to one was silently dropped by the other.
 std::uint64_t recreateInLevel(Level& target, const SimpleEntity& entity, glm::vec3 position) {
-    return target.entities.restore(
-        position, *entity.type, entity.yaw, entity.velocity, entity.damage.health,
-        entity.angerTicks, entity.ageTicks, entity.rngState, entity.fireTicks,
-        entity.effects, entity.age, entity.loveTicks);
+    EntitySystem::RestoreState state;
+    state.yaw = entity.yaw;
+    state.velocity = entity.velocity;
+    state.health = entity.damage.health;
+    state.angerTicks = entity.angerTicks;
+    state.ageTicks = entity.ageTicks;
+    state.rngState = entity.rngState;
+    state.fireTicks = entity.fireTicks;
+    state.effects = entity.effects;
+    state.age = entity.age;
+    state.loveTicks = entity.loveTicks;
+    state.color = entity.color;
+    state.customNameId = entity.customNameId;
+    state.sheared = entity.sheared;
+    state.villagerProfession = entity.villagerProfession;
+    state.villagerLevel = entity.villagerLevel;
+    state.villagerTradeXp = entity.villagerTradeXp;
+    state.jobSite = entity.jobSite;
+    state.hasJobSite = entity.hasJobSite;
+    state.villagerCarryItem = entity.villagerCarryItem;
+    state.villagerCarryCount = entity.villagerCarryCount;
+    state.villagerOfferUses = entity.villagerOfferUses;
+    return target.entities.restore(position, *entity.type, state);
 }
 }  // namespace
 

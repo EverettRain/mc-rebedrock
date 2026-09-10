@@ -93,6 +93,33 @@ namespace {
     return atlas;
 }
 
+// MERCH-1：把源图的一个子矩形拷进目标的某处。`blit` 只能整张拷，而交易屏那张
+// 512x256 的面板要按块切开——切法在 `HudTypes.hpp` 的 `tradingPanelPieces()`。
+void blitRegion(assets::ImageData& destination, const assets::ImageData& source, int sourceX,
+                int sourceY, int width, int height, int destinationX, int destinationY) {
+    for (int row = 0; row < height; ++row) {
+        const int from = sourceY + row;
+        const int to = destinationY + row;
+        if (from < 0 || from >= source.height || to < 0 || to >= destination.height) {
+            continue;
+        }
+        for (int column = 0; column < width; ++column) {
+            const int sourceColumn = sourceX + column;
+            const int targetColumn = destinationX + column;
+            if (sourceColumn < 0 || sourceColumn >= source.width || targetColumn < 0 ||
+                targetColumn >= destination.width) {
+                continue;
+            }
+            const auto sourceOffset =
+                static_cast<std::size_t>((from * source.width + sourceColumn) * 4);
+            const auto targetOffset =
+                static_cast<std::size_t>((to * destination.width + targetColumn) * 4);
+            std::copy_n(source.rgba.begin() + static_cast<std::ptrdiff_t>(sourceOffset), 4,
+                        destination.rgba.begin() + static_cast<std::ptrdiff_t>(targetOffset));
+        }
+    }
+}
+
 void blit(assets::ImageData& destination, const assets::ImageData& source, int destinationX,
           int destinationY) {
     for (int sourceY = 0; sourceY < source.height; ++sourceY) {
@@ -649,6 +676,26 @@ void TextureManager::createGuiTexture() {
     blitSeparator("footer_separator.png", kFooterSeparatorSpriteY);
     blitSeparator("inworld_header_separator.png", kInworldHeaderSeparatorSpriteY);
     blitSeparator("inworld_footer_separator.png", kInworldFooterSeparatorSpriteY);
+    // MERCH-1：交易屏的面板。★ 源图是 **512x256**、面板占左上角 276x166，
+    //   而 276 > 256——它塞不进一个图集层，必须拆块。三块的落位与绘制侧共用
+    //   `tradingPanelPieces()`：那里有 static_assert 钉住"不重叠、不留缝、放得下"。
+    auto tradingGui = emptyRgbaAtlas();
+    {
+        const auto villager = guiTex("container/villager.png");
+        for (const auto& piece : tradingPanelPieces()) {
+            blitRegion(tradingGui, villager, static_cast<int>(piece.offsetX),
+                       static_cast<int>(piece.offsetY), static_cast<int>(piece.source.width),
+                       static_cast<int>(piece.source.height),
+                       static_cast<int>(piece.source.x), static_cast<int>(piece.source.y));
+        }
+        // 那几张小精灵与面板同层——面板三块只用到左边 256x166 与下方 x<40 的一小条，
+        // 右下角整片空着。落位是 `tradingSpriteRect()`（绘制侧读的是同一张表）。
+        for (std::size_t index = 0; index < kTradingSpriteNames.size(); ++index) {
+            const auto rect = tradingSpriteRect(static_cast<TradingSprite>(index));
+            blit(tradingGui, sprite(std::string{kTradingSpriteNames[index]}),
+                 static_cast<int>(rect.x), static_cast<int>(rect.y));
+        }
+    }
     const auto chestGui = singleChestGui(guiTex("container/generic_54.png"));
     auto furnaceGui = guiTex("container/furnace.png");
     blit(furnaceGui, sprite("container/furnace/lit_progress"), 176, 0);
@@ -710,8 +757,16 @@ void TextureManager::createGuiTexture() {
         // （进世界列表时按 SaveSummary::hasIcon 读盘），由 uploadWorldIcons()
         // 用 uploadImageLayerRange 原地刷进来。
         emptyRgbaAtlas(),
+        // MERCH-1：交易屏的 276x166 面板，拆成三块塞进一层（拆法在 HudTypes.hpp 的
+        // tradingPanelPieces()，那里有编译期断言钉住"拼回去正好是 276x166"）。
+        //
+        // ★ 它必须排在**存档缩略图之后**：`kWorldIconLayer` 是 21、`kTradingGuiLayer`
+        //   是 22，而层号就是这个数组的下标。我第一版把它插在前面，两层对调，
+        //   面板于是画的是那张空的缩略图层——**一个像素都不显示**，而且什么都不会红
+        //   （层号是写死的常量，数组顺序没有任何断言）。出图那一眼是唯一的抓手。
+        tradingGui,
     };
-    constexpr std::uint32_t kGuiLayerCount = 22U;
+    constexpr std::uint32_t kGuiLayerCount = 23U;
     // 层号是写死在 HudTypes.hpp 里的常量（kTooltipGuiLayer 等），而层内容是上面
     // 这个数组的顺序。加一层却漏改这个数，上传就会按错误的层数切分整块像素，
     // 于是每一层都错位——编译期钉住它。

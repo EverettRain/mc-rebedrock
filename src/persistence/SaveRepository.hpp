@@ -145,6 +145,35 @@ struct PersistentEntity final {
     // Added in entity block version 7 / region chunk version 8; an earlier
     // record has no name field and reads back unnamed.
     std::string customName;
+    // AR-A2: SheepEntity#sheared. Added in entity block version 8 / region chunk
+    // version 9; an earlier record reads back unsheared — the value a
+    // naturally-spawned sheep carries.
+    bool sheared = false;
+    // AR-M5/M6: the villager's own state, added in the same version. An earlier
+    // record reads back as an unemployed novice, which is what every villager in
+    // a pre-AR-M5 world was.
+    //
+    // The profession and the carried item are NAMES, not ids: the same rule the
+    // species palette, the effect list and the item registry already follow, so
+    // inserting a profession never renumbers a saved world's.
+    std::string villagerProfession;   // "" or "none" = unemployed
+    std::uint8_t villagerLevel = 1U;
+    std::int32_t villagerTradeXp = 0;
+    std::int32_t jobSiteX = 0;
+    std::int32_t jobSiteY = 0;
+    std::int32_t jobSiteZ = 0;
+    bool hasJobSite = false;
+    std::string villagerCarryItem;    // "" = carrying nothing
+    std::uint8_t villagerCarryCount = 0U;
+    // One use counter per offer, by the profession table's own row order.
+    //
+    // ★ Registered deviation: vanilla serialises the whole MerchantOffer, so its
+    //   uses can never drift from the offer they belong to. Here the offer table
+    //   is constexpr and only the counts are stored, so REORDERING a profession's
+    //   table would make an old save's counts line up with the wrong rows.
+    //   Appending to a table is safe; reordering one is a save-compatibility
+    //   change and has to be treated as such.
+    std::vector<std::uint8_t> villagerOfferUses;
 };
 
 // A dropped item awaiting pickup. Position and velocity are the whole physical
