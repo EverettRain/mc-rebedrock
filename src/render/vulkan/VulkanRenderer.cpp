@@ -5081,6 +5081,14 @@ struct VulkanRenderer::Impl final : public gameplay::SimulationHost {
             runtime.enqueueClientCommand(std::move(click));
             return;
         }
+        case ui::ContainerActionKind::SelectTradeOffer: {
+            // AR-M6：客户端只报"点了第几行"，那一行存不存在、解没解锁、缺不缺货
+            // 全在服务端判——与上面那条附魔选项同构。
+            gameplay::SelectTradeOffer select;
+            select.offerIndex = static_cast<std::uint32_t>(action.index);
+            runtime.enqueueClientCommand(std::move(select));
+            return;
+        }
         case ui::ContainerActionKind::SetCreativeTab:
             setCreativeTab(static_cast<ui::CreativeTab>(action.index));
             return;

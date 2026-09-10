@@ -27,6 +27,15 @@
 
 namespace mc::gameplay {
 
+// AR-M6: how many trade offers ride the snapshot. Sized to the largest table
+// this build has, and fixed so the snapshot stays a POD with a fixed-width wire
+// form. A villager with more offers than this shows the first
+// kSnapshotTradeOffers of them.
+inline constexpr std::size_t kSnapshotTradeOffers = 8U;
+// The "no row picked" value for `tradeSelectedOffer`. 0xFF rather than -1 so the
+// field stays a plain byte on the wire.
+inline constexpr std::uint8_t kNoSelectedTradeOffer = 0xFFU;
+
 struct WorldSnapshot final {
     // The resident bytes this snapshot holds: the fixed struct (all scalar and
     // inline-array state) plus the chest render states' buffer. Deliberately
@@ -137,6 +146,39 @@ struct WorldSnapshot final {
     ItemStack anvilRight{};
     ItemStack anvilResult{};
     std::int32_t anvilCost = 0;
+    // AR-M6: the trade screen's display state — everything a merchant screen
+    // draws, and nothing it has to derive.
+    //
+    // The three slots first (payments and the DERIVED result), then one row per
+    // offer. `tradeOfferCount` says how many rows are real; the arrays are
+    // fixed so the snapshot stays a POD and the wire stays fixed-width.
+    //
+    // A row carries `wantsA`/`wantsB`/`gives` (wantsB is empty for every offer
+    // in this build, and is here because vanilla's MerchantOffer has costB and
+    // the screen draws two payment slots regardless), the level that unlocks
+    // it, the uses spent and the ceiling, and two flags the screen would
+    // otherwise have to work out for itself: locked (drawn greyed) and out of
+    // stock (drawn with the out-of-stock sprite).
+    ItemStack tradePaymentA{};
+    ItemStack tradePaymentB{};
+    ItemStack tradeResult{};
+    std::array<ItemStack, kSnapshotTradeOffers> tradeWantsA{};
+    std::array<ItemStack, kSnapshotTradeOffers> tradeWantsB{};
+    std::array<ItemStack, kSnapshotTradeOffers> tradeGives{};
+    std::array<std::uint8_t, kSnapshotTradeOffers> tradeOfferLevels{};
+    std::array<std::uint8_t, kSnapshotTradeOffers> tradeOfferUses{};
+    std::array<std::uint8_t, kSnapshotTradeOffers> tradeOfferMaxUses{};
+    std::array<std::uint8_t, kSnapshotTradeOffers> tradeOfferLocked{};
+    std::array<std::uint8_t, kSnapshotTradeOffers> tradeOfferOutOfStock{};
+    std::uint8_t tradeOfferCount = 0U;
+    // Which row the player picked; `kNoSelectedTradeOffer` when none is.
+    std::uint8_t tradeSelectedOffer = kNoSelectedTradeOffer;
+    // The villager's level and the level bar's two numbers. A
+    // `tradeXpForNextLevel` of 0 means the villager is at the ceiling and the
+    // bar is not drawn at all.
+    std::uint8_t tradeVillagerLevel = 1U;
+    std::int32_t tradeXpInLevel = 0;
+    std::int32_t tradeXpForNextLevel = 0;
 };
 
 } // namespace mc::gameplay

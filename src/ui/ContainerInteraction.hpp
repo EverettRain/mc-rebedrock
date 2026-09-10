@@ -56,6 +56,8 @@ enum class ContainerActionKind : std::uint8_t {
     DropCursor,
     // 附魔台的第 `index` 条选项条。
     ClickEnchantOption,
+    // AR-M6：点中交易行。`index` 是第几行（从上数），选中它由后端裁定。
+    SelectTradeOffer,
     // 切到第 `index` 个创造页签。
     SetCreativeTab,
     // 开始拖创造目录的滚动条。
@@ -67,7 +69,7 @@ struct ContainerAction final {
     // ClickSlot 用这两个字段；其余 kind 下没有意义。
     gameplay::SlotKind slotKind = gameplay::SlotKind::PlayerInventory;
     std::uint16_t slotIndex = 0U;
-    // ClickCreativeItem / ClickEnchantOption / SetCreativeTab 用它：
+    // ClickCreativeItem / ClickEnchantOption / SelectTradeOffer / SetCreativeTab 用它：
     // 分别是可见格序号、第几条选项条、第几个页签。
     std::size_t index = 0U;
 

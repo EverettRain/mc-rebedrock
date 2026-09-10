@@ -239,6 +239,41 @@ class GameSession final {
     // EnchantmentMenu#clickMenuButton: buy option `optionIndex` (0..2). Returns
     // whether anything was actually bought.
     bool purchaseEnchantment(int optionIndex);
+
+    // --- AR-M6: the trade screen's backend ---------------------------------
+    //
+    // The four calls a trade UI needs, and nothing else. See
+    // docs/content-dev/AR-content-realization/AR-M6-trading-backend-interface.md
+    // for the contract, the lifecycle and the snapshot fields.
+
+    // Opens the trade screen on a villager. Refuses (returns false, opens
+    // nothing) for an entity that is not a villager, is dead, or has no
+    // profession — an unemployed villager has no offers to show, and vanilla's
+    // Villager#mobInteract likewise does not start trading with one.
+    bool openTradingContainer(std::uint64_t entityId);
+    // The open merchant menu: the two payment slots, the derived result, the
+    // offer views and the villager's level/experience. Always present; a menu
+    // whose `open()` is false is simply empty.
+    [[nodiscard]] TradingMenu& tradingMenu();
+    [[nodiscard]] const TradingMenu& tradingMenu() const;
+    // MerchantMenu#slotsChanged, driven from the tick: re-read the villager's
+    // level and use counts into the offer views and re-derive the result slot.
+    // A no-op when the screen is closed. Safe to call every tick; it also
+    // closes the screen by itself when the villager has gone (died, unloaded),
+    // which is the one thing a UI must not have to police.
+    void refreshTradingOffers();
+    // Picks the offer at `index` (or kNoTradeSelected to pick none). Returns
+    // whether the selection changed anything — an out-of-range index, a locked
+    // offer and an out-of-stock one are all legal to send and all leave the
+    // selection cleared rather than erroring.
+    bool selectTradeOffer(std::size_t index);
+    // MerchantResultSlot#onTake: completes ONE use of the selected offer —
+    // spends the payments, gives the goods to the player, counts the use, and
+    // grants the villager the offer's trading experience (which is what raises
+    // its level and unlocks the next tier). Returns whether a trade happened.
+    // Everything is checked here, so a UI may call it on any click of the
+    // result slot without pre-validating.
+    bool takeTradeResult();
     // ENCH-3: the open anvil's menu, and the two operations on it. `refresh`
     // re-derives the result after any slot change (ItemCombinerMenu#slotsChanged);
     // `take` is the result-slot click that actually pays.

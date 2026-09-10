@@ -56,6 +56,8 @@ enum class ContainerPageKind : std::uint8_t {
     Chest,
     EnchantingTable,
     Anvil,
+    // AR-M6：村民交易屏。两个支付格 + 一个结果格 + 七个可点的交易行。
+    Trading,
 
     // 哨兵，值等于种类数。不参与分派。
     Count,
@@ -77,6 +79,7 @@ enum class ContainerPageKind : std::uint8_t {
     case gameplay::ContainerScreen::EnchantingTable:
         return ContainerPageKind::EnchantingTable;
     case gameplay::ContainerScreen::Anvil:         return ContainerPageKind::Anvil;
+    case gameplay::ContainerScreen::Trading:       return ContainerPageKind::Trading;
     case gameplay::ContainerScreen::Count:         break;   // 哨兵，不是一屏
     }
     return ContainerPageKind::SurvivalInventory;

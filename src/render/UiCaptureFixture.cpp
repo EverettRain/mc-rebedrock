@@ -180,6 +180,47 @@ gameplay::WorldSnapshot uiCaptureWorldSnapshot(const UiCaptureTarget& target,
                                          gameplay::EnchantmentId::Unbreaking, 3U);
         snapshot.anvilCost = 7;
         break;
+    case gameplay::ContainerScreen::Trading:
+        // AR-M6：一个二级农民的货架，照着 26.1 的 farmer 表填——三条已解锁、
+        // 一条缺货、一条被等级锁住，外加一条正在成交（结果格有货）。
+        //
+        // ★ 这个夹具是**给界面用的**：交易后端已经全部就绪而绘制未做，所以
+        //   `--ui-shot trading` 现在拍到的是一屏「有槽位、没底图」的界面。前端每
+        //   接一块，重拍一次就能逐项对照，不必先去世界里养一个村民。
+        snapshot.tradePaymentA = items(gameplay::items::Wheat, 20U);
+        snapshot.tradeResult = items(gameplay::items::Emerald, 1U);
+        snapshot.tradeOfferCount = 5U;
+        snapshot.tradeWantsA[0] = items(gameplay::items::Wheat, 20U);
+        snapshot.tradeGives[0] = items(gameplay::items::Emerald, 1U);
+        snapshot.tradeOfferLevels[0] = 1U;
+        snapshot.tradeOfferUses[0] = 3U;
+        snapshot.tradeOfferMaxUses[0] = 16U;
+        snapshot.tradeWantsA[1] = items(gameplay::items::Carrot, 22U);
+        snapshot.tradeGives[1] = items(gameplay::items::Emerald, 1U);
+        snapshot.tradeOfferLevels[1] = 1U;
+        snapshot.tradeOfferMaxUses[1] = 16U;
+        // 缺货那一条：uses 已经顶到 maxUses。
+        snapshot.tradeWantsA[2] = items(gameplay::items::Potato, 26U);
+        snapshot.tradeGives[2] = items(gameplay::items::Emerald, 1U);
+        snapshot.tradeOfferLevels[2] = 1U;
+        snapshot.tradeOfferUses[2] = 16U;
+        snapshot.tradeOfferMaxUses[2] = 16U;
+        snapshot.tradeOfferOutOfStock[2] = 1U;
+        snapshot.tradeWantsA[3] = items(gameplay::items::Emerald, 1U);
+        snapshot.tradeGives[3] = items(gameplay::items::Bread, 6U);
+        snapshot.tradeOfferLevels[3] = 1U;
+        snapshot.tradeOfferMaxUses[3] = 16U;
+        // 被等级锁住那一条：三级的西瓜换绿宝石，二级村民还买不到。
+        snapshot.tradeWantsA[4] = blocks(world::Block::Melon, 4U);
+        snapshot.tradeGives[4] = items(gameplay::items::Emerald, 1U);
+        snapshot.tradeOfferLevels[4] = 3U;
+        snapshot.tradeOfferMaxUses[4] = 12U;
+        snapshot.tradeOfferLocked[4] = 1U;
+        snapshot.tradeSelectedOffer = 0U;
+        snapshot.tradeVillagerLevel = 2U;
+        snapshot.tradeXpInLevel = 24;
+        snapshot.tradeXpForNextLevel = 60;
+        break;
     case gameplay::ContainerScreen::Count:
         // 哨兵，不是一屏。它不会出现在目标表里（那张表的覆盖断言只遍历 Count 之前的值）。
         break;

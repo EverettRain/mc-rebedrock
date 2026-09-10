@@ -2274,6 +2274,17 @@ if(BUILD_TESTING)
     )
     add_test(NAME villager COMMAND mc_rebedrock_villager_test)
 
+    # AR-M6: the trade screen's backend contract — the interface a UI plugs into.
+    add_executable(mc_rebedrock_trading_backend_test
+        tests/trading_backend_test.cpp
+    )
+    target_link_libraries(mc_rebedrock_trading_backend_test PRIVATE mc_rebedrock_runtime)
+    target_include_directories(mc_rebedrock_trading_backend_test PRIVATE
+        src
+        "${glm_SOURCE_DIR}"
+    )
+    add_test(NAME trading_backend COMMAND mc_rebedrock_trading_backend_test)
+
     add_executable(mc_rebedrock_face_occlusion_test
         tests/face_occlusion_test.cpp
     )

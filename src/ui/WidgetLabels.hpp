@@ -175,7 +175,7 @@ inline constexpr std::array<WidgetId, 20> kRuntimeWidgetLabels{{
 // 不经 widgetLabel 取标签的 id
 // 三种列表行的文本各自在页面装配时给出，分别是世界名、语言名与按键行
 // None 则根本不是一个按钮
-inline constexpr std::array<WidgetId, 19> kUnlabelledWidgets{{
+inline constexpr std::array<WidgetId, 20> kUnlabelledWidgets{{
     // UI-11 / A6：世界行的缩略图不是文字控件。
     WidgetId::WorldIcon,
     WidgetId::None,
@@ -203,6 +203,9 @@ inline constexpr std::array<WidgetId, 19> kUnlabelledWidgets{{
     // 由绘制侧按附魔种子现算（`EnchantmentNames`）；页签、删除框与滚动条上根本
     // 没有文字，画的是精灵。都不经 widgetLabel。
     WidgetId::EnchantOption,
+    // AR-M6：交易行上画的是「要什么 → 给什么」两三个物品图标加一个箭头，
+    // 由绘制侧从 `tradingMenu().offers` 现取，没有一句可翻译的文字。
+    WidgetId::TradeOffer,
     WidgetId::CreativeTab,
     WidgetId::CreativeDeleteSlot,
     WidgetId::CreativeScrollbar,

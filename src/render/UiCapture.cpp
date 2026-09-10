@@ -53,6 +53,10 @@ constexpr std::array kTargetNames{
     TargetName{{ui::PageId::Game, gameplay::ContainerScreen::EnchantingTable},
                "enchanting-table"},
     TargetName{{ui::PageId::Game, gameplay::ContainerScreen::Anvil}, "anvil"},
+    // AR-M6: the trade screen. Nameable from --ui-shot from the moment the
+    // backend exists, so whoever builds the UI has a screenshot channel on day
+    // one rather than after the fact.
+    TargetName{{ui::PageId::Game, gameplay::ContainerScreen::Trading}, "trading"},
 };
 
 // 表必须覆盖 PageId 的每一个取值，否则 --ui-shot 会对某个真实存在的屏幕说"不认识"。

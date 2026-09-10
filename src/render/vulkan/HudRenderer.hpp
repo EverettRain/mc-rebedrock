@@ -3220,9 +3220,15 @@ class HudRenderer final {
     void drawWorkContainer(VkCommandBuffer commandBuffer, VkDescriptorSet descriptorSet,
                            const ui::HudLayout& layout) const {
         // 底衬由 drawHud 一处按档位表画（容器类走 Transparent 那一档），这里不再自己铺
-        const auto panel = layout.inventoryPanel();
-        drawGuiSprite(commandBuffer, panel, containerPanelLayer(containerKind()),
-                      {0.0F, 0.0F, 176.0F, 166.0F});
+        // AR-M6：交易屏的版面是 276x166 而不是这里的 176x166，它自己的面板贴图
+        // （vanilla 的 container/villager.png，512x256）也还没有进 GUI 图集——
+        // 那张图集要求所有层同尺寸，加它是渲染侧的一节。面板层号为负就表示
+        // 「这一屏还没有底图」，于是底衬跳过，其余（槽位、悬停、光标层）照常。
+        const bool trading = containerKind() == ui::ContainerPageKind::Trading;
+        const auto panel = trading ? layout.tradingPanel() : layout.inventoryPanel();
+        if (const float panelLayer = containerPanelLayer(containerKind()); panelLayer >= 0.0F) {
+            drawGuiSprite(commandBuffer, panel, panelLayer, {0.0F, 0.0F, 176.0F, 166.0F});
+        }
         const auto hoveredClue = drawWorkContainerChrome(commandBuffer, layout, panel);
         const auto hoveredStack = drawContainerSlots(commandBuffer, containerPage(layout), layout);
         drawContainerCursorLayer(commandBuffer, layout, hoveredStack, hoveredClue);
@@ -3252,6 +3258,19 @@ class HudRenderer final {
             // `AbstractFurnaceScreen` 都没有覆写它——本作此前这两屏一行都没画。
             // 屏名来自 `CraftingTableBlock.CONTAINER_TITLE`（container.crafting）。
             title("container.crafting", "Crafting");
+            return std::nullopt;
+        case ui::ContainerPageKind::Trading:
+            // AR-M6 —— ★ **这里是交易界面的接入点，后端已经全部就绪，绘制未做。**
+            //
+            // 现在只画屏名。要画的东西全在 `clientMirror.world()` 的 trade* 字段里：
+            // 三个格子（tradePaymentA/B、tradeResult）、逐行的 tradeWantsA/WantsB/
+            // Gives + Levels/Uses/MaxUses/Locked/OutOfStock、tradeOfferCount、
+            // tradeSelectedOffer、以及等级条的 tradeVillagerLevel/tradeXpInLevel/
+            // tradeXpForNextLevel。几何锚点在 `HudLayout::tradingPanel/
+            // tradingPaymentSlot/tradingResultSlot/tradingOffer`。
+            // 契约见 docs/content-dev/AR-content-realization/
+            // AR-M6-trading-backend-interface.md。
+            title("merchant.trades", "Trades");
             return std::nullopt;
         case ui::ContainerPageKind::EnchantingTable:
             return drawEnchantingScreen(commandBuffer, layout, panel);
@@ -3817,6 +3836,10 @@ class HudRenderer final {
         case ui::ContainerPageKind::Chest:
         case ui::ContainerPageKind::EnchantingTable:
         case ui::ContainerPageKind::Anvil:
+        // AR-M6：交易屏走同一条工作容器路径（三个格子 + 一排可点的行），所以槽位、
+        // 悬停提示与光标层一到位就已经能用。缺的只有它自己的面板底图与行内绘制，
+        // 见 drawWorkContainerChrome 里 Trading 分支的接入说明。
+        case ui::ContainerPageKind::Trading:
             drawWorkContainer(commandBuffer, descriptorSet, layout);
             return;
         case ui::ContainerPageKind::Count:

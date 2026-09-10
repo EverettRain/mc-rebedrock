@@ -367,6 +367,11 @@ void GameSession::tick(world::World& world, SimulationHost& host) {
     // self-guarding: it returns immediately unless the enchanting screen is
     // open, and re-derives only when (seed, shelf count, item) actually moved.
     refreshEnchantingOffers(world);
+    // AR-M6: MerchantMenu#slotsChanged, on the tick — the villager's level and
+    // use counts can change from under the screen (it earns experience from
+    // this very trade, and its composting goes on regardless), and a villager
+    // that dies or unloads has to close the screen and hand the payments back.
+    refreshTradingOffers();
     if (primaryLevel().items.tick(world, primaryPlayer().controller.position(), primaryPlayer().inventory) > 0U) {
         events_.publish(SoundEvent{SoundEventKind::ItemPickup, primaryPlayer().controller.position()});
     }
@@ -958,6 +963,38 @@ void GameSession::publishSnapshots() {
             }
         }
     }
+    // AR-M6: the trade screen's display state. Published whenever the menu is
+    // open — not gated on a block cell like the anvil and the table above,
+    // because the "container" here is a villager and the menu itself is the
+    // only thing that knows which one.
+    if (primaryPlayer().trading.open()) {
+        const TradingMenu& menu = primaryPlayer().trading;
+        worldSnapshot_.tradePaymentA = menu.paymentA;
+        worldSnapshot_.tradePaymentB = menu.paymentB;
+        worldSnapshot_.tradeResult = menu.result;
+        worldSnapshot_.tradeOfferCount = static_cast<std::uint8_t>(
+            std::min<std::size_t>(menu.offerCount, kSnapshotTradeOffers));
+        for (std::size_t row = 0; row < kSnapshotTradeOffers; ++row) {
+            const bool live = row < worldSnapshot_.tradeOfferCount;
+            const TradeOfferView& offer = menu.offers[row];
+            worldSnapshot_.tradeWantsA[row] = live ? offer.wantsA : ItemStack{};
+            worldSnapshot_.tradeWantsB[row] = live ? offer.wantsB : ItemStack{};
+            worldSnapshot_.tradeGives[row] = live ? offer.gives : ItemStack{};
+            worldSnapshot_.tradeOfferLevels[row] = live ? offer.level : 0U;
+            worldSnapshot_.tradeOfferUses[row] = live ? offer.uses : 0U;
+            worldSnapshot_.tradeOfferMaxUses[row] = live ? offer.maxUses : 0U;
+            worldSnapshot_.tradeOfferLocked[row] =
+                live && !offer.unlocked ? std::uint8_t{1U} : std::uint8_t{0U};
+            worldSnapshot_.tradeOfferOutOfStock[row] =
+                live && offer.outOfStock ? std::uint8_t{1U} : std::uint8_t{0U};
+        }
+        worldSnapshot_.tradeSelectedOffer =
+            menu.hasSelection() ? static_cast<std::uint8_t>(menu.selectedOffer)
+                                : kNoSelectedTradeOffer;
+        worldSnapshot_.tradeVillagerLevel = menu.villagerLevel;
+        worldSnapshot_.tradeXpInLevel = menu.xpInLevel;
+        worldSnapshot_.tradeXpForNextLevel = menu.xpForNextLevel;
+    }
     // Last, once every system has settled: what the renderer will draw from
     // until the next tick replaces it.
     entitySnapshot_.capture(primaryLevel().entities.entities(), primaryLevel().items.entities(),
@@ -1371,6 +1408,164 @@ void GameSession::openEnchantingContainer(const world::World& world, glm::ivec3 
     openEnchantingTable_ = table;
 }
 
+// --- AR-M6: the trade screen's backend --------------------------------------
+
+namespace {
+
+// Fills one row of the offer view from the villager's own table entry plus its
+// live level and use count. The view is what the UI reads, so everything it
+// needs to draw a row — locked, out of stock, how many uses are left — is
+// resolved HERE and never left for the screen to derive.
+[[nodiscard]] TradeOfferView buildOfferView(const entities::VillagerOffer& offer, int level,
+                                            std::uint8_t uses) {
+    TradeOfferView view;
+    view.wantsA = offer.wants;
+    view.gives = offer.gives;
+    view.level = static_cast<std::uint8_t>(offer.level);
+    view.uses = uses;
+    view.maxUses = static_cast<std::uint8_t>(offer.maxUses);
+    view.unlocked = level >= offer.level;
+    view.outOfStock = static_cast<int>(uses) >= offer.maxUses;
+    return view;
+}
+
+} // namespace
+
+TradingMenu& GameSession::tradingMenu() { return primaryPlayer().trading; }
+
+const TradingMenu& GameSession::tradingMenu() const { return primaryPlayer().trading; }
+
+bool GameSession::openTradingContainer(std::uint64_t entityId) {
+    const SimpleEntity* villager = worldEntities().byIdConst(entityId);
+    if (villager == nullptr || villager->dead() || villager->type == nullptr ||
+        !villager->type->villager()) {
+        return false;
+    }
+    if (entities::offersFor(villager->villagerProfession).empty()) {
+        return false;  // unemployed: Villager#mobInteract does not trade either
+    }
+    TradingMenu& menu = tradingMenu();
+    menu = {};
+    menu.entityId = entityId;
+    refreshTradingOffers();
+    openContainerScreen_ = ContainerScreen::Trading;
+    openChest_.reset();
+    openFurnace_.reset();
+    openEnchantingTable_.reset();
+    return true;
+}
+
+void GameSession::refreshTradingOffers() {
+    TradingMenu& menu = tradingMenu();
+    if (!menu.open()) {
+        return;
+    }
+    const SimpleEntity* villager = worldEntities().byIdConst(menu.entityId);
+    // `discarded` as well as dead: a creature removed without dying is still in
+    // the vector until the entity pass compacts it later this tick, and trading
+    // with something that is on its way out is exactly the window a UI must not
+    // have to think about.
+    if (villager == nullptr || villager->dead() || villager->discarded) {
+        // The villager died or was unloaded with the screen open. Closing here
+        // rather than in the UI is deliberate: the payments have to come back,
+        // and only the session can do that.
+        closeContainerMenu();
+        return;
+    }
+    const auto offers = entities::offersFor(villager->villagerProfession);
+    const int level = static_cast<int>(villager->villagerLevel);
+    menu.offerCount = static_cast<std::uint8_t>(
+        std::min(offers.size(), menu.offers.size()));
+    for (std::size_t index = 0; index < menu.offerCount; ++index) {
+        menu.offers[index] =
+            buildOfferView(offers[index], level, villager->villagerOfferUses[index]);
+    }
+    for (std::size_t index = menu.offerCount; index < menu.offers.size(); ++index) {
+        menu.offers[index] = {};
+    }
+    menu.villagerLevel = villager->villagerLevel;
+    // The level bar's numerator and denominator. Vanilla draws the bar from the
+    // experience earned SINCE the current level began, not from zero, so the
+    // floor is subtracted here rather than in the screen.
+    const int floorXp = entities::villagerCanLevelUp(level)
+                            ? entities::kVillagerLevelXpThresholds[
+                                  static_cast<std::size_t>(level) - 1U]
+                            : 0;
+    menu.xpInLevel = villager->villagerTradeXp - floorXp;
+    menu.xpForNextLevel = entities::villagerXpToNextLevel(level) - floorXp;
+    if (menu.xpForNextLevel < 0) {
+        menu.xpForNextLevel = 0;
+    }
+    // A selection that has become illegal (the offer ran out, or the row no
+    // longer exists) clears itself, so the result slot cannot keep offering
+    // goods for a trade that can no longer happen.
+    if (menu.hasSelection() && !menu.offers[menu.selectedOffer].selectable()) {
+        menu.selectedOffer = kNoTradeSelected;
+    }
+    menu.result = menu.hasSelection()
+                      ? tradeResultFor(menu.offers[menu.selectedOffer], menu.paymentA,
+                                       menu.paymentB)
+                      : ItemStack{};
+}
+
+bool GameSession::selectTradeOffer(std::size_t index) {
+    TradingMenu& menu = tradingMenu();
+    if (!menu.open()) {
+        return false;
+    }
+    const std::size_t previous = menu.selectedOffer;
+    menu.selectedOffer = (index < menu.offerCount && menu.offers[index].selectable())
+                             ? index
+                             : kNoTradeSelected;
+    refreshTradingOffers();
+    return menu.selectedOffer != previous;
+}
+
+bool GameSession::takeTradeResult() {
+    TradingMenu& menu = tradingMenu();
+    if (!menu.open() || !menu.hasSelection()) {
+        return false;
+    }
+    SimpleEntity* villager = worldEntities().byId(menu.entityId);
+    if (villager == nullptr || villager->dead()) {
+        return false;
+    }
+    const std::size_t index = menu.selectedOffer;
+    const TradeOfferView& view = menu.offers[index];
+    if (!view.selectable()) {
+        return false;
+    }
+    // Re-derived rather than trusted: `menu.result` is a display value, and a
+    // click that arrives a tick after the payment changed must not pay out the
+    // stale one.
+    ItemStack goods = tradeResultFor(view, menu.paymentA, menu.paymentB);
+    if (goods.empty()) {
+        return false;
+    }
+    // Goods first: an inventory with no room must not swallow the payment. The
+    // stack is handed over whole or not at all.
+    ItemStack pending = goods;
+    if (!primaryPlayer().inventory.add(pending) || pending.count != 0U) {
+        return false;
+    }
+    if (!tradeSpendPayment(view, menu.paymentA, menu.paymentB)) {
+        return false;  // unreachable: tradeResultFor already agreed
+    }
+    const auto offers = entities::offersFor(villager->villagerProfession);
+    if (index < offers.size()) {
+        if (villager->villagerOfferUses[index] < 0xFFU) {
+            ++villager->villagerOfferUses[index];
+        }
+        const auto progress = entities::villagerAfterTrade(
+            static_cast<int>(villager->villagerLevel), villager->villagerTradeXp,
+            offers[index].xp);
+        villager->villagerLevel = static_cast<std::uint8_t>(progress.level);
+        villager->villagerTradeXp = progress.xp;
+    }
+    refreshTradingOffers();
+    return true;
+}
+
 void GameSession::refreshEnchantingOffers(const world::World& world) {
     if (!openEnchantingTable_.has_value()) {
         return;
@@ -1714,8 +1909,14 @@ void GameSession::closeContainerMenu() {
     // the player. Unconditional, like the crafting grid above — a menu that was
     // never opened is empty, and a table that was mined while its screen was
     // open must still not eat the item.
+    // AR-M6: the merchant menu's two payment slots go back the same way
+    // (MerchantMenu#removed -> clearContainer). The RESULT slot deliberately
+    // does not: it is derived, never owned, so returning it would mint goods
+    // the player never paid for.
     for (ItemStack* slot : {&primaryPlayer().enchanting.item, &primaryPlayer().enchanting.lapis,
-                           &primaryPlayer().anvil.left, &primaryPlayer().anvil.right}) {
+                           &primaryPlayer().anvil.left, &primaryPlayer().anvil.right,
+                           &primaryPlayer().trading.paymentA,
+                           &primaryPlayer().trading.paymentB}) {
         if (!inventory.add(*slot) && !slot->empty()) {
             // clearContainer's fallback: what the inventory could not take is
             // dropped in front of the player rather than deleted.
@@ -1724,6 +1925,7 @@ void GameSession::closeContainerMenu() {
     }
     primaryPlayer().enchanting = {};
     primaryPlayer().anvil = {};
+    primaryPlayer().trading = {};
     if (openChest_.has_value()) {
         chestSystem_.close(*openChest_);
     }
@@ -1737,6 +1939,7 @@ void GameSession::resetWorldState() {
         player.crafting = {};
         player.enchanting = {};
         player.anvil = {};
+        player.trading = {};
     }
     // I-3 的自定义名字表**不**在这里清。
     // 它是会话内的 intern 表，而一次存档解析（SaveRepository::load）会在

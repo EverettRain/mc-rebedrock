@@ -38,6 +38,9 @@ enum class ContainerScreen : std::uint8_t {
     // ENCH-3. Appended at the tail for the same reason: this enum crosses the
     // wire.
     Anvil,
+    // AR-M6: the villager trade screen. Appended at the tail for the same
+    // reason as the two above — this enum crosses the wire.
+    Trading,
 
     // 哨兵，值等于 ContainerScreen 的个数。**不过线**，也不许被序列化或发布——
     // 它只给"覆盖了每一屏"这类编译期断言用。追加新屏放在它**之前**。
@@ -92,6 +95,14 @@ enum class SlotKind : std::uint8_t {
     // 追加在尾部：这个枚举**过线**（`ClickSlot.kind`），插入会让运行中的客户端把
     // ChestStorage 认成别的。
     CreativeCatalog,
+    // AR-M6: the merchant menu's two payment slots and its result. Like the
+    // enchanting table's and the anvil's, they live on the player's own
+    // TradingMenu rather than behind a block entity — the "container" here is
+    // a villager, and it holds no items of its own. The result never accepts an
+    // item: taking it IS the trade, exactly as MerchantResultSlot#onTake is.
+    TradePaymentA,
+    TradePaymentB,
+    TradeResult,
 
     // 哨兵，值等于 SlotKind 的个数。**不过线**、不许被序列化——只给"覆盖了每一种槽"
     // 这类编译期与测试断言用。追加新槽放在它**之前**。
@@ -110,6 +121,8 @@ enum class SlotKind : std::uint8_t {
     case SlotKind::TableCraftingOutput:
     case SlotKind::FurnaceOutput:
     case SlotKind::AnvilOutput:
+    // AR-M6: taking the result IS the trade; it never takes an item.
+    case SlotKind::TradeResult:
     case SlotKind::CreativeCatalog:
     case SlotKind::Count:
         return false;
@@ -123,6 +136,8 @@ enum class SlotKind : std::uint8_t {
     case SlotKind::EnchantingLapis:
     case SlotKind::AnvilLeft:
     case SlotKind::AnvilRight:
+    case SlotKind::TradePaymentA:
+    case SlotKind::TradePaymentB:
     case SlotKind::Equipment:
         return true;
     }

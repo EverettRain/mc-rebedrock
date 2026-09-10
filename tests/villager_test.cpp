@@ -325,44 +325,12 @@ void testCarriedProduceGoesIntoTheComposter() {
     REQUIRE(session.worldEntities().byId(id)->villagerCarryCount < 8U);
 }
 
-// --- 5) trading ------------------------------------------------------------
-
-// One right-click with a payable stack: goods in, payment out, use counted,
-// experience earned.
-void testTradeExchangesAndEarnsExperience() {
-    TestHost host;
-    world::World world = makeFlatWorld();
-    gameplay::GameSession session;
-    session.setGameMode(gameplay::GameMode::Survival);
-    session.player().setPosition({8.5F, 1.0F, 8.5F});
-    session.worldEntities().spawn({9.0F, 1.001F, 8.5F}, villagerType(), 5U);
-    auto* villager = session.worldEntities().byId(
-        session.worldEntities().entities().front().id);
-    const std::uint64_t id = villager->id;
-    villager->villagerProfession = VillagerProfession::Farmer;
-
-    // 20 wheat -> 1 emerald, farmer/1, xp 2.
-    session.inventory().replaceSelected(
-        gameplay::ItemStack{world::Block::Air, 40U, &gameplay::items::Wheat});
-    gameplay::UseItemOn use;
-    use.entity = true;
-    use.entityId = id;
-    session.enqueueCommand(use);
-    session.tick(world, host);
-    session.enqueueCommand(gameplay::UseItemStop{});
-    session.tick(world, host);
-
-    REQUIRE(session.inventory().selectedStack().count == 20U);  // 40 - 20
-    REQUIRE(countHeld(session.inventory(), &gameplay::items::Emerald) == 1U);
-    REQUIRE(session.worldEntities().byId(id)->villagerTradeXp == 2);
-    REQUIRE(session.worldEntities().byId(id)->villagerOfferUses[0] == 1U);
-    // Still a novice: one wheat trade is 2 of the 10 needed.
-    REQUIRE(session.worldEntities().byId(id)->villagerLevel == 1U);
-}
-
-// A locked offer stays locked, and unlocks when the level catches up. The
-// assertion that separates "level gates the table" from "the table is a list".
-void testLockedOfferUnlocksWithLevel() {
+// --- 5) trading --------------------------------------------------------------
+//
+// The screen's own contract lives in trading_backend_test; what is asserted
+// here is only that a right-click on a villager OPENS it, which is the one
+// piece that belongs to the villager rather than to the menu.
+void testRightClickOpensTheTradeScreen() {
     TestHost host;
     world::World world = makeFlatWorld();
     gameplay::GameSession session;
@@ -370,32 +338,35 @@ void testLockedOfferUnlocksWithLevel() {
     session.player().setPosition({8.5F, 1.0F, 8.5F});
     session.worldEntities().spawn({9.0F, 1.001F, 8.5F}, villagerType(), 5U);
     const std::uint64_t id = session.worldEntities().entities().front().id;
-    session.worldEntities().byId(id)->villagerProfession = VillagerProfession::Farmer;
 
-    const auto click = [&] {
+    const auto rightClickVillager = [&] {
         gameplay::UseItemOn use;
         use.entity = true;
         use.entityId = id;
         session.enqueueCommand(use);
         session.tick(world, host);
         session.enqueueCommand(gameplay::UseItemStop{});
-        for (int tick = 0; tick < 5; ++tick) {
-            session.tick(world, host);
-        }
+        session.tick(world, host);
     };
 
-    // Six pumpkins buy an emerald — but only from a level-2 farmer.
-    session.inventory().replaceSelected(gameplay::ItemStack{world::Block::Pumpkin, 12U});
-    click();
-    REQUIRE(session.inventory().selectedStack().count == 12U);   // refused
-    REQUIRE(countHeld(session.inventory(), &gameplay::items::Emerald) == 0U);
+    // An UNEMPLOYED villager has nothing to sell, and vanilla's
+    // Villager#mobInteract does not start trading with one either.
+    rightClickVillager();
+    REQUIRE(!session.tradingMenu().open());
+    REQUIRE(session.openContainerScreen() != gameplay::ContainerScreen::Trading);
 
-    // Promote it exactly the way trading would.
-    session.worldEntities().byId(id)->villagerLevel = 2U;
-    click();
-    REQUIRE(session.inventory().selectedStack().count == 6U);    // paid
-    REQUIRE(countHeld(session.inventory(), &gameplay::items::Emerald) == 1U);
-    REQUIRE(session.worldEntities().byId(id)->villagerTradeXp == 10);
+    // Employ it and the same click opens the screen on that villager.
+    session.worldEntities().byId(id)->villagerProfession = VillagerProfession::Farmer;
+    rightClickVillager();
+    REQUIRE(session.tradingMenu().open());
+    REQUIRE(session.tradingMenu().entityId == id);
+    REQUIRE(session.openContainerScreen() == gameplay::ContainerScreen::Trading);
+    // The farmer's four level-1 offers are listed, and the level-2/3 ones are
+    // listed too but locked — vanilla greys them rather than hiding them.
+    REQUIRE(session.tradingMenu().offerCount ==
+            gameplay::entities::offersFor(VillagerProfession::Farmer).size());
+    REQUIRE(session.tradingMenu().offers[0].unlocked);
+    REQUIRE(!session.tradingMenu().offers[6].unlocked);
 }
 
 } // namespace
@@ -410,7 +381,6 @@ int main() {
     testHarvestsMatureCropAndReplants();
     testUnripeCropIsLeftAlone();
     testCarriedProduceGoesIntoTheComposter();
-    testTradeExchangesAndEarnsExperience();
-    testLockedOfferUnlocksWithLevel();
+    testRightClickOpensTheTradeScreen();
     return 0;
 }

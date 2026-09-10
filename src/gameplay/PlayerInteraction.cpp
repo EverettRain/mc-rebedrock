@@ -316,54 +316,6 @@ bool tryAutoEquipArmor(GameSession& session) {
     return true;
 }
 
-// AR-M5: one trade with the villager `entityId`, taking the first offer its
-// profession and level have unlocked that the player's held stack can pay for.
-// Returns whether a trade actually happened.
-//
-// Everything that makes a trade a trade lives here: the payment comes out of the
-// held stack, the goods go into the inventory (or nowhere, if it is full — in
-// which case the trade does not happen at all rather than eating the payment),
-// the offer's use count climbs toward max_uses, and the villager earns the
-// offer's trading experience, which is what raises its level and unlocks the
-// next tier.
-bool tradeWithVillager(GameSession& session, std::uint64_t entityId) {
-    SimpleEntity* villager = session.worldEntities().byId(entityId);
-    if (villager == nullptr || villager->dead()) {
-        return false;
-    }
-    const auto offers = entities::offersFor(villager->villagerProfession);
-    if (offers.empty()) {
-        return false;  // unemployed: nothing to sell
-    }
-    const auto& held = session.inventory().selectedStack();
-    if (held.empty()) {
-        return false;
-    }
-    for (std::size_t index = 0; index < offers.size(); ++index) {
-        const auto& offer = offers[index];
-        if (!entities::offerAvailable(offer, static_cast<int>(villager->villagerLevel),
-                                      villager->villagerOfferUses[index])) {
-            continue;
-        }
-        if (!sameItem(held, offer.wants) || held.count < offer.wants.count) {
-            continue;
-        }
-        // The goods first: a full inventory must not swallow the payment.
-        ItemStack goods = offer.gives;
-        if (!session.inventory().add(goods) || goods.count != 0U) {
-            return false;
-        }
-        static_cast<void>(session.inventory().consumeSelected(offer.wants.count));
-        ++villager->villagerOfferUses[index];
-        const auto progress = entities::villagerAfterTrade(
-            static_cast<int>(villager->villagerLevel), villager->villagerTradeXp, offer.xp);
-        villager->villagerLevel = static_cast<std::uint8_t>(progress.level);
-        villager->villagerTradeXp = progress.xp;
-        return true;
-    }
-    return false;
-}
-
 // AR-M4: ComposterBlock's right-click, both halves of it.
 //
 // 26.1 splits this across useItemOn and useWithoutItem, but the two are one
@@ -651,6 +603,12 @@ void PlayerInteraction::tick(GameSession& session, world::World& world, Simulati
                     static_cast<void>(session.purchaseEnchantment(specific.optionIndex));
                 } else if constexpr (std::is_same_v<T, SetAnvilName>) {
                     session.setAnvilName(specific.name);
+                } else if constexpr (std::is_same_v<T, SelectTradeOffer>) {
+                    // AR-M6: ServerboundSelectTradePacket. The client says which
+                    // row; the server decides whether that row exists, is
+                    // unlocked and is in stock, and what the result slot shows.
+                    static_cast<void>(session.selectTradeOffer(
+                        static_cast<std::size_t>(specific.offerIndex)));
                 } else if constexpr (std::is_same_v<T, ClickCreativeItem>) {
                     session.inventory().clickCreativeItem(
                         specific.catalogStack, specific.button, specific.shiftHeld);
@@ -1462,7 +1420,13 @@ void PlayerInteraction::performUseOnEntity(GameSession& session, world::World&,
     // trading experience — is vanilla's, and the screen can be laid over it
     // without changing any of it.
     if (target->kind().villager()) {
-        tradeWithVillager(session, use.entityId);
+        // Villager#startTrading: the click OPENS the screen. It does not trade —
+        // picking an offer, paying for it and taking the goods are the screen's
+        // three actions, and all three go through GameSession's trading API.
+        if (session.openTradingContainer(use.entityId)) {
+            session.events().publish(ClientActionEvent{ClientActionEventKind::OpenContainer,
+                                                       ContainerScreen::Trading});
+        }
         return;
     }
 

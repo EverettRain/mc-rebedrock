@@ -50,6 +50,15 @@ inline constexpr int kEnchantingBarSpriteY = 168;
 // ENCH-3: gui/container/anvil.png, with its text-field and error sprites packed
 // into the space its 176x166 panel leaves — same arrangement, same reason.
 inline constexpr float kAnvilGuiLayer = 15.0F;
+// AR-M6：交易屏**还没有**自己的面板层。vanilla 的 gui/container/villager.png 是
+// 512x256，而本作 GUI 图集要求每一层同尺寸（TextureManager 里那句
+// "Minecraft GUI textures must share one size"），把它加进去要么把整块图集撑到
+// 512 宽、要么给它单独一张图 —— 两条都是渲染侧的一节，不是交易后端的。
+//
+// 负值是**约定**而不是随手取的数：`drawWorkContainer` 见到负层号就跳过底图，
+// 于是这一屏的槽位、悬停与光标层照常工作，只是没有背景。前端把贴图接进图集后，
+// 把这里换成真的层号，绘制侧那个判断自然失效。
+inline constexpr float kTradingGuiLayer = -1.0F;
 
 // UI-9：四张页签精灵所在的层（`TextureManager` 的 images 数组最后一格）。
 // ★ 它们各 130x24，竖排要 96 高，`widgets` 那一层放不下——这是本作少数几次
@@ -108,6 +117,9 @@ inline constexpr int kWorldIconSlotCount = kWorldIconSlotsPerRow * kWorldIconSlo
     case ui::ContainerPageKind::EnchantingTable: return kEnchantingGuiLayer;
     case ui::ContainerPageKind::Anvil:           return kAnvilGuiLayer;
     case ui::ContainerPageKind::Furnace:         return 8.0F;
+    // AR-M6：交易屏自己的面板层。给它一个**独立**的层号而不是让它落到函数尾部
+    // 那个 8.0F —— 那正是这个 switch 不带 default 要防的静默错误（会画成熔炉的面板）。
+    case ui::ContainerPageKind::Trading:         return kTradingGuiLayer;
     case ui::ContainerPageKind::SurvivalInventory:    return 2.0F;
     case ui::ContainerPageKind::CreativeInventoryTab: return 5.0F;
     case ui::ContainerPageKind::CreativeCatalogTab:   return 3.0F;

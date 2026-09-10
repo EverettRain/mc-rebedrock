@@ -106,7 +106,7 @@ enum class WidgetId : std::uint16_t {
     // `slotKind + slotIndex`（`gameplay::SlotRef` 那两个字段），而不是又一套编号。
     // ★ 一行里的第几个（三条选项条、十一个页签）由页面里的**次序**决定，与按键
     //   绑定行、资源包行同一个做法，不给每一条各开一个 id。
-    EnchantOption, CreativeTab, CreativeDeleteSlot, CreativeScrollbar,
+    EnchantOption, TradeOffer, CreativeTab, CreativeDeleteSlot, CreativeScrollbar,
 
     // UI-9：创建世界的三个标签页（26.1 `CreateWorldScreen` 的 GameTab/WorldTab/MoreTab）。
     // ★ 三个页签**共用一个 id**，第几个由页面里的次序决定——与创造背包页签、

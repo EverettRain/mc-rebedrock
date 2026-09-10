@@ -14,6 +14,7 @@
 #include "gameplay/CraftingSystem.hpp"
 #include "gameplay/Anvil.hpp"
 #include "gameplay/EnchantingTable.hpp"
+#include "gameplay/TradingMenu.hpp"
 #include "gameplay/Equipment.hpp"
 #include "gameplay/GameMode.hpp"
 #include "gameplay/Inventory.hpp"
@@ -74,6 +75,11 @@ struct ServerPlayer final {
     // the same reason `enchanting` is — vanilla's ItemCombinerMenu owns its
     // inputs and returns them in removed(), so the anvil block stores nothing.
     AnvilMenu anvil;
+    // AR-M6: the open trade screen's two payment slots, its derived result and
+    // the offer view the UI reads. Menu-scoped for the same reason the two
+    // above are: a villager holds no items, so the payments are the player's
+    // until the trade completes and are handed back when the screen closes.
+    TradingMenu trading;
     GameMode gameMode = GameMode::Creative;
 
     // The tick-owned swing/use timeline (N1), advanced with the world tick.

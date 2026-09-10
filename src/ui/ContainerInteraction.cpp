@@ -60,6 +60,11 @@ ContainerAction containerClickAction(const Page& page, UiPoint cursor,
         if (isButton(widget, WidgetId::EnchantOption)) {
             return {ContainerActionKind::ClickEnchantOption, {}, 0U, ordinalAmongSameId(page, hit)};
         }
+        // AR-M6：交易行与附魔选项条同构——第几行由它在同 id 控件里的次序决定，
+        // 是否真能选中由后端裁定（锁住/缺货的行照样发得出去，后端会把选择清掉）。
+        if (isButton(widget, WidgetId::TradeOffer)) {
+            return {ContainerActionKind::SelectTradeOffer, {}, 0U, ordinalAmongSameId(page, hit)};
+        }
         if (isButton(widget, WidgetId::CreativeDeleteSlot)) {
             return {ContainerActionKind::ClearCursor, {}, 0U, 0U};
         }
